@@ -32,6 +32,8 @@ export default function Dashboard() {
   const [selectedGenres, setSelectedGenres] = useState<string[]>([]);
   const [showGenreDropdown, setShowGenreDropdown] = useState(false);
 
+  const [minAudience, setMinAudience] = useState(0);
+
   const [trackTitle, setTrackTitle] = useState('');
   const [driveLink, setDriveLink] = useState('');
   const [senderName, setSenderName] = useState('');
@@ -61,6 +63,18 @@ export default function Dashboard() {
     [allGenres, genreSearch, selectedGenres]
   );
 
+  const AUDIENCE_OPTIONS = [
+    { label: 'Any size', value: 0 },
+    { label: '100K+', value: 100_000 },
+    { label: '250K+', value: 250_000 },
+    { label: '500K+', value: 500_000 },
+    { label: '1M+', value: 1_000_000 },
+    { label: '2M+', value: 2_000_000 },
+    { label: '3M+', value: 3_000_000 },
+    { label: '5M+', value: 5_000_000 },
+    { label: '10M+', value: 10_000_000 },
+  ];
+
   const toggleGenre = useCallback((genre: string) => {
     setSelectedGenres(prev =>
       prev.includes(genre) ? prev.filter(g => g !== genre) : [...prev, genre]
@@ -76,7 +90,7 @@ export default function Dashboard() {
       const res = await fetch('/api/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ genres: selectedGenres }),
+        body: JSON.stringify({ genres: selectedGenres, minAudience }),
       });
       const data = await res.json();
       setPreviewArtists(data.artists || []);
@@ -95,7 +109,7 @@ export default function Dashboard() {
       const res = await fetch('/api/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trackTitle, driveLink, genres: selectedGenres, emailTemplate, senderName }),
+        body: JSON.stringify({ trackTitle, driveLink, genres: selectedGenres, emailTemplate, senderName, minAudience }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -238,6 +252,26 @@ export default function Dashboard() {
               </div>
             </section>
 
+            {/* Audience Size Filter */}
+            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-6 space-y-3">
+              <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Minimum Spotify Followers</h2>
+              <div className="flex flex-wrap gap-2">
+                {AUDIENCE_OPTIONS.map(opt => (
+                  <button
+                    key={opt.value}
+                    onClick={() => { setMinAudience(opt.value); setPreviewDone(false); setSendResult(null); }}
+                    className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${
+                      minAudience === opt.value
+                        ? 'bg-violet-600 border-violet-500 text-white'
+                        : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </section>
+
             {/* Preview */}
             <div className="flex items-center gap-4">
               <button
@@ -267,6 +301,13 @@ export default function Dashboard() {
                         <p className="text-sm font-medium text-white truncate">{a.name}</p>
                         <p className="text-xs text-zinc-500 truncate mt-0.5">
                           {a.managementCompany || 'Independent'} · {a.labels || 'No label'}
+                          {a.spotifyFollowers > 0 && (
+                            <span className="ml-2 text-zinc-600">
+                              {a.spotifyFollowers >= 1_000_000
+                                ? `${(a.spotifyFollowers / 1_000_000).toFixed(1)}M`
+                                : `${Math.round(a.spotifyFollowers / 1_000)}K`} Spotify followers
+                            </span>
+                          )}
                         </p>
                       </div>
                       <div className="text-right shrink-0">

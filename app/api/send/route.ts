@@ -8,6 +8,7 @@ interface SendPayload {
   genres: string[];
   emailTemplate: string;
   senderName: string;
+  minAudience?: number;
 }
 
 function renderTemplate(template: string, vars: Record<string, string>): string {
@@ -40,7 +41,7 @@ function buildEmailsForArtist(
 }
 
 export async function POST(req: NextRequest) {
-  const { trackTitle, driveLink, genres, emailTemplate, senderName } =
+  const { trackTitle, driveLink, genres, emailTemplate, senderName, minAudience } =
     await req.json() as SendPayload;
 
   if (!trackTitle || !driveLink || !genres?.length || !emailTemplate) {
@@ -62,7 +63,7 @@ export async function POST(req: NextRequest) {
     auth: { user: ZOHO_USER, pass: ZOHO_PASS },
   });
 
-  const artists = getArtistsByGenres(genres);
+  const artists = getArtistsByGenres(genres, minAudience ?? 0);
   const allMessages = artists.flatMap(a =>
     buildEmailsForArtist(a, trackTitle, driveLink, emailTemplate, senderName)
   );
