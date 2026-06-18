@@ -17,6 +17,7 @@ export interface Artist {
   managerNames: string[];
   managerEmails: string[];
   instagramHandle: string;
+  avatarUrl: string;
 }
 
 interface RosterData {

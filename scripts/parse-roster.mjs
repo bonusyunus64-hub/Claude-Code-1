@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const filePath = '/home/user/Claude-Code-1/data/roster_new.xlsx';
+const filePath = '/home/user/Claude-Code-1/data/roster_new.xlsx'; // updated spreadsheet with avatarUrl
 const wb = XLSX.readFile(filePath);
 const ws = wb.Sheets[wb.SheetNames[0]];
 const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
@@ -48,6 +48,7 @@ const artists = rows
       managerNames: names,
       managerEmails: emails,
       instagramHandle: String(row['Instagram Handle'] || '').trim(),
+      avatarUrl: String(row['Avatar URL'] || '').trim(),
     };
   });
 
