@@ -24,6 +24,7 @@ interface Artist {
   managerNames: string[];
   managerEmails: string[];
   labels: string;
+  instagramHandle: string;
 }
 
 export default function Dashboard() {
@@ -355,14 +356,26 @@ export default function Dashboard() {
                   {previewArtists.map(a => (
                     <div key={a.name} className="px-6 py-3 flex items-start justify-between gap-4">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-white truncate">{a.name}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium text-white truncate">{a.name}</p>
+                          {a.instagramHandle && (
+                            <a
+                              href={`https://instagram.com/${a.instagramHandle.replace('@', '')}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="shrink-0 text-xs text-pink-400 hover:text-pink-300 transition"
+                            >
+                              {a.instagramHandle}
+                            </a>
+                          )}
+                        </div>
                         <p className="text-xs text-zinc-500 truncate mt-0.5">
                           {a.managementCompany || 'Independent'} · {a.labels || 'No label'}
                           {a.spotifyFollowers > 0 && (
                             <span className="ml-2 text-zinc-600">
                               {a.spotifyFollowers >= 1_000_000
                                 ? `${(a.spotifyFollowers / 1_000_000).toFixed(1)}M`
-                                : `${Math.round(a.spotifyFollowers / 1_000)}K`} Spotify followers
+                                : `${Math.round(a.spotifyFollowers / 1_000)}K`} Spotify
                             </span>
                           )}
                         </p>

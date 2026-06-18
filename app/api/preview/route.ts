@@ -19,6 +19,7 @@ export async function POST(req: NextRequest) {
     managerNames: a.managerNames,
     managerEmails: a.managerEmails,
     labels: a.labels,
+    instagramHandle: a.instagramHandle,
   }));
 
   return NextResponse.json({ artists: result, total: result.length });

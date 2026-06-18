@@ -16,6 +16,7 @@ export interface Artist {
   publishers: string;
   managerNames: string[];
   managerEmails: string[];
+  instagramHandle: string;
 }
 
 interface RosterData {

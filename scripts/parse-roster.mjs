@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const filePath = '/root/.claude/uploads/b34111b5-6f92-5568-9a21-fe0714cfe2b2/bf9d3363-ROSTR_Artist_Directory_FULL.xlsx';
+const filePath = '/home/user/Claude-Code-1/data/roster_new.xlsx';
 const wb = XLSX.readFile(filePath);
 const ws = wb.Sheets[wb.SheetNames[0]];
 const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
@@ -47,6 +47,7 @@ const artists = rows
       publishers: String(row['Publishers'] || '').trim(),
       managerNames: names,
       managerEmails: emails,
+      instagramHandle: String(row['Instagram Handle'] || '').trim(),
     };
   });
 
