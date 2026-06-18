@@ -2,13 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getArtistsByGenres } from '@/lib/roster';
 
 export async function POST(req: NextRequest) {
-  const { genres, minAudience } = await req.json() as { genres: string[]; minAudience?: number };
+  const { genres, minAudience, maxAudience, gender } =
+    await req.json() as { genres: string[]; minAudience?: number; maxAudience?: number; gender?: string };
 
   if (!genres || !genres.length) {
     return NextResponse.json({ artists: [] });
   }
 
-  const matched = getArtistsByGenres(genres, minAudience ?? 0);
+  const matched = getArtistsByGenres(genres, minAudience ?? 0, maxAudience ?? 0, gender ?? '');
 
   const result = matched.map(a => ({
     name: a.name,

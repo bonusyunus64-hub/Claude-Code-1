@@ -33,14 +33,23 @@ export function getRoster(): RosterData {
   return cached;
 }
 
-export function getArtistsByGenres(selectedGenres: string[], minFollowers = 0): Artist[] {
+export function getArtistsByGenres(
+  selectedGenres: string[],
+  minFollowers = 0,
+  maxFollowers = 0,
+  gender = ''
+): Artist[] {
   const { artists } = getRoster();
   if (!selectedGenres.length) return [];
 
   const lower = selectedGenres.map(g => g.toLowerCase());
-  return artists.filter(a =>
-    a.managerEmails.length > 0 &&
-    a.genres.some(g => lower.includes(g.toLowerCase())) &&
-    (minFollowers === 0 || (a.spotifyFollowers ?? 0) >= minFollowers)
-  );
+  return artists.filter(a => {
+    if (!a.managerEmails.length) return false;
+    if (!a.genres.some(g => lower.includes(g.toLowerCase()))) return false;
+    const followers = a.spotifyFollowers ?? 0;
+    if (minFollowers > 0 && followers < minFollowers) return false;
+    if (maxFollowers > 0 && followers > maxFollowers) return false;
+    if (gender && a.gender !== gender) return false;
+    return true;
+  });
 }

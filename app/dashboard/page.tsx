@@ -33,6 +33,8 @@ export default function Dashboard() {
   const [showGenreDropdown, setShowGenreDropdown] = useState(false);
 
   const [minAudience, setMinAudience] = useState(0);
+  const [maxAudience, setMaxAudience] = useState(0);
+  const [gender, setGender] = useState('');
 
   const [trackTitle, setTrackTitle] = useState('');
   const [driveLink, setDriveLink] = useState('');
@@ -63,17 +65,26 @@ export default function Dashboard() {
     [allGenres, genreSearch, selectedGenres]
   );
 
-  const AUDIENCE_OPTIONS = [
-    { label: 'Any size', value: 0 },
-    { label: '100K+', value: 100_000 },
-    { label: '250K+', value: 250_000 },
-    { label: '500K+', value: 500_000 },
-    { label: '1M+', value: 1_000_000 },
-    { label: '2M+', value: 2_000_000 },
-    { label: '3M+', value: 3_000_000 },
-    { label: '5M+', value: 5_000_000 },
-    { label: '10M+', value: 10_000_000 },
+  const FOLLOWER_STEPS = [
+    { label: 'Any', value: 0 },
+    { label: '100K', value: 100_000 },
+    { label: '250K', value: 250_000 },
+    { label: '500K', value: 500_000 },
+    { label: '1M', value: 1_000_000 },
+    { label: '2M', value: 2_000_000 },
+    { label: '3M', value: 3_000_000 },
+    { label: '5M', value: 5_000_000 },
+    { label: '10M', value: 10_000_000 },
+    { label: '50M', value: 50_000_000 },
   ];
+
+  const GENDER_OPTIONS = [
+    { label: 'Any', value: '' },
+    { label: 'Male', value: 'MALE' },
+    { label: 'Female', value: 'FEMALE' },
+  ];
+
+  const resetFilters = () => { setPreviewDone(false); setSendResult(null); };
 
   const toggleGenre = useCallback((genre: string) => {
     setSelectedGenres(prev =>
@@ -90,7 +101,7 @@ export default function Dashboard() {
       const res = await fetch('/api/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ genres: selectedGenres, minAudience }),
+        body: JSON.stringify({ genres: selectedGenres, minAudience, maxAudience, gender }),
       });
       const data = await res.json();
       setPreviewArtists(data.artists || []);
@@ -109,7 +120,7 @@ export default function Dashboard() {
       const res = await fetch('/api/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trackTitle, driveLink, genres: selectedGenres, emailTemplate, senderName, minAudience }),
+        body: JSON.stringify({ trackTitle, driveLink, genres: selectedGenres, emailTemplate, senderName, minAudience, maxAudience, gender }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -252,23 +263,69 @@ export default function Dashboard() {
               </div>
             </section>
 
-            {/* Audience Size Filter */}
-            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-6 space-y-3">
-              <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Minimum Spotify Followers</h2>
-              <div className="flex flex-wrap gap-2">
-                {AUDIENCE_OPTIONS.map(opt => (
-                  <button
-                    key={opt.value}
-                    onClick={() => { setMinAudience(opt.value); setPreviewDone(false); setSendResult(null); }}
-                    className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${
-                      minAudience === opt.value
-                        ? 'bg-violet-600 border-violet-500 text-white'
-                        : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
+            {/* Audience & Gender Filters */}
+            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-6 space-y-5">
+              <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Filters</h2>
+
+              {/* Follower range */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-zinc-400">Min Spotify followers</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {FOLLOWER_STEPS.map(opt => (
+                      <button
+                        key={`min-${opt.value}`}
+                        onClick={() => { setMinAudience(opt.value); resetFilters(); }}
+                        className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${
+                          minAudience === opt.value
+                            ? 'bg-violet-600 border-violet-500 text-white'
+                            : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-zinc-400">Max Spotify followers</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {FOLLOWER_STEPS.map(opt => (
+                      <button
+                        key={`max-${opt.value}`}
+                        onClick={() => { setMaxAudience(opt.value); resetFilters(); }}
+                        className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${
+                          maxAudience === opt.value
+                            ? 'bg-violet-600 border-violet-500 text-white'
+                            : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Gender */}
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-zinc-400">Artist gender</p>
+                <div className="flex gap-1.5">
+                  {GENDER_OPTIONS.map(opt => (
+                    <button
+                      key={opt.value}
+                      onClick={() => { setGender(opt.value); resetFilters(); }}
+                      className={`px-3 py-1 rounded-full text-xs font-medium border transition ${
+                        gender === opt.value
+                          ? 'bg-violet-600 border-violet-500 text-white'
+                          : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </section>
 
