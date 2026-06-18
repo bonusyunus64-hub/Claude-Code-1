@@ -1,10 +1,5 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
-  "framework": "nextjs",
-  "env": {
-    "SITE_PASSWORD": "@site_password",
-    "ZOHO_USER": "@zoho_user",
-    "ZOHO_PASS": "@zoho_pass"
-  }
+  "framework": "nextjs"
 }
