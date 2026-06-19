@@ -46,6 +46,7 @@ export default function Dashboard() {
   const [previewArtists, setPreviewArtists] = useState<Artist[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewDone, setPreviewDone] = useState(false);
+  const [sortOrder, setSortOrder] = useState<'followers-desc' | 'followers-asc' | 'alpha-asc' | 'alpha-desc' | 'random'>('followers-desc');
 
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<{ sent: number; failed: number; total: number } | null>(null);
@@ -136,6 +137,17 @@ export default function Dashboard() {
       setSending(false);
     }
   }
+
+  const sortedArtists = useMemo(() => {
+    const arr = [...previewArtists];
+    switch (sortOrder) {
+      case 'followers-desc': return arr.sort((a, b) => b.spotifyFollowers - a.spotifyFollowers);
+      case 'followers-asc':  return arr.sort((a, b) => a.spotifyFollowers - b.spotifyFollowers);
+      case 'alpha-asc':      return arr.sort((a, b) => a.name.localeCompare(b.name));
+      case 'alpha-desc':     return arr.sort((a, b) => b.name.localeCompare(a.name));
+      case 'random':         return arr.sort(() => Math.random() - 0.5);
+    }
+  }, [previewArtists, sortOrder]);
 
   const totalEmails = previewArtists.reduce((acc, a) => acc + a.managerEmails.length, 0);
   const canSend = trackTitle && driveLink && selectedGenres.length > 0 && previewDone;
@@ -349,12 +361,22 @@ export default function Dashboard() {
 
             {previewDone && previewArtists.length > 0 && (
               <section className="bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden">
-                <div className="px-4 md:px-6 py-3 md:py-4 border-b border-zinc-800 flex items-center justify-between">
-                  <h3 className="text-sm font-semibold text-zinc-300">Recipients Preview</h3>
-                  <span className="text-xs text-zinc-500">{previewArtists.length} matched artists</span>
+                <div className="px-4 md:px-6 py-3 md:py-4 border-b border-zinc-800 flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold text-zinc-300">Recipients Preview <span className="text-zinc-500 font-normal">· {previewArtists.length} artists</span></h3>
+                  <select
+                    value={sortOrder}
+                    onChange={e => setSortOrder(e.target.value as typeof sortOrder)}
+                    className="text-xs bg-zinc-800 border border-zinc-700 text-zinc-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                  >
+                    <option value="followers-desc">Followers: High → Low</option>
+                    <option value="followers-asc">Followers: Low → High</option>
+                    <option value="alpha-asc">A → Z</option>
+                    <option value="alpha-desc">Z → A</option>
+                    <option value="random">Random</option>
+                  </select>
                 </div>
                 <div className="divide-y divide-zinc-800 max-h-[32rem] overflow-y-auto">
-                  {previewArtists.map(a => (
+                  {sortedArtists.map(a => (
                     <div key={a.name} className="px-4 md:px-6 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
                       {/* Left: avatar + name */}
                       <div className="flex items-center gap-3 min-w-0">
