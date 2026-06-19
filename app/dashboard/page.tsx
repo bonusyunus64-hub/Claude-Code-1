@@ -153,7 +153,7 @@ export default function Dashboard() {
         </a>
       </header>
 
-      <main className="flex-1 max-w-5xl mx-auto w-full px-6 py-10 space-y-8">
+      <main className="flex-1 max-w-5xl mx-auto w-full px-4 py-6 md:px-6 md:py-10 space-y-6 md:space-y-8">
 
         {/* Tabs */}
         <div className="flex gap-1 bg-zinc-900 rounded-lg p-1 w-fit">
@@ -175,7 +175,7 @@ export default function Dashboard() {
         {activeTab === 'compose' && (
           <div className="space-y-6">
             {/* Track Info */}
-            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-6 space-y-4">
+            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
               <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Track Details</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
@@ -212,7 +212,7 @@ export default function Dashboard() {
             </section>
 
             {/* Genre Selector */}
-            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-6 space-y-4">
+            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
               <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Select Genres</h2>
               <p className="text-sm text-zinc-500">The track will be sent to managers of all artists tagged with the selected genres.</p>
 
@@ -266,7 +266,7 @@ export default function Dashboard() {
             </section>
 
             {/* Audience & Gender Filters */}
-            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-6 space-y-5">
+            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-5">
               <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Filters</h2>
 
               {/* Follower range */}
@@ -349,15 +349,15 @@ export default function Dashboard() {
 
             {previewDone && previewArtists.length > 0 && (
               <section className="bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden">
-                <div className="px-6 py-4 border-b border-zinc-800 flex items-center justify-between">
+                <div className="px-4 md:px-6 py-3 md:py-4 border-b border-zinc-800 flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-zinc-300">Recipients Preview</h3>
                   <span className="text-xs text-zinc-500">{previewArtists.length} matched artists</span>
                 </div>
-                <div className="divide-y divide-zinc-800 max-h-80 overflow-y-auto">
+                <div className="divide-y divide-zinc-800 max-h-[32rem] overflow-y-auto">
                   {previewArtists.map(a => (
-                    <div key={a.name} className="px-6 py-3 flex items-center justify-between gap-4">
+                    <div key={a.name} className="px-4 md:px-6 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
+                      {/* Left: avatar + name */}
                       <div className="flex items-center gap-3 min-w-0">
-                        {/* Avatar */}
                         <div className="shrink-0 w-10 h-10 rounded-full overflow-hidden bg-zinc-700">
                           {a.avatarUrl ? (
                             <img
@@ -373,36 +373,34 @@ export default function Dashboard() {
                             </div>
                           )}
                         </div>
-                        {/* Info */}
                         <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className="text-sm font-medium text-white truncate">{a.name}</p>
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                            <p className="text-sm font-medium text-white">{a.name}</p>
                             {a.instagramHandle && (
                               <a
                                 href={`https://instagram.com/${a.instagramHandle.replace('@', '')}`}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="shrink-0 text-xs text-pink-400 hover:text-pink-300 transition"
+                                className="text-xs text-pink-400 hover:text-pink-300 transition"
                               >
                                 {a.instagramHandle}
                               </a>
                             )}
-                          </div>
-                          <p className="text-xs text-zinc-500 truncate mt-0.5">
-                            {a.managementCompany || 'Independent'} · {a.labels || 'No label'}
                             {a.spotifyFollowers > 0 && (
-                              <span className="ml-2 text-zinc-600">
+                              <span className="text-xs bg-zinc-800 text-green-400 px-1.5 py-0.5 rounded font-medium">
                                 {a.spotifyFollowers >= 1_000_000
                                   ? `${(a.spotifyFollowers / 1_000_000).toFixed(1)}M`
-                                  : `${Math.round(a.spotifyFollowers / 1_000)}K`} Spotify
+                                  : `${Math.round(a.spotifyFollowers / 1_000)}K`}
                               </span>
                             )}
-                          </p>
+                          </div>
+                          <p className="text-xs text-zinc-500 mt-0.5">{a.managementCompany || 'Independent'}</p>
                         </div>
                       </div>
-                      <div className="text-right shrink-0">
+                      {/* Right: manager emails — below on mobile, right on desktop */}
+                      <div className="pl-[52px] sm:pl-0 sm:text-right sm:shrink-0 space-y-0.5">
                         {a.managerEmails.map((email, i) => (
-                          <p key={email} className="text-xs text-violet-400">
+                          <p key={email} className="text-xs text-violet-400 break-all sm:break-normal">
                             {a.managerNames[i] ? `${a.managerNames[i]} — ` : ''}{email}
                           </p>
                         ))}
