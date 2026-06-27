@@ -11,9 +11,9 @@ I've attached the track "{{trackTitle}}" — you can listen here:
 
 I believe this would be a strong fit for {{artistName}}'s sound and audience. I'd love to discuss any potential collaboration or placement.
 
-Please let me know if you need anything further.
+Please let me know if you need anything further.`;
 
-Best regards,
+const DEFAULT_SIGN_OFF = `Best regards,
 {{senderName}}`;
 
 interface Artist {
@@ -27,6 +27,20 @@ interface Artist {
   instagramHandle: string;
   avatarUrl: string;
 }
+
+interface EmailAccount {
+  id: string;
+  name: string;
+  email: string;
+  smtpHost: string;
+  smtpPort: string;
+  smtpUser: string;
+  smtpPass: string;
+}
+
+const BLANK_ACCOUNT: Omit<EmailAccount, 'id'> = {
+  name: '', email: '', smtpHost: 'smtp.zoho.com', smtpPort: '465', smtpUser: '', smtpPass: '',
+};
 
 export default function Dashboard() {
   const [allGenres, setAllGenres] = useState<string[]>([]);
@@ -42,6 +56,13 @@ export default function Dashboard() {
   const [driveLink, setDriveLink] = useState('');
   const [senderName, setSenderName] = useState('');
   const [emailTemplate, setEmailTemplate] = useState(DEFAULT_TEMPLATE);
+  const [signOff, setSignOff] = useState(DEFAULT_SIGN_OFF);
+
+  // Email accounts (persisted in localStorage)
+  const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
+  const [selectedAccountId, setSelectedAccountId] = useState('');
+  const [showAddAccount, setShowAddAccount] = useState(false);
+  const [newAccount, setNewAccount] = useState({ ...BLANK_ACCOUNT });
 
   const [previewArtists, setPreviewArtists] = useState<Artist[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -58,6 +79,16 @@ export default function Dashboard() {
     fetch('/api/genres')
       .then(r => r.json())
       .then(d => setAllGenres(d.genres || []));
+    // Load persisted data
+    try {
+      const accounts = JSON.parse(localStorage.getItem('tp_email_accounts') || '[]') as EmailAccount[];
+      setEmailAccounts(accounts);
+      const savedId = localStorage.getItem('tp_selected_account');
+      if (savedId && accounts.find(a => a.id === savedId)) setSelectedAccountId(savedId);
+      else if (accounts.length > 0) setSelectedAccountId(accounts[0].id);
+      const savedSignOff = localStorage.getItem('tp_sign_off');
+      if (savedSignOff !== null) setSignOff(savedSignOff);
+    } catch {}
   }, []);
 
   const filteredGenres = useMemo(() =>
@@ -88,6 +119,42 @@ export default function Dashboard() {
   ];
 
   const resetFilters = () => { setPreviewDone(false); setSendResult(null); };
+
+  function persistAccounts(accounts: EmailAccount[]) {
+    setEmailAccounts(accounts);
+    localStorage.setItem('tp_email_accounts', JSON.stringify(accounts));
+  }
+
+  function addAccount() {
+    if (!newAccount.name || !newAccount.smtpUser || !newAccount.smtpPass) return;
+    const account: EmailAccount = { id: Date.now().toString(), ...newAccount };
+    const updated = [...emailAccounts, account];
+    persistAccounts(updated);
+    setSelectedAccountId(account.id);
+    localStorage.setItem('tp_selected_account', account.id);
+    setShowAddAccount(false);
+    setNewAccount({ ...BLANK_ACCOUNT });
+  }
+
+  function removeAccount(id: string) {
+    const updated = emailAccounts.filter(a => a.id !== id);
+    persistAccounts(updated);
+    if (selectedAccountId === id) {
+      const next = updated[0]?.id ?? '';
+      setSelectedAccountId(next);
+      localStorage.setItem('tp_selected_account', next);
+    }
+  }
+
+  function selectAccount(id: string) {
+    setSelectedAccountId(id);
+    localStorage.setItem('tp_selected_account', id);
+  }
+
+  function saveSignOff(value: string) {
+    setSignOff(value);
+    localStorage.setItem('tp_sign_off', value);
+  }
 
   const toggleGenre = useCallback((genre: string) => {
     setSelectedGenres(prev =>
@@ -123,7 +190,13 @@ export default function Dashboard() {
       const res = await fetch('/api/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trackTitle, driveLink, genres: selectedGenres, emailTemplate, senderName, minAudience, maxAudience, gender }),
+        body: JSON.stringify({
+          trackTitle, driveLink, genres: selectedGenres, emailTemplate,
+          senderName, signOff, minAudience, maxAudience, gender,
+          fromAccount: emailAccounts.find(a => a.id === selectedAccountId)
+            ? { ...emailAccounts.find(a => a.id === selectedAccountId)!, smtpPort: Number(emailAccounts.find(a => a.id === selectedAccountId)!.smtpPort) }
+            : undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -455,44 +528,185 @@ export default function Dashboard() {
               </div>
             )}
 
-            <button
-              onClick={handleSend}
-              disabled={!canSend || sending}
-              className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-6 py-3 font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-zinc-950 text-sm"
-            >
-              {sending
-                ? 'Sending...'
-                : canSend
-                ? `Send to ${totalEmails} recipient${totalEmails !== 1 ? 's' : ''}`
-                : 'Preview recipients first'}
-            </button>
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+              <button
+                onClick={handleSend}
+                disabled={!canSend || sending}
+                className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-6 py-3 font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-zinc-950 text-sm"
+              >
+                {sending
+                  ? 'Sending...'
+                  : canSend
+                  ? `Send to ${totalEmails} recipient${totalEmails !== 1 ? 's' : ''}`
+                  : 'Preview recipients first'}
+              </button>
+              {(() => {
+                const acc = emailAccounts.find(a => a.id === selectedAccountId);
+                return acc ? (
+                  <span className="text-xs text-zinc-500">
+                    Sending from <span className="text-zinc-300">{acc.name}</span> ({acc.email || acc.smtpUser})
+                  </span>
+                ) : (
+                  <span className="text-xs text-amber-500">
+                    No email account selected — <button onClick={() => setActiveTab('template')} className="underline hover:text-amber-400">add one</button>
+                  </span>
+                );
+              })()}
+            </div>
           </div>
         )}
 
         {activeTab === 'template' && (
-          <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-6 space-y-4">
-            <div>
-              <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Email Template</h2>
-              <p className="text-sm text-zinc-500">
-                Available variables:{' '}
-                {['{{managerName}}', '{{artistName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}', '{{managementCompany}}'].map(v => (
-                  <code key={v} className="text-xs bg-zinc-800 text-violet-400 px-1.5 py-0.5 rounded mr-1">{v}</code>
-                ))}
-              </p>
-            </div>
-            <textarea
-              value={emailTemplate}
-              onChange={e => setEmailTemplate(e.target.value)}
-              rows={20}
-              className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white placeholder-zinc-500 font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y"
-            />
-            <button
-              onClick={() => setEmailTemplate(DEFAULT_TEMPLATE)}
-              className="text-xs text-zinc-500 hover:text-zinc-300 transition"
-            >
-              Reset to default
-            </button>
-          </section>
+          <div className="space-y-6">
+
+            {/* From Account */}
+            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+              <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">From Account</h2>
+
+              {emailAccounts.length > 0 && (
+                <div className="space-y-2">
+                  {emailAccounts.map(acc => (
+                    <div
+                      key={acc.id}
+                      onClick={() => selectAccount(acc.id)}
+                      className={`flex items-center justify-between gap-3 px-4 py-3 rounded-lg border cursor-pointer transition ${
+                        selectedAccountId === acc.id
+                          ? 'border-violet-500 bg-violet-600/10'
+                          : 'border-zinc-700 bg-zinc-800 hover:border-zinc-600'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-white">{acc.name}</p>
+                        <p className="text-xs text-zinc-400 truncate">{acc.email || acc.smtpUser} · {acc.smtpHost}:{acc.smtpPort}</p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {selectedAccountId === acc.id && (
+                          <span className="text-xs text-violet-400 font-medium">Active</span>
+                        )}
+                        <button
+                          onClick={e => { e.stopPropagation(); removeAccount(acc.id); }}
+                          className="text-zinc-600 hover:text-red-400 transition text-lg leading-none"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {emailAccounts.length === 0 && !showAddAccount && (
+                <p className="text-sm text-zinc-500">No accounts added yet. Add one below to send emails.</p>
+              )}
+
+              {!showAddAccount ? (
+                <button
+                  onClick={() => setShowAddAccount(true)}
+                  className="text-sm text-violet-400 hover:text-violet-300 transition"
+                >
+                  + Add email account
+                </button>
+              ) : (
+                <div className="border border-zinc-700 rounded-xl p-4 space-y-3">
+                  <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">New Account</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1">Display Name</label>
+                      <input value={newAccount.name} onChange={e => setNewAccount(p => ({ ...p, name: e.target.value }))}
+                        placeholder="e.g. Work Email"
+                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1">From Address</label>
+                      <input value={newAccount.email} onChange={e => setNewAccount(p => ({ ...p, email: e.target.value }))}
+                        placeholder="you@example.com"
+                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1">SMTP Host</label>
+                      <input value={newAccount.smtpHost} onChange={e => setNewAccount(p => ({ ...p, smtpHost: e.target.value }))}
+                        placeholder="smtp.zoho.com"
+                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1">Port</label>
+                      <input value={newAccount.smtpPort} onChange={e => setNewAccount(p => ({ ...p, smtpPort: e.target.value }))}
+                        placeholder="465"
+                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1">SMTP Username</label>
+                      <input value={newAccount.smtpUser} onChange={e => setNewAccount(p => ({ ...p, smtpUser: e.target.value }))}
+                        placeholder="your@email.com"
+                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1">Password / App Password</label>
+                      <input type="password" value={newAccount.smtpPass} onChange={e => setNewAccount(p => ({ ...p, smtpPass: e.target.value }))}
+                        placeholder="••••••••"
+                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                    </div>
+                  </div>
+                  <p className="text-xs text-zinc-500">For Gmail use an App Password. For Zoho use your account password or an app-specific password.</p>
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      onClick={addAccount}
+                      disabled={!newAccount.name || !newAccount.smtpUser || !newAccount.smtpPass}
+                      className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-4 py-2 text-sm font-semibold text-white transition"
+                    >
+                      Save Account
+                    </button>
+                    <button
+                      onClick={() => { setShowAddAccount(false); setNewAccount({ ...BLANK_ACCOUNT }); }}
+                      className="rounded-lg bg-zinc-800 hover:bg-zinc-700 px-4 py-2 text-sm text-zinc-300 transition"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {/* Sign-off */}
+            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-3">
+              <div>
+                <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Sign-off</h2>
+                <p className="text-xs text-zinc-500">Appended automatically after every email body. Supports the same variables.</p>
+              </div>
+              <textarea
+                value={signOff}
+                onChange={e => saveSignOff(e.target.value)}
+                rows={3}
+                className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y"
+              />
+              <button onClick={() => saveSignOff(DEFAULT_SIGN_OFF)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                Reset to default
+              </button>
+            </section>
+
+            {/* Email Template */}
+            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+              <div>
+                <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Email Body</h2>
+                <p className="text-sm text-zinc-500">
+                  Variables:{' '}
+                  {['{{managerName}}', '{{artistName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}', '{{managementCompany}}'].map(v => (
+                    <code key={v} className="text-xs bg-zinc-800 text-violet-400 px-1.5 py-0.5 rounded mr-1">{v}</code>
+                  ))}
+                </p>
+              </div>
+              <textarea
+                value={emailTemplate}
+                onChange={e => setEmailTemplate(e.target.value)}
+                rows={16}
+                className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white placeholder-zinc-500 font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y"
+              />
+              <button onClick={() => setEmailTemplate(DEFAULT_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                Reset to default
+              </button>
+            </section>
+
+          </div>
         )}
       </main>
     </div>
