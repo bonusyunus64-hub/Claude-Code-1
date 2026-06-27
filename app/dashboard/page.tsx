@@ -16,6 +16,17 @@ Please let me know if you need anything further.`;
 const DEFAULT_SIGN_OFF = `Best regards,
 {{senderName}}`;
 
+const DEFAULT_RADIO_TEMPLATE = `Hi,
+
+My name is {{senderName}}, and I'm submitting a track for consideration for airplay on {{stationName}}.
+
+I've attached the track "{{trackTitle}}" — you can listen here:
+{{driveLink}}
+
+I believe this would be a great fit for your station and listeners. Please let me know if you'd like any additional information.`;
+
+const LOCATION_OPTIONS = ['National', 'ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA', 'International'];
+
 interface Artist {
   name: string;
   genres: string[];
@@ -26,6 +37,14 @@ interface Artist {
   labels: string;
   instagramHandle: string;
   avatarUrl: string;
+}
+
+interface RadioStation {
+  name: string;
+  region: string;
+  genres: string[];
+  emails: string[];
+  phone?: string;
 }
 
 interface EmailAccount {
@@ -100,7 +119,22 @@ export default function Dashboard() {
   const [sendResult, setSendResult] = useState<{ sent: number; failed: number; total: number } | null>(null);
   const [sendError, setSendError] = useState('');
 
-  const [activeTab, setActiveTab] = useState<'compose' | 'template'>('compose');
+  const [activeTab, setActiveTab] = useState<'compose' | 'template' | 'radio'>('compose');
+
+  // Radio tab state
+  const [radioAllGenres, setRadioAllGenres] = useState<string[]>([]);
+  const [radioGenreSearch, setRadioGenreSearch] = useState('');
+  const [selectedRadioGenres, setSelectedRadioGenres] = useState<string[]>([]);
+  const [showRadioGenreDropdown, setShowRadioGenreDropdown] = useState(false);
+  const [selectedLocations, setSelectedLocations] = useState<string[]>([]);
+  const [radioStations, setRadioStations] = useState<RadioStation[]>([]);
+  const [radioPreviewDone, setRadioPreviewDone] = useState(false);
+  const [radioPreviewLoading, setRadioPreviewLoading] = useState(false);
+  const [radioSending, setRadioSending] = useState(false);
+  const [radioSendResult, setRadioSendResult] = useState<{ sent: number; failed: number; total: number } | null>(null);
+  const [radioSendError, setRadioSendError] = useState('');
+  const [radioTemplate, setRadioTemplate] = useState(DEFAULT_RADIO_TEMPLATE);
+  const [lastSavedRadioTemplate, setLastSavedRadioTemplate] = useState(DEFAULT_RADIO_TEMPLATE);
 
   const [signOffImage, setSignOffImage] = useState<string | null>(null);
   const [lastSavedTemplate, setLastSavedTemplate] = useState(DEFAULT_TEMPLATE);
@@ -111,6 +145,9 @@ export default function Dashboard() {
     fetch('/api/genres')
       .then(r => r.json())
       .then(d => setAllGenres(d.genres || []));
+    fetch('/api/radio-genres')
+      .then(r => r.json())
+      .then(d => setRadioAllGenres(d.genres || []));
     // Load persisted data
     try {
       const accounts = JSON.parse(localStorage.getItem('tp_email_accounts') || '[]') as EmailAccount[];
@@ -124,6 +161,8 @@ export default function Dashboard() {
       if (savedTemplate !== null) { setEmailTemplate(savedTemplate); setLastSavedTemplate(savedTemplate); }
       const savedImage = localStorage.getItem('tp_sign_off_image');
       if (savedImage) { setSignOffImage(savedImage); setLastSavedSignOffImage(savedImage); }
+      const savedRadioTemplate = localStorage.getItem('tp_radio_template');
+      if (savedRadioTemplate !== null) { setRadioTemplate(savedRadioTemplate); setLastSavedRadioTemplate(savedRadioTemplate); }
     } catch {}
   }, []);
 
@@ -193,7 +232,7 @@ export default function Dashboard() {
     localStorage.setItem('tp_selected_account', id);
   }
 
-  const isDirty = emailTemplate !== lastSavedTemplate || signOff !== lastSavedSignOff || signOffImage !== lastSavedSignOffImage;
+  const isDirty = emailTemplate !== lastSavedTemplate || signOff !== lastSavedSignOff || signOffImage !== lastSavedSignOffImage || radioTemplate !== lastSavedRadioTemplate;
 
   function saveAll() {
     localStorage.setItem('tp_email_template', emailTemplate);
@@ -203,15 +242,18 @@ export default function Dashboard() {
     } else {
       localStorage.removeItem('tp_sign_off_image');
     }
+    localStorage.setItem('tp_radio_template', radioTemplate);
     setLastSavedTemplate(emailTemplate);
     setLastSavedSignOff(signOff);
     setLastSavedSignOffImage(signOffImage);
+    setLastSavedRadioTemplate(radioTemplate);
   }
 
   function discardChanges() {
     setEmailTemplate(lastSavedTemplate);
     setSignOff(lastSavedSignOff);
     setSignOffImage(lastSavedSignOffImage);
+    setRadioTemplate(lastSavedRadioTemplate);
   }
 
   function handleSignOffImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -277,6 +319,80 @@ export default function Dashboard() {
     }
   }
 
+  const filteredRadioGenres = useMemo(() =>
+    radioAllGenres.filter(g =>
+      g.toLowerCase().includes(radioGenreSearch.toLowerCase()) &&
+      !selectedRadioGenres.includes(g)
+    ).slice(0, 50),
+    [radioAllGenres, radioGenreSearch, selectedRadioGenres]
+  );
+
+  const toggleLocation = useCallback((loc: string) => {
+    setSelectedLocations(prev =>
+      prev.includes(loc) ? prev.filter(l => l !== loc) : [...prev, loc]
+    );
+    setRadioPreviewDone(false);
+    setRadioSendResult(null);
+  }, []);
+
+  const toggleRadioGenre = useCallback((genre: string) => {
+    setSelectedRadioGenres(prev =>
+      prev.includes(genre) ? prev.filter(g => g !== genre) : [...prev, genre]
+    );
+    setRadioPreviewDone(false);
+    setRadioSendResult(null);
+  }, []);
+
+  async function handleRadioPreview() {
+    setRadioPreviewLoading(true);
+    setRadioPreviewDone(false);
+    try {
+      const res = await fetch('/api/radio-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ genres: selectedRadioGenres, locations: selectedLocations }),
+      });
+      const data = await res.json();
+      setRadioStations(data.stations || []);
+      setRadioPreviewDone(true);
+    } finally {
+      setRadioPreviewLoading(false);
+    }
+  }
+
+  async function handleRadioSend() {
+    if (!trackTitle || !driveLink) return;
+    setRadioSending(true);
+    setRadioSendError('');
+    setRadioSendResult(null);
+    try {
+      const res = await fetch('/api/radio-send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trackTitle, driveLink, genres: selectedRadioGenres, locations: selectedLocations,
+          emailTemplate: radioTemplate, senderName, signOff, signOffImage,
+          fromAccount: emailAccounts.find(a => a.id === selectedAccountId)
+            ? { ...emailAccounts.find(a => a.id === selectedAccountId)!, smtpPort: Number(emailAccounts.find(a => a.id === selectedAccountId)!.smtpPort) }
+            : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setRadioSendError(data.error || 'Failed to send.');
+      } else {
+        setRadioSendResult({ sent: data.sent, failed: data.failed, total: data.total });
+      }
+    } catch {
+      setRadioSendError('Network error. Please try again.');
+    } finally {
+      setRadioSending(false);
+    }
+  }
+
+  const radioTotalEmails = radioStations.reduce((acc, s) => acc + s.emails.length, 0);
+  const canSendRadio = trackTitle && driveLink && radioPreviewDone;
+
   const sortedArtists = useMemo(() => {
     const arr = [...previewArtists];
     switch (sortOrder) {
@@ -308,7 +424,7 @@ export default function Dashboard() {
 
         {/* Tabs */}
         <div className="flex gap-1 bg-zinc-900 rounded-lg p-1 w-fit">
-          {(['compose', 'template'] as const).map(tab => (
+          {(['compose', 'radio', 'template'] as const).map(tab => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -318,7 +434,7 @@ export default function Dashboard() {
                   : 'text-zinc-400 hover:text-zinc-200'
               }`}
             >
-              {tab === 'compose' ? 'Compose Pitch' : 'Email Template'}
+              {tab === 'compose' ? 'Artist Pitch' : tab === 'radio' ? 'Radio' : 'Email Template'}
             </button>
           ))}
         </div>
@@ -643,6 +759,238 @@ export default function Dashboard() {
                   : canSend
                   ? `Send to ${totalEmails} recipient${totalEmails !== 1 ? 's' : ''}`
                   : 'Preview recipients first'}
+              </button>
+              {(() => {
+                const acc = emailAccounts.find(a => a.id === selectedAccountId);
+                return acc ? (
+                  <span className="text-xs text-zinc-500">
+                    Sending from <span className="text-zinc-300">{acc.name}</span> ({acc.email || acc.smtpUser})
+                  </span>
+                ) : (
+                  <span className="text-xs text-amber-500">
+                    No email account selected — <button onClick={() => setActiveTab('template')} className="underline hover:text-amber-400">add one</button>
+                  </span>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'radio' && (
+          <div className="space-y-6">
+            {/* Track Info */}
+            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+              <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Track Details</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-zinc-300 mb-1.5">Your Name</label>
+                  <input
+                    type="text"
+                    value={senderName}
+                    onChange={e => setSenderName(e.target.value)}
+                    placeholder="Eren Senbay"
+                    className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-zinc-300 mb-1.5">Track Title</label>
+                  <input
+                    type="text"
+                    value={trackTitle}
+                    onChange={e => setTrackTitle(e.target.value)}
+                    placeholder="e.g. Give Me A Sign"
+                    className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition"
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-zinc-300 mb-1.5">Google Drive Link</label>
+                  <input
+                    type="url"
+                    value={driveLink}
+                    onChange={e => setDriveLink(e.target.value)}
+                    placeholder="https://drive.google.com/file/d/..."
+                    className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition"
+                  />
+                </div>
+              </div>
+            </section>
+
+            {/* Genre Selector */}
+            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+              <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Genre Filter</h2>
+              <p className="text-sm text-zinc-500">Filter stations by genre. Leave empty to include all stations.</p>
+
+              {selectedRadioGenres.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {selectedRadioGenres.map(g => (
+                    <button
+                      key={g}
+                      onClick={() => toggleRadioGenre(g)}
+                      className="inline-flex items-center gap-1.5 bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium px-3 py-1 rounded-full transition"
+                    >
+                      {g}
+                      <span className="text-violet-200">×</span>
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => { setSelectedRadioGenres([]); setRadioPreviewDone(false); setRadioSendResult(null); }}
+                    className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 transition"
+                  >
+                    Clear all
+                  </button>
+                </div>
+              )}
+
+              <div className="relative">
+                <input
+                  type="text"
+                  value={radioGenreSearch}
+                  onChange={e => setRadioGenreSearch(e.target.value)}
+                  onFocus={() => setShowRadioGenreDropdown(true)}
+                  onBlur={() => setTimeout(() => setShowRadioGenreDropdown(false), 150)}
+                  placeholder="Search genres (e.g. Pop, Alternative, Indie...)"
+                  className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition"
+                />
+                {showRadioGenreDropdown && filteredRadioGenres.length > 0 && (
+                  <div className="absolute z-10 mt-1 w-full bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl max-h-56 overflow-y-auto">
+                    {filteredRadioGenres.map(g => (
+                      <button
+                        key={g}
+                        onMouseDown={() => { toggleRadioGenre(g); setRadioGenreSearch(''); }}
+                        className="w-full text-left px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700 transition"
+                      >
+                        {g}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Location Filter */}
+            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+              <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Location Filter</h2>
+              <p className="text-sm text-zinc-500">Filter stations by region. Leave empty to include all locations.</p>
+              <div className="flex flex-wrap gap-2">
+                {LOCATION_OPTIONS.map(loc => (
+                  <button
+                    key={loc}
+                    onClick={() => toggleLocation(loc)}
+                    className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${
+                      selectedLocations.includes(loc)
+                        ? 'bg-violet-600 border-violet-500 text-white'
+                        : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
+                    }`}
+                  >
+                    {loc}
+                  </button>
+                ))}
+                {selectedLocations.length > 0 && (
+                  <button
+                    onClick={() => { setSelectedLocations([]); setRadioPreviewDone(false); setRadioSendResult(null); }}
+                    className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 transition"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </section>
+
+            {/* Radio Email Template */}
+            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+              <div>
+                <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Radio Email Template</h2>
+                <p className="text-sm text-zinc-500 mb-2">Click a variable to copy it:</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {['{{stationName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}'].map(v => (
+                    <CopyChip key={v} value={v} />
+                  ))}
+                </div>
+              </div>
+              <textarea
+                value={radioTemplate}
+                onChange={e => setRadioTemplate(e.target.value)}
+                rows={12}
+                className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white placeholder-zinc-500 font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y"
+              />
+              <button onClick={() => setRadioTemplate(DEFAULT_RADIO_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                Reset to default
+              </button>
+            </section>
+
+            {/* Preview */}
+            <div className="flex items-center gap-4">
+              <button
+                onClick={handleRadioPreview}
+                disabled={radioPreviewLoading}
+                className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-5 py-2.5 text-sm font-semibold text-white transition"
+              >
+                {radioPreviewLoading ? 'Loading...' : 'Preview Stations'}
+              </button>
+              {radioPreviewDone && (
+                <span className="text-sm text-zinc-400">
+                  {radioStations.length} stations · {radioTotalEmails} emails
+                </span>
+              )}
+            </div>
+
+            {radioPreviewDone && radioStations.length > 0 && (
+              <section className="bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden">
+                <div className="px-4 md:px-6 py-3 md:py-4 border-b border-zinc-800">
+                  <h3 className="text-sm font-semibold text-zinc-300">Stations Preview <span className="text-zinc-500 font-normal">· {radioStations.length} stations</span></h3>
+                </div>
+                <div className="divide-y divide-zinc-800 max-h-[32rem] overflow-y-auto">
+                  {radioStations.map(s => (
+                    <div key={s.name} className="px-4 md:px-6 py-3 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-4">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-white">{s.name}</p>
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
+                          <span className="text-xs text-zinc-500">{s.region}</span>
+                          {s.genres.slice(0, 3).map(g => (
+                            <span key={g} className="text-xs bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded">{g}</span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="sm:text-right sm:shrink-0 space-y-0.5">
+                        {s.emails.map(email => (
+                          <p key={email} className="text-xs text-violet-400 break-all sm:break-normal">{email}</p>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {radioPreviewDone && radioStations.length === 0 && (
+              <p className="text-sm text-zinc-500">No stations found for the selected filters.</p>
+            )}
+
+            {radioSendResult && (
+              <div className="rounded-lg bg-green-900/30 border border-green-700 px-5 py-4">
+                <p className="text-green-400 font-semibold">
+                  Sent {radioSendResult.sent} of {radioSendResult.total} emails successfully.
+                  {radioSendResult.failed > 0 && ` ${radioSendResult.failed} failed.`}
+                </p>
+              </div>
+            )}
+            {radioSendError && (
+              <div className="rounded-lg bg-red-900/30 border border-red-700 px-5 py-4">
+                <p className="text-red-400 text-sm">{radioSendError}</p>
+              </div>
+            )}
+
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+              <button
+                onClick={handleRadioSend}
+                disabled={!canSendRadio || radioSending}
+                className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-6 py-3 font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-zinc-950 text-sm"
+              >
+                {radioSending
+                  ? 'Sending...'
+                  : canSendRadio
+                  ? `Send to ${radioTotalEmails} station${radioTotalEmails !== 1 ? 's' : ''}`
+                  : 'Preview stations first'}
               </button>
               {(() => {
                 const acc = emailAccounts.find(a => a.id === selectedAccountId);
