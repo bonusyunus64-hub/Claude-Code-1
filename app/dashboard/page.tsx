@@ -73,6 +73,10 @@ export default function Dashboard() {
   const [minAudience, setMinAudience] = useState(0);
   const [maxAudience, setMaxAudience] = useState(0);
   const [gender, setGender] = useState('');
+  const [artistType, setArtistType] = useState('');
+  const [minInstagram, setMinInstagram] = useState(0);
+  const [maxInstagram, setMaxInstagram] = useState(0);
+  const [showMoreFilters, setShowMoreFilters] = useState(false);
 
   const [trackTitle, setTrackTitle] = useState('');
   const [driveLink, setDriveLink] = useState('');
@@ -147,6 +151,12 @@ export default function Dashboard() {
     { label: 'Any', value: '' },
     { label: 'Male', value: 'MALE' },
     { label: 'Female', value: 'FEMALE' },
+  ];
+
+  const ARTIST_TYPE_OPTIONS = [
+    { label: 'Any', value: '' },
+    { label: 'Solo', value: 'Person' },
+    { label: 'Group', value: 'Group' },
   ];
 
   const resetFilters = () => { setPreviewDone(false); setSendResult(null); };
@@ -226,7 +236,7 @@ export default function Dashboard() {
       const res = await fetch('/api/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ genres: selectedGenres, minAudience, maxAudience, gender }),
+        body: JSON.stringify({ genres: selectedGenres, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram }),
       });
       const data = await res.json();
       setPreviewArtists(data.artists || []);
@@ -247,7 +257,7 @@ export default function Dashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           trackTitle, driveLink, genres: selectedGenres, emailTemplate,
-          senderName, signOff, signOffImage, minAudience, maxAudience, gender,
+          senderName, signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram,
           fromAccount: emailAccounts.find(a => a.id === selectedAccountId)
             ? { ...emailAccounts.find(a => a.id === selectedAccountId)!, smtpPort: Number(emailAccounts.find(a => a.id === selectedAccountId)!.smtpPort) }
             : undefined,
@@ -405,61 +415,20 @@ export default function Dashboard() {
               </div>
             </section>
 
-            {/* Audience & Gender Filters */}
+            {/* Filters */}
             <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-5">
               <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Filters</h2>
 
-              {/* Follower range */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-zinc-400">Min Spotify followers</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {FOLLOWER_STEPS.map(opt => (
-                      <button
-                        key={`min-${opt.value}`}
-                        onClick={() => { setMinAudience(opt.value); resetFilters(); }}
-                        className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${
-                          minAudience === opt.value
-                            ? 'bg-violet-600 border-violet-500 text-white'
-                            : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-zinc-400">Max Spotify followers</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {FOLLOWER_STEPS.map(opt => (
-                      <button
-                        key={`max-${opt.value}`}
-                        onClick={() => { setMaxAudience(opt.value); resetFilters(); }}
-                        className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${
-                          maxAudience === opt.value
-                            ? 'bg-violet-600 border-violet-500 text-white'
-                            : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* Gender */}
+              {/* Min Spotify — always visible */}
               <div className="space-y-2">
-                <p className="text-xs font-medium text-zinc-400">Artist gender</p>
-                <div className="flex gap-1.5">
-                  {GENDER_OPTIONS.map(opt => (
+                <p className="text-xs font-medium text-zinc-400">Min Spotify followers</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {FOLLOWER_STEPS.map(opt => (
                     <button
-                      key={opt.value}
-                      onClick={() => { setGender(opt.value); resetFilters(); }}
-                      className={`px-3 py-1 rounded-full text-xs font-medium border transition ${
-                        gender === opt.value
+                      key={`min-${opt.value}`}
+                      onClick={() => { setMinAudience(opt.value); resetFilters(); }}
+                      className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${
+                        minAudience === opt.value
                           ? 'bg-violet-600 border-violet-500 text-white'
                           : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
                       }`}
@@ -469,6 +438,134 @@ export default function Dashboard() {
                   ))}
                 </div>
               </div>
+
+              {/* More filters toggle */}
+              <button
+                onClick={() => setShowMoreFilters(p => !p)}
+                className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-200 transition"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  className={`w-3.5 h-3.5 fill-none stroke-current stroke-2 transition-transform ${showMoreFilters ? 'rotate-180' : ''}`}
+                  strokeLinecap="round" strokeLinejoin="round"
+                >
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+                {showMoreFilters ? 'Fewer filters' : 'More filters'}
+                {(maxAudience > 0 || gender || artistType || minInstagram > 0 || maxInstagram > 0) && (
+                  <span className="ml-1 bg-violet-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none">
+                    {[maxAudience > 0, !!gender, !!artistType, minInstagram > 0, maxInstagram > 0].filter(Boolean).length}
+                  </span>
+                )}
+              </button>
+
+              {/* Expandable filters */}
+              {showMoreFilters && (
+                <div className="space-y-5 pt-1 border-t border-zinc-800">
+
+                  {/* Max Spotify */}
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium text-zinc-400">Max Spotify followers</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {FOLLOWER_STEPS.map(opt => (
+                        <button
+                          key={`max-${opt.value}`}
+                          onClick={() => { setMaxAudience(opt.value); resetFilters(); }}
+                          className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${
+                            maxAudience === opt.value
+                              ? 'bg-violet-600 border-violet-500 text-white'
+                              : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Instagram followers */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-zinc-400">Min Instagram followers</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {FOLLOWER_STEPS.map(opt => (
+                          <button
+                            key={`ig-min-${opt.value}`}
+                            onClick={() => { setMinInstagram(opt.value); resetFilters(); }}
+                            className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${
+                              minInstagram === opt.value
+                                ? 'bg-violet-600 border-violet-500 text-white'
+                                : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-zinc-400">Max Instagram followers</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {FOLLOWER_STEPS.map(opt => (
+                          <button
+                            key={`ig-max-${opt.value}`}
+                            onClick={() => { setMaxInstagram(opt.value); resetFilters(); }}
+                            className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${
+                              maxInstagram === opt.value
+                                ? 'bg-violet-600 border-violet-500 text-white'
+                                : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Gender */}
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium text-zinc-400">Artist gender</p>
+                    <div className="flex gap-1.5">
+                      {GENDER_OPTIONS.map(opt => (
+                        <button
+                          key={opt.value}
+                          onClick={() => { setGender(opt.value); resetFilters(); }}
+                          className={`px-3 py-1 rounded-full text-xs font-medium border transition ${
+                            gender === opt.value
+                              ? 'bg-violet-600 border-violet-500 text-white'
+                              : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Artist type */}
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium text-zinc-400">Artist type</p>
+                    <div className="flex gap-1.5">
+                      {ARTIST_TYPE_OPTIONS.map(opt => (
+                        <button
+                          key={opt.value}
+                          onClick={() => { setArtistType(opt.value); resetFilters(); }}
+                          className={`px-3 py-1 rounded-full text-xs font-medium border transition ${
+                            artistType === opt.value
+                              ? 'bg-violet-600 border-violet-500 text-white'
+                              : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                </div>
+              )}
             </section>
 
             {/* Preview */}

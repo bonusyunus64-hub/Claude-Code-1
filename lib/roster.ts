@@ -39,7 +39,10 @@ export function getArtistsByGenres(
   selectedGenres: string[],
   minFollowers = 0,
   maxFollowers = 0,
-  gender = ''
+  gender = '',
+  artistType = '',
+  minInstagram = 0,
+  maxInstagram = 0
 ): Artist[] {
   const { artists } = getRoster();
   if (!selectedGenres.length) return [];
@@ -48,10 +51,14 @@ export function getArtistsByGenres(
   return artists.filter(a => {
     if (!a.managerEmails.length) return false;
     if (!a.genres.some(g => lower.includes(g.toLowerCase()))) return false;
-    const followers = a.spotifyFollowers ?? 0;
-    if (minFollowers > 0 && followers < minFollowers) return false;
-    if (maxFollowers > 0 && followers > maxFollowers) return false;
+    const spotify = a.spotifyFollowers ?? 0;
+    if (minFollowers > 0 && spotify < minFollowers) return false;
+    if (maxFollowers > 0 && spotify > maxFollowers) return false;
     if (gender && a.gender !== gender) return false;
+    if (artistType && a.type !== artistType) return false;
+    const instagram = a.instagramFollowers ?? 0;
+    if (minInstagram > 0 && instagram < minInstagram) return false;
+    if (maxInstagram > 0 && instagram > maxInstagram) return false;
     return true;
   });
 }

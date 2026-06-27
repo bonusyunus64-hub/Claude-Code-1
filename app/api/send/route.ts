@@ -22,6 +22,9 @@ interface SendPayload {
   minAudience?: number;
   maxAudience?: number;
   gender?: string;
+  artistType?: string;
+  minInstagram?: number;
+  maxInstagram?: number;
   fromAccount?: FromAccount;
 }
 
@@ -72,7 +75,7 @@ function buildEmailsForArtist(
 export async function POST(req: NextRequest) {
   const {
     trackTitle, driveLink, genres, emailTemplate, senderName,
-    signOff, signOffImage, minAudience, maxAudience, gender, fromAccount,
+    signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, fromAccount,
   } = await req.json() as SendPayload;
 
   if (!trackTitle || !driveLink || !genres?.length || !emailTemplate) {
@@ -100,7 +103,7 @@ export async function POST(req: NextRequest) {
     auth: { user: smtpUser, pass: smtpPass },
   });
 
-  const artists = getArtistsByGenres(genres, minAudience ?? 0, maxAudience ?? 0, gender ?? '');
+  const artists = getArtistsByGenres(genres, minAudience ?? 0, maxAudience ?? 0, gender ?? '', artistType ?? '', minInstagram ?? 0, maxInstagram ?? 0);
   const allMessages = artists.flatMap(a =>
     buildEmailsForArtist(a, trackTitle, driveLink, emailTemplate, signOff ?? '', senderName)
   );
