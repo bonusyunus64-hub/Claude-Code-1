@@ -97,6 +97,11 @@ export default function Dashboard() {
 
   const [activeTab, setActiveTab] = useState<'compose' | 'template'>('compose');
 
+  const [signOffImage, setSignOffImage] = useState<string | null>(null);
+  const [lastSavedTemplate, setLastSavedTemplate] = useState(DEFAULT_TEMPLATE);
+  const [lastSavedSignOff, setLastSavedSignOff] = useState(DEFAULT_SIGN_OFF);
+  const [lastSavedSignOffImage, setLastSavedSignOffImage] = useState<string | null>(null);
+
   useEffect(() => {
     fetch('/api/genres')
       .then(r => r.json())
@@ -109,7 +114,11 @@ export default function Dashboard() {
       if (savedId && accounts.find(a => a.id === savedId)) setSelectedAccountId(savedId);
       else if (accounts.length > 0) setSelectedAccountId(accounts[0].id);
       const savedSignOff = localStorage.getItem('tp_sign_off');
-      if (savedSignOff !== null) setSignOff(savedSignOff);
+      if (savedSignOff !== null) { setSignOff(savedSignOff); setLastSavedSignOff(savedSignOff); }
+      const savedTemplate = localStorage.getItem('tp_email_template');
+      if (savedTemplate !== null) { setEmailTemplate(savedTemplate); setLastSavedTemplate(savedTemplate); }
+      const savedImage = localStorage.getItem('tp_sign_off_image');
+      if (savedImage) { setSignOffImage(savedImage); setLastSavedSignOffImage(savedImage); }
     } catch {}
   }, []);
 
@@ -173,9 +182,33 @@ export default function Dashboard() {
     localStorage.setItem('tp_selected_account', id);
   }
 
-  function saveSignOff(value: string) {
-    setSignOff(value);
-    localStorage.setItem('tp_sign_off', value);
+  const isDirty = emailTemplate !== lastSavedTemplate || signOff !== lastSavedSignOff || signOffImage !== lastSavedSignOffImage;
+
+  function saveAll() {
+    localStorage.setItem('tp_email_template', emailTemplate);
+    localStorage.setItem('tp_sign_off', signOff);
+    if (signOffImage) {
+      localStorage.setItem('tp_sign_off_image', signOffImage);
+    } else {
+      localStorage.removeItem('tp_sign_off_image');
+    }
+    setLastSavedTemplate(emailTemplate);
+    setLastSavedSignOff(signOff);
+    setLastSavedSignOffImage(signOffImage);
+  }
+
+  function discardChanges() {
+    setEmailTemplate(lastSavedTemplate);
+    setSignOff(lastSavedSignOff);
+    setSignOffImage(lastSavedSignOffImage);
+  }
+
+  function handleSignOffImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setSignOffImage(reader.result as string);
+    reader.readAsDataURL(file);
   }
 
   const toggleGenre = useCallback((genre: string) => {
@@ -214,7 +247,7 @@ export default function Dashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           trackTitle, driveLink, genres: selectedGenres, emailTemplate,
-          senderName, signOff, minAudience, maxAudience, gender,
+          senderName, signOff, signOffImage, minAudience, maxAudience, gender,
           fromAccount: emailAccounts.find(a => a.id === selectedAccountId)
             ? { ...emailAccounts.find(a => a.id === selectedAccountId)!, smtpPort: Number(emailAccounts.find(a => a.id === selectedAccountId)!.smtpPort) }
             : undefined,
@@ -697,11 +730,41 @@ export default function Dashboard() {
               </div>
               <textarea
                 value={signOff}
-                onChange={e => saveSignOff(e.target.value)}
+                onChange={e => setSignOff(e.target.value)}
                 rows={3}
                 className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y"
               />
-              <button onClick={() => saveSignOff(DEFAULT_SIGN_OFF)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+              {signOffImage ? (
+                <div className="flex items-start gap-3 pt-1">
+                  <img
+                    src={signOffImage}
+                    alt="Signature"
+                    className="max-h-20 max-w-xs rounded border border-zinc-700 object-contain bg-zinc-800"
+                  />
+                  <button
+                    onClick={() => setSignOffImage(null)}
+                    className="text-xs text-red-400 hover:text-red-300 transition mt-1"
+                  >
+                    Remove image
+                  </button>
+                </div>
+              ) : (
+                <label className="inline-flex items-center gap-2 cursor-pointer px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 hover:border-zinc-500 text-xs text-zinc-300 transition w-fit">
+                  <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                  </svg>
+                  Upload signature image
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleSignOffImageUpload}
+                  />
+                </label>
+              )}
+              <button onClick={() => setSignOff(DEFAULT_SIGN_OFF)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
                 Reset to default
               </button>
             </section>
@@ -731,6 +794,24 @@ export default function Dashboard() {
           </div>
         )}
       </main>
+
+      {isDirty && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl shadow-black/50 px-4 py-3">
+          <span className="text-xs text-zinc-400 mr-1">Unsaved changes</span>
+          <button
+            onClick={discardChanges}
+            className="text-xs text-zinc-400 hover:text-zinc-200 px-2 py-1.5 rounded transition hover:bg-zinc-800"
+          >
+            Discard
+          </button>
+          <button
+            onClick={saveAll}
+            className="text-xs bg-violet-600 hover:bg-violet-500 text-white font-semibold px-3 py-1.5 rounded-lg transition"
+          >
+            Save
+          </button>
+        </div>
+      )}
     </div>
   );
 }

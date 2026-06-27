@@ -18,6 +18,7 @@ interface SendPayload {
   emailTemplate: string;
   senderName: string;
   signOff?: string;
+  signOffImage?: string;
   minAudience?: number;
   maxAudience?: number;
   gender?: string;
@@ -26,6 +27,17 @@ interface SendPayload {
 
 function renderTemplate(template: string, vars: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function textToHtml(text: string): string {
+  return text
+    .split('\n\n')
+    .map(p => `<p style="margin:0 0 12px 0">${p.split('\n').map(escapeHtml).join('<br>')}</p>`)
+    .join('');
 }
 
 function buildEmailsForArtist(
@@ -60,7 +72,7 @@ function buildEmailsForArtist(
 export async function POST(req: NextRequest) {
   const {
     trackTitle, driveLink, genres, emailTemplate, senderName,
-    signOff, minAudience, maxAudience, gender, fromAccount,
+    signOff, signOffImage, minAudience, maxAudience, gender, fromAccount,
   } = await req.json() as SendPayload;
 
   if (!trackTitle || !driveLink || !genres?.length || !emailTemplate) {
@@ -97,12 +109,18 @@ export async function POST(req: NextRequest) {
 
   for (const msg of allMessages) {
     try {
-      await transporter.sendMail({
+      const mailOptions: Parameters<typeof transporter.sendMail>[0] = {
         from: `"${fromName}" <${fromEmail}>`,
         to: msg.to,
         subject: msg.subject,
         text: msg.body,
-      });
+      };
+      if (signOffImage) {
+        const imageData = signOffImage.replace(/^data:image\/\w+;base64,/, '');
+        mailOptions.html = `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#333">${textToHtml(msg.body)}<img src="cid:signature@trackpitch" alt="Signature" style="max-width:600px;display:block;margin-top:8px"></div>`;
+        mailOptions.attachments = [{ filename: 'signature.png', content: Buffer.from(imageData, 'base64'), cid: 'signature@trackpitch' }];
+      }
+      await transporter.sendMail(mailOptions);
       results.push({ to: msg.to, success: true });
     } catch (err) {
       results.push({ to: msg.to, success: false, error: String(err) });
