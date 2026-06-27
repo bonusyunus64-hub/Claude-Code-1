@@ -38,6 +38,37 @@ interface EmailAccount {
   smtpPass: string;
 }
 
+function fmtFollowers(n: number): string {
+  if (!n) return '';
+  return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1_000)}K`;
+}
+
+function FilterRow({
+  label, badge, isOpen, onToggle, children,
+}: {
+  label: string; badge?: string; isOpen: boolean; onToggle: () => void; children: React.ReactNode;
+}) {
+  return (
+    <div className="border-t border-zinc-800 first:border-t-0">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between py-3 text-left group"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-xs font-medium text-zinc-400 group-hover:text-zinc-200 transition">{label}</span>
+          {badge && !isOpen && (
+            <span className="text-xs text-violet-400 font-medium">{badge}</span>
+          )}
+        </div>
+        <svg viewBox="0 0 24 24" className={`w-3.5 h-3.5 shrink-0 fill-none stroke-zinc-500 stroke-2 transition-transform ${isOpen ? 'rotate-180' : ''}`} strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+      {isOpen && <div className="pb-4 flex flex-wrap gap-1.5">{children}</div>}
+    </div>
+  );
+}
+
 function CopyChip({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
   function copy() {
@@ -76,7 +107,10 @@ export default function Dashboard() {
   const [artistType, setArtistType] = useState('');
   const [minInstagram, setMinInstagram] = useState(0);
   const [maxInstagram, setMaxInstagram] = useState(0);
-  const [showMoreFilters, setShowMoreFilters] = useState(false);
+  const [expandedFilters, setExpandedFilters] = useState<Set<string>>(new Set(['min-spotify']));
+  function toggleFilter(key: string) {
+    setExpandedFilters(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
+  }
 
   const [trackTitle, setTrackTitle] = useState('');
   const [driveLink, setDriveLink] = useState('');
@@ -416,156 +450,93 @@ export default function Dashboard() {
             </section>
 
             {/* Filters */}
-            <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-5">
-              <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Filters</h2>
-
-              {/* Min Spotify — always visible */}
-              <div className="space-y-2">
-                <p className="text-xs font-medium text-zinc-400">Min Spotify followers</p>
-                <div className="flex flex-wrap gap-1.5">
+            <section className="bg-zinc-900 rounded-xl border border-zinc-800 px-4 md:px-6 pt-4 md:pt-6 pb-1">
+              <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Filters</h2>
+              <div>
+                <FilterRow
+                  label="Min Spotify followers"
+                  badge={fmtFollowers(minAudience)}
+                  isOpen={expandedFilters.has('min-spotify')}
+                  onToggle={() => toggleFilter('min-spotify')}
+                >
                   {FOLLOWER_STEPS.map(opt => (
-                    <button
-                      key={`min-${opt.value}`}
-                      onClick={() => { setMinAudience(opt.value); resetFilters(); }}
-                      className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${
-                        minAudience === opt.value
-                          ? 'bg-violet-600 border-violet-500 text-white'
-                          : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
-                      }`}
-                    >
+                    <button key={`min-sp-${opt.value}`} onClick={() => { setMinAudience(opt.value); resetFilters(); }}
+                      className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${minAudience === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
                       {opt.label}
                     </button>
                   ))}
-                </div>
-              </div>
+                </FilterRow>
 
-              {/* More filters toggle */}
-              <button
-                onClick={() => setShowMoreFilters(p => !p)}
-                className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-200 transition"
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  className={`w-3.5 h-3.5 fill-none stroke-current stroke-2 transition-transform ${showMoreFilters ? 'rotate-180' : ''}`}
-                  strokeLinecap="round" strokeLinejoin="round"
+                <FilterRow
+                  label="Max Spotify followers"
+                  badge={fmtFollowers(maxAudience)}
+                  isOpen={expandedFilters.has('max-spotify')}
+                  onToggle={() => toggleFilter('max-spotify')}
                 >
-                  <polyline points="6 9 12 15 18 9"/>
-                </svg>
-                {showMoreFilters ? 'Fewer filters' : 'More filters'}
-                {(maxAudience > 0 || gender || artistType || minInstagram > 0 || maxInstagram > 0) && (
-                  <span className="ml-1 bg-violet-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none">
-                    {[maxAudience > 0, !!gender, !!artistType, minInstagram > 0, maxInstagram > 0].filter(Boolean).length}
-                  </span>
-                )}
-              </button>
+                  {FOLLOWER_STEPS.map(opt => (
+                    <button key={`max-sp-${opt.value}`} onClick={() => { setMaxAudience(opt.value); resetFilters(); }}
+                      className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${maxAudience === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </FilterRow>
 
-              {/* Expandable filters */}
-              {showMoreFilters && (
-                <div className="space-y-5 pt-1 border-t border-zinc-800">
+                <FilterRow
+                  label="Min Instagram followers"
+                  badge={fmtFollowers(minInstagram)}
+                  isOpen={expandedFilters.has('min-ig')}
+                  onToggle={() => toggleFilter('min-ig')}
+                >
+                  {FOLLOWER_STEPS.map(opt => (
+                    <button key={`min-ig-${opt.value}`} onClick={() => { setMinInstagram(opt.value); resetFilters(); }}
+                      className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${minInstagram === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </FilterRow>
 
-                  {/* Max Spotify */}
-                  <div className="space-y-2">
-                    <p className="text-xs font-medium text-zinc-400">Max Spotify followers</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {FOLLOWER_STEPS.map(opt => (
-                        <button
-                          key={`max-${opt.value}`}
-                          onClick={() => { setMaxAudience(opt.value); resetFilters(); }}
-                          className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${
-                            maxAudience === opt.value
-                              ? 'bg-violet-600 border-violet-500 text-white'
-                              : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
-                          }`}
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                <FilterRow
+                  label="Max Instagram followers"
+                  badge={fmtFollowers(maxInstagram)}
+                  isOpen={expandedFilters.has('max-ig')}
+                  onToggle={() => toggleFilter('max-ig')}
+                >
+                  {FOLLOWER_STEPS.map(opt => (
+                    <button key={`max-ig-${opt.value}`} onClick={() => { setMaxInstagram(opt.value); resetFilters(); }}
+                      className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${maxInstagram === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </FilterRow>
 
-                  {/* Instagram followers */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium text-zinc-400">Min Instagram followers</p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {FOLLOWER_STEPS.map(opt => (
-                          <button
-                            key={`ig-min-${opt.value}`}
-                            onClick={() => { setMinInstagram(opt.value); resetFilters(); }}
-                            className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${
-                              minInstagram === opt.value
-                                ? 'bg-violet-600 border-violet-500 text-white'
-                                : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
-                            }`}
-                          >
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                <FilterRow
+                  label="Artist gender"
+                  badge={GENDER_OPTIONS.find(o => o.value === gender && gender)?.label}
+                  isOpen={expandedFilters.has('gender')}
+                  onToggle={() => toggleFilter('gender')}
+                >
+                  {GENDER_OPTIONS.map(opt => (
+                    <button key={`gender-${opt.value}`} onClick={() => { setGender(opt.value); resetFilters(); }}
+                      className={`px-3 py-1 rounded-full text-xs font-medium border transition ${gender === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </FilterRow>
 
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium text-zinc-400">Max Instagram followers</p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {FOLLOWER_STEPS.map(opt => (
-                          <button
-                            key={`ig-max-${opt.value}`}
-                            onClick={() => { setMaxInstagram(opt.value); resetFilters(); }}
-                            className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${
-                              maxInstagram === opt.value
-                                ? 'bg-violet-600 border-violet-500 text-white'
-                                : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
-                            }`}
-                          >
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Gender */}
-                  <div className="space-y-2">
-                    <p className="text-xs font-medium text-zinc-400">Artist gender</p>
-                    <div className="flex gap-1.5">
-                      {GENDER_OPTIONS.map(opt => (
-                        <button
-                          key={opt.value}
-                          onClick={() => { setGender(opt.value); resetFilters(); }}
-                          className={`px-3 py-1 rounded-full text-xs font-medium border transition ${
-                            gender === opt.value
-                              ? 'bg-violet-600 border-violet-500 text-white'
-                              : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
-                          }`}
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Artist type */}
-                  <div className="space-y-2">
-                    <p className="text-xs font-medium text-zinc-400">Artist type</p>
-                    <div className="flex gap-1.5">
-                      {ARTIST_TYPE_OPTIONS.map(opt => (
-                        <button
-                          key={opt.value}
-                          onClick={() => { setArtistType(opt.value); resetFilters(); }}
-                          className={`px-3 py-1 rounded-full text-xs font-medium border transition ${
-                            artistType === opt.value
-                              ? 'bg-violet-600 border-violet-500 text-white'
-                              : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
-                          }`}
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                </div>
-              )}
+                <FilterRow
+                  label="Artist type"
+                  badge={ARTIST_TYPE_OPTIONS.find(o => o.value === artistType && artistType)?.label}
+                  isOpen={expandedFilters.has('type')}
+                  onToggle={() => toggleFilter('type')}
+                >
+                  {ARTIST_TYPE_OPTIONS.map(opt => (
+                    <button key={`type-${opt.value}`} onClick={() => { setArtistType(opt.value); resetFilters(); }}
+                      className={`px-3 py-1 rounded-full text-xs font-medium border transition ${artistType === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </FilterRow>
+              </div>
             </section>
 
             {/* Preview */}
