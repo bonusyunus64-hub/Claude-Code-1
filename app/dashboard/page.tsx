@@ -38,6 +38,28 @@ interface EmailAccount {
   smtpPass: string;
 }
 
+function CopyChip({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  function copy() {
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
+  return (
+    <button
+      onClick={copy}
+      className={`text-xs px-2 py-1 rounded font-mono transition select-none ${
+        copied
+          ? 'bg-green-700/40 text-green-400 border border-green-600'
+          : 'bg-zinc-800 text-violet-400 border border-zinc-700 hover:border-violet-500 hover:bg-zinc-700'
+      }`}
+    >
+      {copied ? '✓ Copied' : value}
+    </button>
+  );
+}
+
 const BLANK_ACCOUNT: Omit<EmailAccount, 'id'> = {
   name: '', email: '', smtpHost: 'smtp.zoho.com', smtpPort: '465', smtpUser: '', smtpPass: '',
 };
@@ -688,12 +710,12 @@ export default function Dashboard() {
             <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
               <div>
                 <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Email Body</h2>
-                <p className="text-sm text-zinc-500">
-                  Variables:{' '}
+                <p className="text-sm text-zinc-500 mb-2">Click a variable to copy it:</p>
+                <div className="flex flex-wrap gap-1.5">
                   {['{{managerName}}', '{{artistName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}', '{{managementCompany}}'].map(v => (
-                    <code key={v} className="text-xs bg-zinc-800 text-violet-400 px-1.5 py-0.5 rounded mr-1">{v}</code>
+                    <CopyChip key={v} value={v} />
                   ))}
-                </p>
+                </div>
               </div>
               <textarea
                 value={emailTemplate}
