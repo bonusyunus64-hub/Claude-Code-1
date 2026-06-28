@@ -443,9 +443,25 @@ export default function Dashboard() {
         <a href="/api/logout" className="text-sm text-zinc-400 hover:text-white transition">Log out</a>
       </header>
 
+      {/* Mobile nav — shown below header on small screens */}
+      <div className="md:hidden border-b border-zinc-800 bg-zinc-950 px-2 py-2 flex gap-1">
+        {NAV_ITEMS.map(item => (
+          <button
+            key={item.id}
+            onClick={() => setActiveSection(item.id)}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg text-xs font-medium transition ${
+              activeSection === item.id ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            {item.icon}
+            <span>{item.label}</span>
+          </button>
+        ))}
+      </div>
+
       <div className="flex flex-1 min-h-0">
-        {/* Left sidebar */}
-        <nav className="w-52 shrink-0 border-r border-zinc-800 p-3 flex flex-col gap-1">
+        {/* Desktop sidebar — hidden on mobile */}
+        <nav className="hidden md:flex flex-col w-52 shrink-0 border-r border-zinc-800 p-3 gap-1">
           {NAV_ITEMS.map(item => (
             <button
               key={item.id}
@@ -464,7 +480,7 @@ export default function Dashboard() {
 
         {/* Main content */}
         <main className="flex-1 overflow-y-auto">
-          <div className="max-w-4xl mx-auto px-4 py-6 md:px-8 md:py-10 space-y-6">
+          <div className="max-w-4xl mx-auto px-4 py-5 md:px-8 md:py-10 space-y-5 md:space-y-6">
 
             {/* ── Song Demos ── */}
             {activeSection === 'demos' && (
@@ -473,7 +489,7 @@ export default function Dashboard() {
                 <div className="flex gap-1 bg-zinc-900 rounded-lg p-1 w-fit border border-zinc-800">
                   {(['compose', 'template'] as const).map(t => (
                     <button key={t} onClick={() => setDemosTab(t)}
-                      className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${demosTab === t ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}>
+                      className={`px-3 py-1.5 rounded-md text-xs md:text-sm font-medium transition ${demosTab === t ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}>
                       {t === 'compose' ? 'Compose Pitch' : 'Email Template'}
                     </button>
                   ))}
@@ -763,7 +779,7 @@ export default function Dashboard() {
                 <div className="flex gap-1 bg-zinc-900 rounded-lg p-1 w-fit border border-zinc-800">
                   {(['compose', 'template'] as const).map(t => (
                     <button key={t} onClick={() => setPromotionTab(t)}
-                      className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${promotionTab === t ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}>
+                      className={`px-3 py-1.5 rounded-md text-xs md:text-sm font-medium transition ${promotionTab === t ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}>
                       {t === 'compose' ? 'Compose Pitch' : 'Email Template'}
                     </button>
                   ))}
@@ -1068,7 +1084,7 @@ export default function Dashboard() {
                     <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Send Test Email</h2>
                     <p className="text-xs text-zinc-500">Send a test to confirm your email account is connected and working.</p>
                   </div>
-                  <div className="flex gap-3">
+                  <div className="flex flex-col sm:flex-row gap-3">
                     <input
                       type="email"
                       value={testEmailTo}
@@ -1079,7 +1095,7 @@ export default function Dashboard() {
                     <button
                       onClick={handleTestEmail}
                       disabled={!testEmailTo || testEmailSending || !selectedAccountId}
-                      className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2.5 text-sm font-semibold text-white transition shrink-0"
+                      className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2.5 text-sm font-semibold text-white transition sm:shrink-0"
                     >
                       {testEmailSending ? 'Sending...' : 'Send'}
                     </button>
@@ -1103,8 +1119,8 @@ export default function Dashboard() {
 
       {/* Floating save bar */}
       {isDirty && (
-        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl shadow-black/50 px-4 py-3">
-          <span className="text-xs text-zinc-400 mr-1">Unsaved changes</span>
+        <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-6 md:bottom-6 md:w-auto z-50 flex items-center gap-2 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl shadow-black/50 px-4 py-3">
+          <span className="text-xs text-zinc-400 mr-1 flex-1 md:flex-none">Unsaved changes</span>
           <button onClick={discardChanges} className="text-xs text-zinc-400 hover:text-zinc-200 px-2 py-1.5 rounded transition hover:bg-zinc-800">
             Discard
           </button>
