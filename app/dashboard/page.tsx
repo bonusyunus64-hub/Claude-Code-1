@@ -85,6 +85,8 @@ const BLANK_ACCOUNT: Omit<EmailAccount, 'id'> = {
 
 export default function Dashboard() {
   const [activeSection, setActiveSection] = useState<'demos' | 'promotion' | 'account'>('demos');
+  const [demosTab, setDemosTab] = useState<'compose' | 'template'>('compose');
+  const [promotionTab, setPromotionTab] = useState<'compose' | 'template'>('compose');
 
   // Shared track details
   const [trackTitle, setTrackTitle] = useState('');
@@ -440,6 +442,36 @@ export default function Dashboard() {
             {/* ── Song Demos ── */}
             {activeSection === 'demos' && (
               <>
+                {/* Sub-tabs */}
+                <div className="flex gap-1 bg-zinc-900 rounded-lg p-1 w-fit border border-zinc-800">
+                  {(['compose', 'template'] as const).map(t => (
+                    <button key={t} onClick={() => setDemosTab(t)}
+                      className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${demosTab === t ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}>
+                      {t === 'compose' ? 'Compose Pitch' : 'Email Template'}
+                    </button>
+                  ))}
+                </div>
+
+                {demosTab === 'template' && (
+                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                    <div>
+                      <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Email Template</h2>
+                      <p className="text-sm text-zinc-500 mb-2">Click a variable to copy it:</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {['{{managerName}}', '{{artistName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}', '{{managementCompany}}'].map(v => (
+                          <CopyChip key={v} value={v} />
+                        ))}
+                      </div>
+                    </div>
+                    <textarea value={demosTemplate} onChange={e => setDemosTemplate(e.target.value)} rows={16}
+                      className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
+                    <button onClick={() => setDemosTemplate(DEFAULT_DEMOS_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                      Reset to default
+                    </button>
+                  </section>
+                )}
+
+                {demosTab === 'compose' && (<>
                 {/* Track Info */}
                 <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
                   <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Track Details</h2>
@@ -599,24 +631,6 @@ export default function Dashboard() {
                   </div>
                 </section>
 
-                {/* Email Template */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <div>
-                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Email Template</h2>
-                    <p className="text-sm text-zinc-500 mb-2">Click a variable to copy it:</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {['{{managerName}}', '{{artistName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}', '{{managementCompany}}'].map(v => (
-                        <CopyChip key={v} value={v} />
-                      ))}
-                    </div>
-                  </div>
-                  <textarea value={demosTemplate} onChange={e => setDemosTemplate(e.target.value)} rows={14}
-                    className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
-                  <button onClick={() => setDemosTemplate(DEFAULT_DEMOS_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
-                    Reset to default
-                  </button>
-                </section>
-
                 {/* Preview */}
                 <div className="flex items-center gap-4">
                   <button onClick={handlePreview} disabled={!selectedGenres.length || previewLoading}
@@ -711,12 +725,43 @@ export default function Dashboard() {
                     <span className="text-xs text-amber-500">No email account selected — <button onClick={() => setActiveSection('account')} className="underline hover:text-amber-400">add one</button></span>
                   )}
                 </div>
+                </>)}
               </>
             )}
 
             {/* ── Track Promotion (Radio) ── */}
             {activeSection === 'promotion' && (
               <>
+                {/* Sub-tabs */}
+                <div className="flex gap-1 bg-zinc-900 rounded-lg p-1 w-fit border border-zinc-800">
+                  {(['compose', 'template'] as const).map(t => (
+                    <button key={t} onClick={() => setPromotionTab(t)}
+                      className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${promotionTab === t ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}>
+                      {t === 'compose' ? 'Compose Pitch' : 'Email Template'}
+                    </button>
+                  ))}
+                </div>
+
+                {promotionTab === 'template' && (
+                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                    <div>
+                      <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Email Template</h2>
+                      <p className="text-sm text-zinc-500 mb-2">Click a variable to copy it:</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {['{{stationName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}'].map(v => (
+                          <CopyChip key={v} value={v} />
+                        ))}
+                      </div>
+                    </div>
+                    <textarea value={radioTemplate} onChange={e => setRadioTemplate(e.target.value)} rows={16}
+                      className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
+                    <button onClick={() => setRadioTemplate(DEFAULT_RADIO_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                      Reset to default
+                    </button>
+                  </section>
+                )}
+
+                {promotionTab === 'compose' && (<>
                 {/* Track Info */}
                 <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
                   <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Track Details</h2>
@@ -797,24 +842,6 @@ export default function Dashboard() {
                   </div>
                 </section>
 
-                {/* Radio Email Template */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <div>
-                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Email Template</h2>
-                    <p className="text-sm text-zinc-500 mb-2">Click a variable to copy it:</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {['{{stationName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}'].map(v => (
-                        <CopyChip key={v} value={v} />
-                      ))}
-                    </div>
-                  </div>
-                  <textarea value={radioTemplate} onChange={e => setRadioTemplate(e.target.value)} rows={12}
-                    className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
-                  <button onClick={() => setRadioTemplate(DEFAULT_RADIO_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
-                    Reset to default
-                  </button>
-                </section>
-
                 {/* Preview */}
                 <div className="flex items-center gap-4">
                   <button onClick={handleRadioPreview} disabled={radioPreviewLoading}
@@ -883,6 +910,7 @@ export default function Dashboard() {
                     <span className="text-xs text-amber-500">No email account selected — <button onClick={() => setActiveSection('account')} className="underline hover:text-amber-400">add one</button></span>
                   )}
                 </div>
+                </>)}
               </>
             )}
 
