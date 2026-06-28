@@ -135,6 +135,10 @@ export default function Dashboard() {
   const [newAccount, setNewAccount] = useState({ ...BLANK_ACCOUNT });
   const [signOff, setSignOff] = useState(DEFAULT_SIGN_OFF);
   const [signOffImage, setSignOffImage] = useState<string | null>(null);
+  const [testEmailTo, setTestEmailTo] = useState('');
+  const [testEmailSending, setTestEmailSending] = useState(false);
+  const [testEmailResult, setTestEmailResult] = useState<'success' | 'error' | null>(null);
+  const [testEmailError, setTestEmailError] = useState('');
 
   // Save tracking
   const [lastSavedDemosTemplate, setLastSavedDemosTemplate] = useState(DEFAULT_DEMOS_TEMPLATE);
@@ -228,6 +232,29 @@ export default function Dashboard() {
   function selectAccount(id: string) {
     setSelectedAccountId(id);
     localStorage.setItem('tp_selected_account', id);
+  }
+
+  async function handleTestEmail() {
+    if (!testEmailTo) return;
+    setTestEmailSending(true);
+    setTestEmailResult(null);
+    setTestEmailError('');
+    try {
+      const res = await fetch('/api/test-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: testEmailTo,
+          fromAccount: emailAccounts.find(a => a.id === selectedAccountId)
+            ? { ...emailAccounts.find(a => a.id === selectedAccountId)!, smtpPort: Number(emailAccounts.find(a => a.id === selectedAccountId)!.smtpPort) }
+            : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setTestEmailResult('error'); setTestEmailError(data.error || 'Failed to send.'); }
+      else { setTestEmailResult('success'); }
+    } catch { setTestEmailResult('error'); setTestEmailError('Network error. Please try again.'); }
+    finally { setTestEmailSending(false); }
   }
 
   // Song Demos helpers
@@ -1033,6 +1060,39 @@ export default function Dashboard() {
                   <button onClick={() => setSignOff(DEFAULT_SIGN_OFF)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
                     Reset to default
                   </button>
+                </section>
+
+                {/* Test Email */}
+                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                  <div>
+                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Send Test Email</h2>
+                    <p className="text-xs text-zinc-500">Send a test to confirm your email account is connected and working.</p>
+                  </div>
+                  <div className="flex gap-3">
+                    <input
+                      type="email"
+                      value={testEmailTo}
+                      onChange={e => { setTestEmailTo(e.target.value); setTestEmailResult(null); }}
+                      placeholder="recipient@example.com"
+                      className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition text-sm"
+                    />
+                    <button
+                      onClick={handleTestEmail}
+                      disabled={!testEmailTo || testEmailSending || !selectedAccountId}
+                      className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2.5 text-sm font-semibold text-white transition shrink-0"
+                    >
+                      {testEmailSending ? 'Sending...' : 'Send'}
+                    </button>
+                  </div>
+                  {testEmailResult === 'success' && (
+                    <p className="text-sm text-green-400">Test email sent successfully. Check your inbox.</p>
+                  )}
+                  {testEmailResult === 'error' && (
+                    <p className="text-sm text-red-400">{testEmailError}</p>
+                  )}
+                  {!selectedAccountId && (
+                    <p className="text-xs text-amber-500">Add and select an email account above first.</p>
+                  )}
                 </section>
               </div>
             )}
