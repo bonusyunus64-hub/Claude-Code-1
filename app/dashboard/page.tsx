@@ -87,6 +87,8 @@ export default function Dashboard() {
   const [activeSection, setActiveSection] = useState<'demos' | 'promotion' | 'account'>('demos');
   const [demosTab, setDemosTab] = useState<'compose' | 'template'>('compose');
   const [promotionTab, setPromotionTab] = useState<'compose' | 'template'>('compose');
+  const [demosMatchMode, setDemosMatchMode] = useState<'any' | 'all'>('any');
+  const [radioMatchMode, setRadioMatchMode] = useState<'any' | 'all'>('any');
 
   // Shared track details
   const [trackTitle, setTrackTitle] = useState('');
@@ -301,7 +303,7 @@ export default function Dashboard() {
       const res = await fetch('/api/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ genres: selectedGenres, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram }),
+        body: JSON.stringify({ genres: selectedGenres, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode: demosMatchMode }),
       });
       const data = await res.json();
       setPreviewArtists(data.artists || []);
@@ -318,7 +320,7 @@ export default function Dashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           trackTitle, driveLink, genres: selectedGenres, emailTemplate: demosTemplate,
-          senderName, signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram,
+          senderName, signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode: demosMatchMode,
           fromAccount: emailAccounts.find(a => a.id === selectedAccountId)
             ? { ...emailAccounts.find(a => a.id === selectedAccountId)!, smtpPort: Number(emailAccounts.find(a => a.id === selectedAccountId)!.smtpPort) }
             : undefined,
@@ -367,7 +369,7 @@ export default function Dashboard() {
       const res = await fetch('/api/radio-preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ genres: selectedRadioGenres, locations: selectedLocations }),
+        body: JSON.stringify({ genres: selectedRadioGenres, locations: selectedLocations, matchMode: radioMatchMode }),
       });
       const data = await res.json();
       setRadioStations(data.stations || []);
@@ -384,7 +386,7 @@ export default function Dashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           trackTitle, driveLink, genres: selectedRadioGenres, locations: selectedLocations,
-          emailTemplate: radioTemplate, senderName, signOff, signOffImage,
+          emailTemplate: radioTemplate, senderName, signOff, signOffImage, matchMode: radioMatchMode,
           fromAccount: emailAccounts.find(a => a.id === selectedAccountId)
             ? { ...emailAccounts.find(a => a.id === selectedAccountId)!, smtpPort: Number(emailAccounts.find(a => a.id === selectedAccountId)!.smtpPort) }
             : undefined,
@@ -542,8 +544,23 @@ export default function Dashboard() {
 
                 {/* Genre Selector */}
                 <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Select Genres</h2>
-                  <p className="text-sm text-zinc-500">The track will be sent to managers of all artists tagged with the selected genres.</p>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Select Genres</h2>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-zinc-500">Match:</span>
+                      {(['any', 'all'] as const).map(mode => (
+                        <button key={mode} onClick={() => { setDemosMatchMode(mode); setPreviewDone(false); setSendResult(null); }}
+                          className={`px-3 py-1 rounded-full text-xs font-medium border transition ${demosMatchMode === mode ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                          {mode === 'any' ? 'Any genre' : 'All genres'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <p className="text-sm text-zinc-500">
+                    {demosMatchMode === 'any'
+                      ? 'Artists tagged with at least one of the selected genres.'
+                      : 'Artists tagged with every selected genre.'}
+                  </p>
                   {selectedGenres.length > 0 && (
                     <div className="flex flex-wrap gap-2">
                       {selectedGenres.map(g => (
@@ -832,8 +849,23 @@ export default function Dashboard() {
 
                 {/* Genre Filter */}
                 <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Genre Filter</h2>
-                  <p className="text-sm text-zinc-500">Filter stations by genre. Leave empty to include all stations.</p>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Genre Filter</h2>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-zinc-500">Match:</span>
+                      {(['any', 'all'] as const).map(mode => (
+                        <button key={mode} onClick={() => { setRadioMatchMode(mode); setRadioPreviewDone(false); setRadioSendResult(null); }}
+                          className={`px-3 py-1 rounded-full text-xs font-medium border transition ${radioMatchMode === mode ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                          {mode === 'any' ? 'Any genre' : 'All genres'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <p className="text-sm text-zinc-500">
+                    {radioMatchMode === 'any'
+                      ? 'Stations tagged with at least one of the selected genres. Leave empty to include all.'
+                      : 'Stations tagged with every selected genre.'}
+                  </p>
                   {selectedRadioGenres.length > 0 && (
                     <div className="flex flex-wrap gap-2">
                       {selectedRadioGenres.map(g => (

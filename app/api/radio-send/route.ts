@@ -20,6 +20,7 @@ interface RadioSendPayload {
   senderName: string;
   signOff?: string;
   signOffImage?: string;
+  matchMode?: 'any' | 'all';
   fromAccount?: FromAccount;
 }
 
@@ -41,7 +42,7 @@ function textToHtml(text: string): string {
 export async function POST(req: NextRequest) {
   const {
     trackTitle, driveLink, genres, locations, emailTemplate, senderName,
-    signOff, signOffImage, fromAccount,
+    signOff, signOffImage, matchMode, fromAccount,
   } = await req.json() as RadioSendPayload;
 
   if (!trackTitle || !driveLink || !emailTemplate) {
@@ -69,7 +70,7 @@ export async function POST(req: NextRequest) {
     auth: { user: smtpUser, pass: smtpPass },
   });
 
-  const stations = filterRadioStations(genres ?? [], locations ?? []);
+  const stations = filterRadioStations(genres ?? [], locations ?? [], matchMode ?? 'any');
   const results: { to: string; success: boolean; error?: string }[] = [];
 
   for (const station of stations) {

@@ -21,11 +21,16 @@ export function getRadioData(): RadioData {
   return cached!;
 }
 
-export function filterRadioStations(genres: string[], locations: string[]): RadioStation[] {
+export function filterRadioStations(genres: string[], locations: string[], matchMode: 'any' | 'all' = 'any'): RadioStation[] {
   const { stations } = getRadioData();
   const lowerGenres = genres.map(g => g.toLowerCase());
   return stations.filter(s => {
-    if (genres.length && !s.genres.some(g => lowerGenres.includes(g.toLowerCase()))) return false;
+    if (genres.length) {
+      const check = matchMode === 'all'
+        ? lowerGenres.every(g => s.genres.some(sg => sg.toLowerCase() === g))
+        : s.genres.some(g => lowerGenres.includes(g.toLowerCase()));
+      if (!check) return false;
+    }
     if (locations.length) {
       const isIntl = locations.includes('International');
       const matchesRegion = locations.some(l => l !== 'International' && s.region === l);

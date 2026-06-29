@@ -42,7 +42,8 @@ export function getArtistsByGenres(
   gender = '',
   artistType = '',
   minInstagram = 0,
-  maxInstagram = 0
+  maxInstagram = 0,
+  matchMode: 'any' | 'all' = 'any'
 ): Artist[] {
   const { artists } = getRoster();
   if (!selectedGenres.length) return [];
@@ -50,7 +51,10 @@ export function getArtistsByGenres(
   const lower = selectedGenres.map(g => g.toLowerCase());
   return artists.filter(a => {
     if (!a.managerEmails.length) return false;
-    if (!a.genres.some(g => lower.includes(g.toLowerCase()))) return false;
+    const check = matchMode === 'all'
+      ? lower.every(g => a.genres.some(ag => ag.toLowerCase() === g))
+      : a.genres.some(g => lower.includes(g.toLowerCase()));
+    if (!check) return false;
     const spotify = a.spotifyFollowers ?? 0;
     if (minFollowers > 0 && spotify < minFollowers) return false;
     if (maxFollowers > 0 && spotify > maxFollowers) return false;
