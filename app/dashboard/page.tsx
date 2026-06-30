@@ -44,6 +44,50 @@ const SEND_DELAY_OPTIONS = [
   { label: '10s', value: 10000 },
 ];
 
+const DAILY_CAP_OPTIONS = [
+  { label: 'None', value: 0 },
+  { label: '50', value: 50 },
+  { label: '100', value: 100 },
+  { label: '200', value: 200 },
+  { label: '500', value: 500 },
+];
+
+function getTodayDateStr(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function csvEscape(value: string): string {
+  if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
+  return value;
+}
+
+function downloadCsv(filename: string, rows: string[][]) {
+  const csv = rows.map(row => row.map(csvEscape).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function parseContactsCsv(text: string): { artistName: string; managerName: string; managerEmail: string }[] {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const out: { artistName: string; managerName: string; managerEmail: string }[] = [];
+  for (const line of lines) {
+    const cols = line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+    if (cols.length < 2) continue;
+    const [artistName, managerName, managerEmail] = cols.length >= 3
+      ? [cols[0], cols[1], cols[2]]
+      : [cols[0], '', cols[1]];
+    if (!artistName || !managerEmail || !managerEmail.includes('@')) continue;
+    if (artistName.toLowerCase() === 'artist' && managerEmail.toLowerCase().includes('email')) continue;
+    out.push({ artistName, managerName, managerEmail });
+  }
+  return out;
+}
+
 interface Artist {
   name: string;
   genres: string[];
@@ -97,6 +141,27 @@ interface DeliverabilityResult {
   dkimSelector: string;
   mx: boolean;
   mxRecords: string[];
+}
+
+interface DemosFilterPreset {
+  id: string;
+  name: string;
+  genres: string[];
+  minAudience: number;
+  maxAudience: number;
+  gender: string;
+  artistType: string;
+  minInstagram: number;
+  maxInstagram: number;
+  matchMode: 'any' | 'all';
+}
+
+interface RadioFilterPreset {
+  id: string;
+  name: string;
+  genres: string[];
+  locations: string[];
+  matchMode: 'any' | 'all';
 }
 
 function renderTemplateClient(template: string, vars: Record<string, string>): string {
@@ -168,7 +233,7 @@ const BLANK_ACCOUNT: Omit<EmailAccount, 'id'> = {
 };
 
 export default function Dashboard() {
-  const [activeSection, setActiveSection] = useState<'demos' | 'promotion' | 'account'>('demos');
+  const [activeSection, setActiveSection] = useState<'demos' | 'promotion' | 'account' | 'history'>('demos');
   const [demosTab, setDemosTab] = useState<'compose' | 'template'>('compose');
   const [promotionTab, setPromotionTab] = useState<'compose' | 'template'>('compose');
   const [promotionSection, setPromotionSection] = useState<'radio' | 'playlists'>('radio');
@@ -202,6 +267,9 @@ export default function Dashboard() {
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<{ sent: number; failed: number; total: number } | null>(null);
   const [sendError, setSendError] = useState('');
+  const [sendFailedEmails, setSendFailedEmails] = useState<string[]>([]);
+  const [demosPresets, setDemosPresets] = useState<DemosFilterPreset[]>([]);
+  const [newDemosPresetName, setNewDemosPresetName] = useState('');
 
   // Track Promotion (Radio) state
   const [radioAllGenres, setRadioAllGenres] = useState<string[]>([]);
@@ -216,6 +284,9 @@ export default function Dashboard() {
   const [radioSending, setRadioSending] = useState(false);
   const [radioSendResult, setRadioSendResult] = useState<{ sent: number; failed: number; total: number } | null>(null);
   const [radioSendError, setRadioSendError] = useState('');
+  const [radioSendFailedEmails, setRadioSendFailedEmails] = useState<string[]>([]);
+  const [radioPresets, setRadioPresets] = useState<RadioFilterPreset[]>([]);
+  const [newRadioPresetName, setNewRadioPresetName] = useState('');
 
   // Account state
   const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
@@ -229,6 +300,8 @@ export default function Dashboard() {
   const [testEmailResult, setTestEmailResult] = useState<'success' | 'error' | null>(null);
   const [testEmailError, setTestEmailError] = useState('');
   const [sendDelay, setSendDelay] = useState(0);
+  const [dailySendCap, setDailySendCap] = useState(0);
+  const [sendsToday, setSendsToday] = useState(0);
 
   // Blacklist
   const [blacklist, setBlacklist] = useState<string[]>([]);
@@ -241,6 +314,7 @@ export default function Dashboard() {
 
   // Campaigns
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [expandedCampaignId, setExpandedCampaignId] = useState<string | null>(null);
 
   // Deliverability
   const [deliverabilityResult, setDeliverabilityResult] = useState<DeliverabilityResult | null>(null);
@@ -293,6 +367,18 @@ export default function Dashboard() {
 
       const savedSendDelay = localStorage.getItem('tp_send_delay');
       if (savedSendDelay !== null) setSendDelay(Number(savedSendDelay));
+
+      const savedDemosPresets = localStorage.getItem('tp_demos_presets');
+      if (savedDemosPresets) setDemosPresets(JSON.parse(savedDemosPresets));
+
+      const savedRadioPresets = localStorage.getItem('tp_radio_presets');
+      if (savedRadioPresets) setRadioPresets(JSON.parse(savedRadioPresets));
+
+      const savedDailyCap = localStorage.getItem('tp_daily_cap');
+      if (savedDailyCap !== null) setDailySendCap(Number(savedDailyCap));
+
+      const savedSendsToday = JSON.parse(localStorage.getItem('tp_sends_today') || '{}');
+      if (savedSendsToday.date === getTodayDateStr()) setSendsToday(savedSendsToday.count || 0);
     } catch {}
   }, []);
 
@@ -309,6 +395,22 @@ export default function Dashboard() {
     }
     return map;
   }, [campaigns]);
+
+  const demosPitchCount = useMemo(() => {
+    const title = trackTitle.trim().toLowerCase();
+    if (!title) return 0;
+    return campaigns
+      .filter(c => c.type === 'demos' && c.trackTitle.trim().toLowerCase() === title)
+      .reduce((sum, c) => sum + c.emails.length, 0);
+  }, [campaigns, trackTitle]);
+
+  const radioPitchCount = useMemo(() => {
+    const title = trackTitle.trim().toLowerCase();
+    if (!title) return 0;
+    return campaigns
+      .filter(c => c.type === 'radio' && c.trackTitle.trim().toLowerCase() === title)
+      .reduce((sum, c) => sum + c.emails.length, 0);
+  }, [campaigns, trackTitle]);
 
   const isDirty =
     demosTemplate !== lastSavedDemosTemplate ||
@@ -417,6 +519,117 @@ export default function Dashboard() {
     localStorage.setItem('tp_campaigns', JSON.stringify(updated));
   }
 
+  function clearCampaignHistory() {
+    setCampaigns([]);
+    localStorage.removeItem('tp_campaigns');
+  }
+
+  function exportCampaignsCsv() {
+    const rows = [
+      ['Date', 'Type', 'Track', 'Recipients', 'Emails'],
+      ...campaigns
+        .slice()
+        .sort((a, b) => b.date.localeCompare(a.date))
+        .map(c => [new Date(c.date).toLocaleString(), c.type, c.trackTitle, String(c.emails.length), c.emails.join('; ')]),
+    ];
+    downloadCsv('campaign-history.csv', rows);
+  }
+
+  function addSendsToday(n: number) {
+    const today = getTodayDateStr();
+    const updated = sendsToday + n;
+    setSendsToday(updated);
+    localStorage.setItem('tp_sends_today', JSON.stringify({ date: today, count: updated }));
+  }
+
+  function setDailyCap(value: number) {
+    setDailySendCap(value);
+    localStorage.setItem('tp_daily_cap', String(value));
+  }
+
+  function saveDemosPreset() {
+    const name = newDemosPresetName.trim();
+    if (!name) return;
+    const preset: DemosFilterPreset = {
+      id: Date.now().toString(), name, genres: selectedGenres, minAudience, maxAudience,
+      gender, artistType, minInstagram, maxInstagram, matchMode: demosMatchMode,
+    };
+    const updated = [...demosPresets, preset];
+    setDemosPresets(updated);
+    localStorage.setItem('tp_demos_presets', JSON.stringify(updated));
+    setNewDemosPresetName('');
+  }
+
+  function loadDemosPreset(preset: DemosFilterPreset) {
+    setSelectedGenres(preset.genres);
+    setMinAudience(preset.minAudience);
+    setMaxAudience(preset.maxAudience);
+    setGender(preset.gender);
+    setArtistType(preset.artistType);
+    setMinInstagram(preset.minInstagram);
+    setMaxInstagram(preset.maxInstagram);
+    setDemosMatchMode(preset.matchMode);
+    setPreviewDone(false);
+    setSendResult(null);
+  }
+
+  function deleteDemosPreset(id: string) {
+    const updated = demosPresets.filter(p => p.id !== id);
+    setDemosPresets(updated);
+    localStorage.setItem('tp_demos_presets', JSON.stringify(updated));
+  }
+
+  function saveRadioPreset() {
+    const name = newRadioPresetName.trim();
+    if (!name) return;
+    const preset: RadioFilterPreset = {
+      id: Date.now().toString(), name, genres: selectedRadioGenres, locations: selectedLocations, matchMode: radioMatchMode,
+    };
+    const updated = [...radioPresets, preset];
+    setRadioPresets(updated);
+    localStorage.setItem('tp_radio_presets', JSON.stringify(updated));
+    setNewRadioPresetName('');
+  }
+
+  function loadRadioPreset(preset: RadioFilterPreset) {
+    setSelectedRadioGenres(preset.genres);
+    setSelectedLocations(preset.locations);
+    setRadioMatchMode(preset.matchMode);
+    setRadioPreviewDone(false);
+    setRadioSendResult(null);
+  }
+
+  function deleteRadioPreset(id: string) {
+    const updated = radioPresets.filter(p => p.id !== id);
+    setRadioPresets(updated);
+    localStorage.setItem('tp_radio_presets', JSON.stringify(updated));
+  }
+
+  function handleCustomContactsCsv(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const parsed = parseContactsCsv(String(reader.result));
+      if (!parsed.length) return;
+      const existingEmails = new Set(customContacts.map(c => c.managerEmail.toLowerCase()));
+      const fresh = parsed.filter(p => !existingEmails.has(p.managerEmail.toLowerCase()));
+      const added = fresh.map(p => ({ id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, ...p }));
+      const updated = [...customContacts, ...added];
+      setCustomContacts(updated);
+      localStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  }
+
+  function addFailedToBlacklist(emails: string[]) {
+    const lower = emails.map(e => e.toLowerCase());
+    const merged = [...new Set([...blacklist, ...lower])];
+    setBlacklist(merged);
+    localStorage.setItem('tp_blacklist', JSON.stringify(merged));
+  }
+
   async function handleTestEmail() {
     if (!testEmailTo) return;
     setTestEmailSending(true); setTestEmailResult(null); setTestEmailError('');
@@ -509,7 +722,11 @@ export default function Dashboard() {
 
   async function handleSend() {
     if (!trackTitle || !driveLink) return;
-    setSending(true); setSendError(''); setSendResult(null);
+    if (dailySendCap > 0 && sendsToday + totalEmails > dailySendCap) {
+      setSendError(`Daily send limit reached (${sendsToday}/${dailySendCap} sent today). Wait until tomorrow or raise the limit in Account settings.`);
+      return;
+    }
+    setSending(true); setSendError(''); setSendResult(null); setSendFailedEmails([]);
     try {
       const acc = emailAccounts.find(a => a.id === selectedAccountId);
       const res = await fetch('/api/send', {
@@ -532,9 +749,11 @@ export default function Dashboard() {
       if (!res.ok) { setSendError(data.error || 'Failed to send.'); }
       else {
         setSendResult({ sent: data.sent, failed: data.failed, total: data.total });
-        const sentEmails = (data.results as { to: string; success: boolean }[] | undefined)
-          ?.filter(r => r.success).map(r => r.to) ?? [];
+        const results = (data.results as { to: string; success: boolean }[] | undefined) ?? [];
+        const sentEmails = results.filter(r => r.success).map(r => r.to);
+        setSendFailedEmails(results.filter(r => !r.success).map(r => r.to));
         logCampaign('demos', trackTitle, sentEmails);
+        if (sentEmails.length) addSendsToday(sentEmails.length);
       }
     } catch { setSendError('Network error. Please try again.'); }
     finally { setSending(false); }
@@ -586,7 +805,11 @@ export default function Dashboard() {
 
   async function handleRadioSend() {
     if (!trackTitle || !driveLink) return;
-    setRadioSending(true); setRadioSendError(''); setRadioSendResult(null);
+    if (dailySendCap > 0 && sendsToday + radioTotalEmails > dailySendCap) {
+      setRadioSendError(`Daily send limit reached (${sendsToday}/${dailySendCap} sent today). Wait until tomorrow or raise the limit in Account settings.`);
+      return;
+    }
+    setRadioSending(true); setRadioSendError(''); setRadioSendResult(null); setRadioSendFailedEmails([]);
     try {
       const acc = emailAccounts.find(a => a.id === selectedAccountId);
       const res = await fetch('/api/radio-send', {
@@ -604,9 +827,11 @@ export default function Dashboard() {
       if (!res.ok) { setRadioSendError(data.error || 'Failed to send.'); }
       else {
         setRadioSendResult({ sent: data.sent, failed: data.failed, total: data.total });
-        const sentEmails = (data.results as { to: string; success: boolean }[] | undefined)
-          ?.filter(r => r.success).map(r => r.to) ?? [];
+        const results = (data.results as { to: string; success: boolean }[] | undefined) ?? [];
+        const sentEmails = results.filter(r => r.success).map(r => r.to);
+        setRadioSendFailedEmails(results.filter(r => !r.success).map(r => r.to));
         logCampaign('radio', trackTitle, sentEmails);
+        if (sentEmails.length) addSendsToday(sentEmails.length);
       }
     } catch { setRadioSendError('Network error. Please try again.'); }
     finally { setRadioSending(false); }
@@ -686,6 +911,16 @@ export default function Dashboard() {
       icon: (
         <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z"/>
+        </svg>
+      ),
+    },
+    {
+      id: 'history' as const,
+      label: 'History',
+      icon: (
+        <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="9"/>
+          <polyline points="12 7 12 12 15 15"/>
         </svg>
       ),
     },
@@ -780,7 +1015,7 @@ export default function Dashboard() {
                     <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
                       <div>
                         <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Follow-up Template</h2>
-                        <p className="text-xs text-zinc-500">Used when the follow-up toggle is enabled on the Compose tab.</p>
+                        <p className="text-xs text-zinc-500 mb-2">Used when the follow-up toggle is enabled on the Compose tab. Click a variable to copy it:</p>
                       </div>
                       <div className="flex flex-wrap gap-1.5">
                         {['{{managerName}}', '{{artistName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}'].map(v => (
@@ -812,6 +1047,9 @@ export default function Dashboard() {
                         <input type="text" value={trackTitle} onChange={e => setTrackTitle(e.target.value)}
                           placeholder="e.g. Give Me A Sign"
                           className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                        {demosPitchCount > 0 && (
+                          <p className="text-xs text-amber-400 mt-1.5">Already pitched to {demosPitchCount} recipient{demosPitchCount !== 1 ? 's' : ''} for this track.</p>
+                        )}
                       </div>
                       <div className="md:col-span-2">
                         <label className="block text-sm font-medium text-zinc-300 mb-1.5">Google Drive Link</label>
@@ -819,6 +1057,31 @@ export default function Dashboard() {
                           placeholder="https://drive.google.com/file/d/..."
                           className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
                       </div>
+                    </div>
+                  </section>
+
+                  {/* Saved Filter Presets */}
+                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-3">
+                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Saved Filters</h2>
+                    {demosPresets.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {demosPresets.map(p => (
+                          <div key={p.id} className="inline-flex items-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded-full pl-3 pr-1.5 py-1">
+                            <button onClick={() => loadDemosPreset(p)} className="text-xs text-zinc-200 hover:text-violet-400 transition">{p.name}</button>
+                            <button onClick={() => deleteDemosPreset(p.id)} className="text-zinc-600 hover:text-red-400 transition text-sm leading-none px-1">×</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex gap-2">
+                      <input value={newDemosPresetName} onChange={e => setNewDemosPresetName(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') saveDemosPreset(); }}
+                        placeholder="Name this filter set (e.g. Indie Pop Campaigns)"
+                        className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                      <button onClick={saveDemosPreset} disabled={!newDemosPresetName.trim()}
+                        className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2 text-sm font-semibold text-white transition shrink-0">
+                        Save Current
+                      </button>
                     </div>
                   </section>
 
@@ -1024,9 +1287,16 @@ export default function Dashboard() {
                         </div>
                       </div>
                     ) : (
-                      <button onClick={() => setShowAddCustomContact(true)} className="text-sm text-violet-400 hover:text-violet-300 transition">
-                        + Add custom contact
-                      </button>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <button onClick={() => setShowAddCustomContact(true)} className="text-sm text-violet-400 hover:text-violet-300 transition">
+                          + Add custom contact
+                        </button>
+                        <label className="text-sm text-zinc-400 hover:text-zinc-200 transition cursor-pointer">
+                          Import CSV
+                          <input type="file" accept=".csv,text/csv" className="hidden" onChange={handleCustomContactsCsv} />
+                        </label>
+                        <span className="text-xs text-zinc-600">Columns: Artist, Manager (optional), Email</span>
+                      </div>
                     )}
                   </section>
 
@@ -1142,11 +1412,17 @@ export default function Dashboard() {
                   )}
 
                   {sendResult && (
-                    <div className="rounded-lg bg-green-900/30 border border-green-700 px-5 py-4">
+                    <div className="rounded-lg bg-green-900/30 border border-green-700 px-5 py-4 space-y-2">
                       <p className="text-green-400 font-semibold">
                         Sent {sendResult.sent} of {sendResult.total} emails successfully.
                         {sendResult.failed > 0 && ` ${sendResult.failed} failed.`}
                       </p>
+                      {sendFailedEmails.length > 0 && (
+                        <button onClick={() => { addFailedToBlacklist(sendFailedEmails); setSendFailedEmails([]); }}
+                          className="text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 rounded-lg text-zinc-300 transition">
+                          Add {sendFailedEmails.length} failed address{sendFailedEmails.length !== 1 ? 'es' : ''} to blacklist
+                        </button>
+                      )}
                     </div>
                   )}
                   {sendError && (
@@ -1262,6 +1538,9 @@ export default function Dashboard() {
                           <input type="text" value={trackTitle} onChange={e => setTrackTitle(e.target.value)}
                             placeholder="e.g. Give Me A Sign"
                             className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                          {radioPitchCount > 0 && (
+                            <p className="text-xs text-amber-400 mt-1.5">Already pitched to {radioPitchCount} recipient{radioPitchCount !== 1 ? 's' : ''} for this track.</p>
+                          )}
                         </div>
                         <div className="md:col-span-2">
                           <label className="block text-sm font-medium text-zinc-300 mb-1.5">Google Drive Link</label>
@@ -1269,6 +1548,31 @@ export default function Dashboard() {
                             placeholder="https://drive.google.com/file/d/..."
                             className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
                         </div>
+                      </div>
+                    </section>
+
+                    {/* Saved Filter Presets */}
+                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-3">
+                      <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Saved Filters</h2>
+                      {radioPresets.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {radioPresets.map(p => (
+                            <div key={p.id} className="inline-flex items-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded-full pl-3 pr-1.5 py-1">
+                              <button onClick={() => loadRadioPreset(p)} className="text-xs text-zinc-200 hover:text-violet-400 transition">{p.name}</button>
+                              <button onClick={() => deleteRadioPreset(p.id)} className="text-zinc-600 hover:text-red-400 transition text-sm leading-none px-1">×</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex gap-2">
+                        <input value={newRadioPresetName} onChange={e => setNewRadioPresetName(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') saveRadioPreset(); }}
+                          placeholder="Name this filter set (e.g. Australian Radio)"
+                          className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                        <button onClick={saveRadioPreset} disabled={!newRadioPresetName.trim()}
+                          className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2 text-sm font-semibold text-white transition shrink-0">
+                          Save Current
+                        </button>
                       </div>
                     </section>
 
@@ -1398,11 +1702,19 @@ export default function Dashboard() {
                     )}
 
                     {radioSendResult && (
-                      <div className="rounded-lg bg-green-900/30 border border-green-700 px-5 py-4">
+                      <div className="rounded-lg bg-green-900/30 border border-green-700 px-5 py-4 space-y-2">
                         <p className="text-green-400 font-semibold">
                           Sent {radioSendResult.sent} of {radioSendResult.total} emails successfully.
                           {radioSendResult.failed > 0 && ` ${radioSendResult.failed} failed.`}
                         </p>
+                        {radioSendFailedEmails.length > 0 && (
+                          <button
+                            onClick={() => { addFailedToBlacklist(radioSendFailedEmails); setRadioSendFailedEmails([]); }}
+                            className="text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 rounded-lg text-zinc-300 transition"
+                          >
+                            Add {radioSendFailedEmails.length} failed address{radioSendFailedEmails.length !== 1 ? 'es' : ''} to blacklist
+                          </button>
+                        )}
                       </div>
                     )}
                     {radioSendError && (
@@ -1579,6 +1891,26 @@ export default function Dashboard() {
                   )}
                 </section>
 
+                {/* Daily Send Limit */}
+                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                  <div>
+                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Daily Send Limit</h2>
+                    <p className="text-xs text-zinc-500">Cap how many emails can be sent per day across all campaigns.</p>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {DAILY_CAP_OPTIONS.map(opt => (
+                      <button key={opt.value}
+                        onClick={() => setDailyCap(opt.value)}
+                        className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${dailySendCap === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-zinc-500">
+                    {dailySendCap > 0 ? `${sendsToday} of ${dailySendCap} sent today.` : `${sendsToday} sent today. No limit set.`}
+                  </p>
+                </section>
+
                 {/* Test Email */}
                 <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
                   <div>
@@ -1660,6 +1992,70 @@ export default function Dashboard() {
                     <p className="text-xs text-amber-500">Select an email account above to check its domain.</p>
                   )}
                 </section>
+              </div>
+            )}
+
+            {/* ── History ── */}
+            {activeSection === 'history' && (
+              <div className="space-y-4 pb-6">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Campaign History</h2>
+                    <p className="text-xs text-zinc-500">{campaigns.length} campaign{campaigns.length !== 1 ? 's' : ''} logged on this device.</p>
+                  </div>
+                  {campaigns.length > 0 && (
+                    <div className="flex gap-2">
+                      <button onClick={exportCampaignsCsv}
+                        className="rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-2 text-xs font-medium text-zinc-300 transition">
+                        Export CSV
+                      </button>
+                      <button onClick={() => { if (confirm('Clear all campaign history? This cannot be undone.')) clearCampaignHistory(); }}
+                        className="rounded-lg bg-zinc-800 hover:bg-red-900/40 border border-zinc-700 hover:border-red-700 px-3 py-2 text-xs font-medium text-zinc-300 hover:text-red-400 transition">
+                        Clear History
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {campaigns.length === 0 ? (
+                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-8 flex flex-col items-center justify-center gap-2 text-center">
+                    <p className="text-sm font-semibold text-zinc-300">No campaigns yet</p>
+                    <p className="text-xs text-zinc-500">Sent pitches will show up here.</p>
+                  </section>
+                ) : (
+                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 divide-y divide-zinc-800 overflow-hidden">
+                    {campaigns.slice().sort((a, b) => b.date.localeCompare(a.date)).map(c => (
+                      <div key={c.id}>
+                        <button
+                          onClick={() => setExpandedCampaignId(p => p === c.id ? null : c.id)}
+                          className="w-full flex items-center justify-between gap-3 px-4 md:px-6 py-3.5 text-left hover:bg-zinc-800/50 transition"
+                        >
+                          <div className="min-w-0 flex items-center gap-3">
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium shrink-0 ${c.type === 'demos' ? 'bg-violet-600/20 text-violet-400 border border-violet-600/30' : 'bg-sky-600/20 text-sky-400 border border-sky-600/30'}`}>
+                              {c.type === 'demos' ? 'Demos' : 'Radio'}
+                            </span>
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-white truncate">{c.trackTitle}</p>
+                              <p className="text-xs text-zinc-500">{new Date(c.date).toLocaleString()} · {c.emails.length} recipient{c.emails.length !== 1 ? 's' : ''}</p>
+                            </div>
+                          </div>
+                          <svg viewBox="0 0 24 24" className={`w-4 h-4 shrink-0 text-zinc-500 transition-transform ${expandedCampaignId === c.id ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="6 9 12 15 18 9"/>
+                          </svg>
+                        </button>
+                        {expandedCampaignId === c.id && (
+                          <div className="px-4 md:px-6 pb-4 -mt-1">
+                            <div className="flex flex-wrap gap-1.5">
+                              {c.emails.map(email => (
+                                <span key={email} className="text-xs bg-zinc-800 text-zinc-300 px-2 py-1 rounded font-mono">{email}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </section>
+                )}
               </div>
             )}
 
