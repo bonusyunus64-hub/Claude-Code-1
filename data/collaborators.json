@@ -1,0 +1,20 @@
+{
+  "collaborators": [
+    { "name": "Maya Chen", "role": "Producer", "genres": ["Pop", "Electronic"], "location": "Melbourne, AU", "email": "maya.chen.prod@example.com", "credits": "Produced 2 tracks that charted on Spotify Viral 50 AU" },
+    { "name": "Theo Walsh", "role": "Vocalist", "genres": ["Pop", "R&B"], "location": "Sydney, AU", "email": "theo.topline@example.com", "credits": "Featured topline vocalist on 40+ released singles" },
+    { "name": "Jordan Reyes", "role": "Songwriter", "genres": ["Pop", "Country"], "location": "Nashville, US", "email": "jordan.reyes.write@example.com", "credits": "Co-writer credits with 3 major-label artists" },
+    { "name": "Amara Cole", "role": "Producer", "genres": ["R&B", "Soul"], "location": "Atlanta, US", "email": "amara.cole.beats@example.com", "credits": "In-house producer at an independent R&B collective" },
+    { "name": "Felix Brandt", "role": "Mixing Engineer", "genres": ["Electronic", "Indie"], "location": "Berlin, DE", "email": "felix.mix@example.com", "credits": "Mixed releases for 3 European indie labels" },
+    { "name": "Priya Nair", "role": "Vocalist", "genres": ["Indie", "Alternative"], "location": "Melbourne, AU", "email": "priya.sings@example.com", "credits": "Lead vocalist, regional touring support act" },
+    { "name": "Connor Blake", "role": "Instrumentalist", "genres": ["Indie", "Folk"], "location": "Toronto, CA", "email": "connor.guitar@example.com", "credits": "Session guitarist on several indie-folk releases" },
+    { "name": "Ngozi Obi", "role": "Producer", "genres": ["Afrobeat", "R&B"], "location": "Lagos, NG", "email": "ngozi.beats@example.com", "credits": "Produces for emerging Afrobeats artists" },
+    { "name": "Saoirse Quinn", "role": "Songwriter", "genres": ["Pop", "Electronic"], "location": "London, UK", "email": "saoirse.write@example.com", "credits": "Topline writer with 2 sync placements" },
+    { "name": "Marcus Webb", "role": "Beatmaker", "genres": ["Hip-Hop", "Drill"], "location": "London, UK", "email": "marcus.beats@example.com", "credits": "Beats placed with several UK drill artists" },
+    { "name": "Hana Suzuki", "role": "Vocalist", "genres": ["Pop", "Jazz"], "location": "Seoul, KR", "email": "hana.vocals@example.com", "credits": "Session vocalist, jazz-pop crossover projects" },
+    { "name": "Liam Foster", "role": "Producer", "genres": ["Dance", "House"], "location": "Stockholm, SE", "email": "liam.house@example.com", "credits": "House producer with remix credits for indie labels" },
+    { "name": "Ruby Sinclair", "role": "Songwriter", "genres": ["Pop", "Indie"], "location": "Auckland, NZ", "email": "ruby.songs@example.com", "credits": "Co-writer on 2 NZ Top 40 singles" },
+    { "name": "Diego Alvarez", "role": "Instrumentalist", "genres": ["Folk", "Indie"], "location": "Los Angeles, US", "email": "diego.strings@example.com", "credits": "String arranger for indie-folk records" },
+    { "name": "Zara Whitfield", "role": "Mixing Engineer", "genres": ["Pop", "R&B"], "location": "Los Angeles, US", "email": "zara.mixes@example.com", "credits": "Mix engineer on 50+ independent releases" },
+    { "name": "Kofi Mensah", "role": "Producer", "genres": ["Afrobeat", "Dance"], "location": "Lagos, NG", "email": "kofi.produces@example.com", "credits": "Afrobeats/dance crossover producer" }
+  ]
+}
