@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { computeSpamScore } from '@/lib/spamScore';
 
 const DEFAULT_DEMOS_TEMPLATE = `Hi {{managerName}},
 
@@ -254,6 +255,53 @@ function PitchedBadge({ tracks }: { tracks: string[] }) {
         <div className="absolute top-full left-0 mt-1 z-20 bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl p-1.5 min-w-[180px]">
           {tracks.map(t => (
             <p key={t} className="text-xs text-zinc-300 py-1 px-2 hover:bg-zinc-700 rounded">{t}</p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SpamScoreBadge({ template }: { template: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const result = useMemo(() => computeSpamScore(template), [template]);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  const styles = result.risk === 'high'
+    ? 'bg-red-600/20 text-red-400 border-red-600/30'
+    : result.risk === 'medium'
+    ? 'bg-amber-600/20 text-amber-400 border-amber-600/30'
+    : 'bg-green-600/20 text-green-400 border-green-600/30';
+
+  if (result.issues.length === 0) {
+    return (
+      <span className={`text-xs px-2 py-0.5 rounded-full border whitespace-nowrap ${styles}`}>
+        Spam score: {result.score} (low risk)
+      </span>
+    );
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(p => !p)}
+        className={`text-xs px-2 py-0.5 rounded-full border flex items-center gap-1 whitespace-nowrap ${styles}`}
+      >
+        Spam score: {result.score} ({result.risk} risk) <span className={`transition-transform inline-block ${open ? 'rotate-180' : ''}`}>▾</span>
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 z-20 bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl p-2 min-w-[260px] max-w-[320px]">
+          <p className="text-xs text-zinc-400 font-semibold mb-1">Possible deliverability issues:</p>
+          {result.issues.map(issue => (
+            <p key={issue} className="text-xs text-zinc-300 py-0.5">• {issue}</p>
           ))}
         </div>
       )}
@@ -1462,9 +1510,12 @@ export default function Dashboard() {
                       </div>
                       <textarea value={demosTemplate} onChange={e => setDemosTemplate(e.target.value)} rows={14}
                         className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
-                      <button onClick={() => setDemosTemplate(DEFAULT_DEMOS_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
-                        Reset to default
-                      </button>
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <button onClick={() => setDemosTemplate(DEFAULT_DEMOS_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                          Reset to default
+                        </button>
+                        <SpamScoreBadge template={demosTemplate} />
+                      </div>
                       <div className="pt-3 border-t border-zinc-800 space-y-3">
                         <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Saved Templates</h3>
                         {demosTemplateLibrary.length > 0 && (
@@ -1502,9 +1553,12 @@ export default function Dashboard() {
                       </div>
                       <textarea value={demosFollowUpTemplate} onChange={e => setDemosFollowUpTemplate(e.target.value)} rows={12}
                         className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
-                      <button onClick={() => setDemosFollowUpTemplate(DEFAULT_FOLLOWUP_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
-                        Reset to default
-                      </button>
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <button onClick={() => setDemosFollowUpTemplate(DEFAULT_FOLLOWUP_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                          Reset to default
+                        </button>
+                        <SpamScoreBadge template={demosFollowUpTemplate} />
+                      </div>
                       <div className="pt-3 border-t border-zinc-800 space-y-3">
                         <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Saved Templates</h3>
                         {followUpTemplateLibrary.length > 0 && (
@@ -1996,9 +2050,12 @@ export default function Dashboard() {
                     </div>
                     <textarea value={radioTemplate} onChange={e => setRadioTemplate(e.target.value)} rows={16}
                       className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
-                    <button onClick={() => setRadioTemplate(DEFAULT_RADIO_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
-                      Reset to default
-                    </button>
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <button onClick={() => setRadioTemplate(DEFAULT_RADIO_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                        Reset to default
+                      </button>
+                      <SpamScoreBadge template={radioTemplate} />
+                    </div>
                     <div className="pt-3 border-t border-zinc-800 space-y-3">
                       <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Saved Templates</h3>
                       {radioTemplateLibrary.length > 0 && (
@@ -2038,9 +2095,12 @@ export default function Dashboard() {
                     </div>
                     <textarea value={playlistTemplate} onChange={e => setPlaylistTemplate(e.target.value)} rows={16}
                       className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
-                    <button onClick={() => setPlaylistTemplate(DEFAULT_PLAYLIST_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
-                      Reset to default
-                    </button>
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <button onClick={() => setPlaylistTemplate(DEFAULT_PLAYLIST_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                        Reset to default
+                      </button>
+                      <SpamScoreBadge template={playlistTemplate} />
+                    </div>
                     <div className="pt-3 border-t border-zinc-800 space-y-3">
                       <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Saved Templates</h3>
                       {playlistTemplateLibrary.length > 0 && (
