@@ -27,6 +27,9 @@ interface SendPayload {
   maxInstagram?: number;
   matchMode?: 'any' | 'all';
   fromAccount?: FromAccount;
+  sendDelay?: number;
+  blacklist?: string[];
+  customContacts?: { artistName: string; managerName: string; managerEmail: string }[];
 }
 
 function renderTemplate(template: string, vars: Record<string, string>): string {
@@ -77,9 +80,10 @@ export async function POST(req: NextRequest) {
   const {
     trackTitle, driveLink, genres, emailTemplate, senderName,
     signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode, fromAccount,
+    sendDelay, blacklist, customContacts,
   } = await req.json() as SendPayload;
 
-  if (!trackTitle || !driveLink || !genres?.length || !emailTemplate) {
+  if (!trackTitle || !driveLink || !emailTemplate || (!genres?.length && !customContacts?.length)) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
 
@@ -104,14 +108,31 @@ export async function POST(req: NextRequest) {
     auth: { user: smtpUser, pass: smtpPass },
   });
 
-  const artists = getArtistsByGenres(genres, minAudience ?? 0, maxAudience ?? 0, gender ?? '', artistType ?? '', minInstagram ?? 0, maxInstagram ?? 0, matchMode ?? 'any');
-  const allMessages = artists.flatMap(a =>
+  const artists = genres?.length
+    ? getArtistsByGenres(genres, minAudience ?? 0, maxAudience ?? 0, gender ?? '', artistType ?? '', minInstagram ?? 0, maxInstagram ?? 0, matchMode ?? 'any')
+    : [];
+
+  const artistMessages = artists.flatMap(a =>
     buildEmailsForArtist(a, trackTitle, driveLink, emailTemplate, signOff ?? '', senderName)
   );
 
+  const customMessages = (customContacts ?? []).map(cc => {
+    const vars = { managerName: cc.managerName || 'there', artistName: cc.artistName, trackTitle, driveLink, senderName, managementCompany: '' };
+    const bodyParts = [renderTemplate(emailTemplate, vars)];
+    if (signOff?.trim()) bodyParts.push(renderTemplate(signOff, vars));
+    const body = bodyParts.join('\n\n');
+    const subject = renderTemplate(`Music Submission: {{trackTitle}} for {{artistName}}`, { trackTitle, artistName: cc.artistName });
+    return { to: cc.managerEmail, subject, body };
+  });
+
+  const bl = (blacklist ?? []).map(e => e.toLowerCase());
+  const allMessages = [...artistMessages, ...customMessages].filter(msg => !bl.includes(msg.to.toLowerCase()));
+
   const results: { to: string; success: boolean; error?: string }[] = [];
 
-  for (const msg of allMessages) {
+  for (let i = 0; i < allMessages.length; i++) {
+    const msg = allMessages[i];
+    if (i > 0 && sendDelay && sendDelay > 0) await new Promise<void>(r => setTimeout(r, sendDelay));
     try {
       const mailOptions: Parameters<typeof transporter.sendMail>[0] = {
         from: `"${fromName}" <${fromEmail}>`,

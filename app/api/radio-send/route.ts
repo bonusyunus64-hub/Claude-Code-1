@@ -22,6 +22,8 @@ interface RadioSendPayload {
   signOffImage?: string;
   matchMode?: 'any' | 'all';
   fromAccount?: FromAccount;
+  sendDelay?: number;
+  blacklist?: string[];
 }
 
 function renderTemplate(template: string, vars: Record<string, string>): string {
@@ -43,6 +45,7 @@ export async function POST(req: NextRequest) {
   const {
     trackTitle, driveLink, genres, locations, emailTemplate, senderName,
     signOff, signOffImage, matchMode, fromAccount,
+    sendDelay, blacklist,
   } = await req.json() as RadioSendPayload;
 
   if (!trackTitle || !driveLink || !emailTemplate) {
@@ -71,10 +74,15 @@ export async function POST(req: NextRequest) {
   });
 
   const stations = filterRadioStations(genres ?? [], locations ?? [], matchMode ?? 'any');
+  const bl = (blacklist ?? []).map(e => e.toLowerCase());
   const results: { to: string; success: boolean; error?: string }[] = [];
+  let emailIndex = 0;
 
   for (const station of stations) {
     for (const email of station.emails) {
+      if (bl.includes(email.toLowerCase())) continue;
+      if (emailIndex > 0 && sendDelay && sendDelay > 0) await new Promise<void>(r => setTimeout(r, sendDelay));
+      emailIndex++;
       const vars = { stationName: station.name, trackTitle, driveLink, senderName };
       const bodyParts = [renderTemplate(emailTemplate, vars)];
       if (signOff?.trim()) bodyParts.push(renderTemplate(signOff, vars));

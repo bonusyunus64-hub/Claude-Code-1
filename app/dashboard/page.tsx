@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 
 const DEFAULT_DEMOS_TEMPLATE = `Hi {{managerName}},
 
@@ -12,6 +12,15 @@ I've attached the track "{{trackTitle}}" — you can listen here:
 I believe this would be a strong fit for {{artistName}}'s sound and audience. I'd love to discuss any potential collaboration or placement.
 
 Please let me know if you need anything further.`;
+
+const DEFAULT_FOLLOWUP_TEMPLATE = `Hi {{managerName}},
+
+I hope you're doing well. I wanted to follow up on my recent submission for {{artistName}}.
+
+I sent over "{{trackTitle}}" and would love to hear any feedback when you have a moment. Here's the link again:
+{{driveLink}}
+
+Thank you for your time, and I look forward to connecting.`;
 
 const DEFAULT_RADIO_TEMPLATE = `Hi,
 
@@ -26,6 +35,14 @@ const DEFAULT_SIGN_OFF = `Best regards,
 {{senderName}}`;
 
 const LOCATION_OPTIONS = ['National', 'ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA', 'International'];
+
+const SEND_DELAY_OPTIONS = [
+  { label: 'None', value: 0 },
+  { label: '1s', value: 1000 },
+  { label: '2s', value: 2000 },
+  { label: '5s', value: 5000 },
+  { label: '10s', value: 10000 },
+];
 
 interface Artist {
   name: string;
@@ -57,6 +74,35 @@ interface EmailAccount {
   smtpPass: string;
 }
 
+interface Campaign {
+  id: string;
+  trackTitle: string;
+  date: string;
+  type: 'demos' | 'radio';
+  emails: string[];
+}
+
+interface CustomContact {
+  id: string;
+  artistName: string;
+  managerName: string;
+  managerEmail: string;
+}
+
+interface DeliverabilityResult {
+  domain: string;
+  spf: boolean;
+  spfRecord: string;
+  dkim: boolean;
+  dkimSelector: string;
+  mx: boolean;
+  mxRecords: string[];
+}
+
+function renderTemplateClient(template: string, vars: Record<string, string>): string {
+  return template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
+}
+
 function CopyChip({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
   function copy() {
@@ -79,6 +125,44 @@ function CopyChip({ value }: { value: string }) {
   );
 }
 
+function PitchedBadge({ tracks }: { tracks: string[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  if (tracks.length === 1) {
+    return (
+      <span className="text-xs bg-amber-600/20 text-amber-400 border border-amber-600/30 px-2 py-0.5 rounded-full whitespace-nowrap">
+        Pitched: {tracks[0]}
+      </span>
+    );
+  }
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(p => !p)}
+        className="text-xs bg-amber-600/20 text-amber-400 border border-amber-600/30 px-2 py-0.5 rounded-full flex items-center gap-1 whitespace-nowrap"
+      >
+        Pitched ({tracks.length}) <span className={`transition-transform inline-block ${open ? 'rotate-180' : ''}`}>▾</span>
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 z-20 bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl p-1.5 min-w-[180px]">
+          {tracks.map(t => (
+            <p key={t} className="text-xs text-zinc-300 py-1 px-2 hover:bg-zinc-700 rounded">{t}</p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const BLANK_ACCOUNT: Omit<EmailAccount, 'id'> = {
   name: '', email: '', smtpHost: 'smtp.zoho.com', smtpPort: '465', smtpUser: '', smtpPass: '',
 };
@@ -87,6 +171,7 @@ export default function Dashboard() {
   const [activeSection, setActiveSection] = useState<'demos' | 'promotion' | 'account'>('demos');
   const [demosTab, setDemosTab] = useState<'compose' | 'template'>('compose');
   const [promotionTab, setPromotionTab] = useState<'compose' | 'template'>('compose');
+  const [promotionSection, setPromotionSection] = useState<'radio' | 'playlists'>('radio');
   const [demosMatchMode, setDemosMatchMode] = useState<'any' | 'all'>('any');
   const [radioMatchMode, setRadioMatchMode] = useState<'any' | 'all'>('any');
 
@@ -108,6 +193,8 @@ export default function Dashboard() {
   const [maxInstagram, setMaxInstagram] = useState(0);
   const [showInstagram, setShowInstagram] = useState(false);
   const [demosTemplate, setDemosTemplate] = useState(DEFAULT_DEMOS_TEMPLATE);
+  const [demosFollowUpTemplate, setDemosFollowUpTemplate] = useState(DEFAULT_FOLLOWUP_TEMPLATE);
+  const [useFollowUp, setUseFollowUp] = useState(false);
   const [previewArtists, setPreviewArtists] = useState<Artist[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewDone, setPreviewDone] = useState(false);
@@ -141,9 +228,31 @@ export default function Dashboard() {
   const [testEmailSending, setTestEmailSending] = useState(false);
   const [testEmailResult, setTestEmailResult] = useState<'success' | 'error' | null>(null);
   const [testEmailError, setTestEmailError] = useState('');
+  const [sendDelay, setSendDelay] = useState(0);
+
+  // Blacklist
+  const [blacklist, setBlacklist] = useState<string[]>([]);
+  const [newBlacklistEmail, setNewBlacklistEmail] = useState('');
+
+  // Custom contacts
+  const [customContacts, setCustomContacts] = useState<CustomContact[]>([]);
+  const [newCustomContact, setNewCustomContact] = useState({ artistName: '', managerName: '', managerEmail: '' });
+  const [showAddCustomContact, setShowAddCustomContact] = useState(false);
+
+  // Campaigns
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+
+  // Deliverability
+  const [deliverabilityResult, setDeliverabilityResult] = useState<DeliverabilityResult | null>(null);
+  const [deliverabilityLoading, setDeliverabilityLoading] = useState(false);
+
+  // Email preview modal
+  const [previewModalType, setPreviewModalType] = useState<'demos' | 'radio' | null>(null);
+  const [previewModalIdx, setPreviewModalIdx] = useState(0);
 
   // Save tracking
   const [lastSavedDemosTemplate, setLastSavedDemosTemplate] = useState(DEFAULT_DEMOS_TEMPLATE);
+  const [lastSavedFollowUpTemplate, setLastSavedFollowUpTemplate] = useState(DEFAULT_FOLLOWUP_TEMPLATE);
   const [lastSavedRadioTemplate, setLastSavedRadioTemplate] = useState(DEFAULT_RADIO_TEMPLATE);
   const [lastSavedSignOff, setLastSavedSignOff] = useState(DEFAULT_SIGN_OFF);
   const [lastSavedSignOffImage, setLastSavedSignOffImage] = useState<string | null>(null);
@@ -167,24 +276,56 @@ export default function Dashboard() {
       const savedDemosTemplate = localStorage.getItem('tp_email_template');
       if (savedDemosTemplate !== null) { setDemosTemplate(savedDemosTemplate); setLastSavedDemosTemplate(savedDemosTemplate); }
 
+      const savedFollowUp = localStorage.getItem('tp_followup_template');
+      if (savedFollowUp !== null) { setDemosFollowUpTemplate(savedFollowUp); setLastSavedFollowUpTemplate(savedFollowUp); }
+
       const savedRadioTemplate = localStorage.getItem('tp_radio_template');
       if (savedRadioTemplate !== null) { setRadioTemplate(savedRadioTemplate); setLastSavedRadioTemplate(savedRadioTemplate); }
+
+      const savedCampaigns = localStorage.getItem('tp_campaigns');
+      if (savedCampaigns) setCampaigns(JSON.parse(savedCampaigns));
+
+      const savedBlacklist = localStorage.getItem('tp_blacklist');
+      if (savedBlacklist) setBlacklist(JSON.parse(savedBlacklist));
+
+      const savedCustomContacts = localStorage.getItem('tp_custom_contacts');
+      if (savedCustomContacts) setCustomContacts(JSON.parse(savedCustomContacts));
+
+      const savedSendDelay = localStorage.getItem('tp_send_delay');
+      if (savedSendDelay !== null) setSendDelay(Number(savedSendDelay));
     } catch {}
   }, []);
 
+  const pitchedEmailMap = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const campaign of campaigns) {
+      for (const email of campaign.emails) {
+        const key = email.toLowerCase();
+        const existing = map.get(key) ?? [];
+        if (!existing.includes(campaign.trackTitle)) {
+          map.set(key, [...existing, campaign.trackTitle]);
+        }
+      }
+    }
+    return map;
+  }, [campaigns]);
+
   const isDirty =
     demosTemplate !== lastSavedDemosTemplate ||
+    demosFollowUpTemplate !== lastSavedFollowUpTemplate ||
     radioTemplate !== lastSavedRadioTemplate ||
     signOff !== lastSavedSignOff ||
     signOffImage !== lastSavedSignOffImage;
 
   function saveAll() {
     localStorage.setItem('tp_email_template', demosTemplate);
+    localStorage.setItem('tp_followup_template', demosFollowUpTemplate);
     localStorage.setItem('tp_radio_template', radioTemplate);
     localStorage.setItem('tp_sign_off', signOff);
-    if (signOffImage) { localStorage.setItem('tp_sign_off_image', signOffImage); }
-    else { localStorage.removeItem('tp_sign_off_image'); }
+    if (signOffImage) localStorage.setItem('tp_sign_off_image', signOffImage);
+    else localStorage.removeItem('tp_sign_off_image');
     setLastSavedDemosTemplate(demosTemplate);
+    setLastSavedFollowUpTemplate(demosFollowUpTemplate);
     setLastSavedRadioTemplate(radioTemplate);
     setLastSavedSignOff(signOff);
     setLastSavedSignOffImage(signOffImage);
@@ -192,6 +333,7 @@ export default function Dashboard() {
 
   function discardChanges() {
     setDemosTemplate(lastSavedDemosTemplate);
+    setDemosFollowUpTemplate(lastSavedFollowUpTemplate);
     setRadioTemplate(lastSavedRadioTemplate);
     setSignOff(lastSavedSignOff);
     setSignOffImage(lastSavedSignOffImage);
@@ -236,30 +378,84 @@ export default function Dashboard() {
     localStorage.setItem('tp_selected_account', id);
   }
 
+  function addToBlacklist() {
+    const email = newBlacklistEmail.trim().toLowerCase();
+    if (!email || blacklist.includes(email)) return;
+    const updated = [...blacklist, email];
+    setBlacklist(updated);
+    localStorage.setItem('tp_blacklist', JSON.stringify(updated));
+    setNewBlacklistEmail('');
+  }
+
+  function removeFromBlacklist(email: string) {
+    const updated = blacklist.filter(e => e !== email);
+    setBlacklist(updated);
+    localStorage.setItem('tp_blacklist', JSON.stringify(updated));
+  }
+
+  function addCustomContact() {
+    if (!newCustomContact.artistName || !newCustomContact.managerEmail) return;
+    const contact: CustomContact = { id: Date.now().toString(), ...newCustomContact };
+    const updated = [...customContacts, contact];
+    setCustomContacts(updated);
+    localStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
+    setShowAddCustomContact(false);
+    setNewCustomContact({ artistName: '', managerName: '', managerEmail: '' });
+  }
+
+  function removeCustomContact(id: string) {
+    const updated = customContacts.filter(c => c.id !== id);
+    setCustomContacts(updated);
+    localStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
+  }
+
+  function logCampaign(type: 'demos' | 'radio', title: string, emails: string[]) {
+    if (!emails.length) return;
+    const campaign: Campaign = { id: Date.now().toString(), trackTitle: title, date: new Date().toISOString(), type, emails };
+    const updated = [...campaigns, campaign];
+    setCampaigns(updated);
+    localStorage.setItem('tp_campaigns', JSON.stringify(updated));
+  }
+
   async function handleTestEmail() {
     if (!testEmailTo) return;
-    setTestEmailSending(true);
-    setTestEmailResult(null);
-    setTestEmailError('');
+    setTestEmailSending(true); setTestEmailResult(null); setTestEmailError('');
     try {
+      const acc = emailAccounts.find(a => a.id === selectedAccountId);
       const res = await fetch('/api/test-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           to: testEmailTo,
-          fromAccount: emailAccounts.find(a => a.id === selectedAccountId)
-            ? { ...emailAccounts.find(a => a.id === selectedAccountId)!, smtpPort: Number(emailAccounts.find(a => a.id === selectedAccountId)!.smtpPort) }
-            : undefined,
+          fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
         }),
       });
       const data = await res.json();
       if (!res.ok) { setTestEmailResult('error'); setTestEmailError(data.error || 'Failed to send.'); }
-      else { setTestEmailResult('success'); }
+      else setTestEmailResult('success');
     } catch { setTestEmailResult('error'); setTestEmailError('Network error. Please try again.'); }
     finally { setTestEmailSending(false); }
   }
 
-  // Song Demos helpers
+  async function handleDeliverabilityCheck() {
+    const acc = emailAccounts.find(a => a.id === selectedAccountId);
+    const emailAddr = acc?.email || acc?.smtpUser;
+    if (!emailAddr) return;
+    const domain = emailAddr.split('@')[1];
+    if (!domain) return;
+    setDeliverabilityLoading(true); setDeliverabilityResult(null);
+    try {
+      const res = await fetch('/api/deliverability', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain }),
+      });
+      const data = await res.json();
+      setDeliverabilityResult(data);
+    } catch {}
+    finally { setDeliverabilityLoading(false); }
+  }
+
   const FOLLOWER_STEPS = [
     { label: 'Any', value: 0 },
     { label: '100K', value: 100_000 },
@@ -312,23 +508,34 @@ export default function Dashboard() {
   }
 
   async function handleSend() {
-    if (!trackTitle || !driveLink || !selectedGenres.length) return;
+    if (!trackTitle || !driveLink) return;
     setSending(true); setSendError(''); setSendResult(null);
     try {
+      const acc = emailAccounts.find(a => a.id === selectedAccountId);
       const res = await fetch('/api/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          trackTitle, driveLink, genres: selectedGenres, emailTemplate: demosTemplate,
-          senderName, signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode: demosMatchMode,
-          fromAccount: emailAccounts.find(a => a.id === selectedAccountId)
-            ? { ...emailAccounts.find(a => a.id === selectedAccountId)!, smtpPort: Number(emailAccounts.find(a => a.id === selectedAccountId)!.smtpPort) }
+          trackTitle, driveLink, genres: selectedGenres,
+          emailTemplate: useFollowUp ? demosFollowUpTemplate : demosTemplate,
+          senderName, signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram,
+          matchMode: demosMatchMode,
+          sendDelay: sendDelay > 0 ? sendDelay : undefined,
+          blacklist: blacklist.length > 0 ? blacklist : undefined,
+          customContacts: customContacts.length > 0
+            ? customContacts.map(c => ({ artistName: c.artistName, managerName: c.managerName, managerEmail: c.managerEmail }))
             : undefined,
+          fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
         }),
       });
       const data = await res.json();
       if (!res.ok) { setSendError(data.error || 'Failed to send.'); }
-      else { setSendResult({ sent: data.sent, failed: data.failed, total: data.total }); }
+      else {
+        setSendResult({ sent: data.sent, failed: data.failed, total: data.total });
+        const sentEmails = (data.results as { to: string; success: boolean }[] | undefined)
+          ?.filter(r => r.success).map(r => r.to) ?? [];
+        logCampaign('demos', trackTitle, sentEmails);
+      }
     } catch { setSendError('Network error. Please try again.'); }
     finally { setSending(false); }
   }
@@ -344,10 +551,10 @@ export default function Dashboard() {
     }
   }, [previewArtists, sortOrder]);
 
-  const totalEmails = previewArtists.reduce((acc, a) => acc + a.managerEmails.length, 0);
-  const canSend = trackTitle && driveLink && selectedGenres.length > 0 && previewDone;
+  const totalEmails = previewArtists.reduce((acc, a) => acc + a.managerEmails.length, 0) + customContacts.length;
+  const canSend = !!trackTitle && !!driveLink && (selectedGenres.length > 0 || customContacts.length > 0) &&
+    (previewDone || selectedGenres.length === 0);
 
-  // Radio helpers
   const filteredRadioGenres = useMemo(() =>
     radioAllGenres.filter(g => g.toLowerCase().includes(radioGenreSearch.toLowerCase()) && !selectedRadioGenres.includes(g)).slice(0, 50),
     [radioAllGenres, radioGenreSearch, selectedRadioGenres]
@@ -381,28 +588,85 @@ export default function Dashboard() {
     if (!trackTitle || !driveLink) return;
     setRadioSending(true); setRadioSendError(''); setRadioSendResult(null);
     try {
+      const acc = emailAccounts.find(a => a.id === selectedAccountId);
       const res = await fetch('/api/radio-send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           trackTitle, driveLink, genres: selectedRadioGenres, locations: selectedLocations,
           emailTemplate: radioTemplate, senderName, signOff, signOffImage, matchMode: radioMatchMode,
-          fromAccount: emailAccounts.find(a => a.id === selectedAccountId)
-            ? { ...emailAccounts.find(a => a.id === selectedAccountId)!, smtpPort: Number(emailAccounts.find(a => a.id === selectedAccountId)!.smtpPort) }
-            : undefined,
+          sendDelay: sendDelay > 0 ? sendDelay : undefined,
+          blacklist: blacklist.length > 0 ? blacklist : undefined,
+          fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
         }),
       });
       const data = await res.json();
       if (!res.ok) { setRadioSendError(data.error || 'Failed to send.'); }
-      else { setRadioSendResult({ sent: data.sent, failed: data.failed, total: data.total }); }
+      else {
+        setRadioSendResult({ sent: data.sent, failed: data.failed, total: data.total });
+        const sentEmails = (data.results as { to: string; success: boolean }[] | undefined)
+          ?.filter(r => r.success).map(r => r.to) ?? [];
+        logCampaign('radio', trackTitle, sentEmails);
+      }
     } catch { setRadioSendError('Network error. Please try again.'); }
     finally { setRadioSending(false); }
   }
 
   const radioTotalEmails = radioStations.reduce((acc, s) => acc + s.emails.length, 0);
-  const canSendRadio = trackTitle && driveLink && radioPreviewDone;
+  const canSendRadio = !!trackTitle && !!driveLink && radioPreviewDone;
 
   const selectedAccount = emailAccounts.find(a => a.id === selectedAccountId);
+
+  // Build email preview modal entries
+  type PreviewEntry = { label: string; to: string; subject: string; body: string };
+  const previewModalEntries = useMemo((): PreviewEntry[] => {
+    if (!previewModalType) return [];
+    if (previewModalType === 'demos') {
+      const entries: PreviewEntry[] = [];
+      sortedArtists.slice(0, 20).forEach(a => {
+        a.managerEmails.forEach((email, idx) => {
+          const vars = { managerName: a.managerNames[idx] || 'there', artistName: a.name, trackTitle, driveLink, senderName, managementCompany: a.managementCompany };
+          const tpl = useFollowUp ? demosFollowUpTemplate : demosTemplate;
+          const bodyParts = [renderTemplateClient(tpl, vars)];
+          if (signOff?.trim()) bodyParts.push(renderTemplateClient(signOff, vars));
+          entries.push({
+            label: `${a.name}${a.managerNames[idx] ? ` (${a.managerNames[idx]})` : ''} <${email}>`,
+            to: email,
+            subject: `Music Submission: ${trackTitle} for ${a.name}`,
+            body: bodyParts.join('\n\n'),
+          });
+        });
+      });
+      customContacts.forEach(cc => {
+        const vars = { managerName: cc.managerName || 'there', artistName: cc.artistName, trackTitle, driveLink, senderName, managementCompany: '' };
+        const tpl = useFollowUp ? demosFollowUpTemplate : demosTemplate;
+        const bodyParts = [renderTemplateClient(tpl, vars)];
+        if (signOff?.trim()) bodyParts.push(renderTemplateClient(signOff, vars));
+        entries.push({
+          label: `${cc.artistName}${cc.managerName ? ` (${cc.managerName})` : ''} <${cc.managerEmail}> [Custom]`,
+          to: cc.managerEmail,
+          subject: `Music Submission: ${trackTitle} for ${cc.artistName}`,
+          body: bodyParts.join('\n\n'),
+        });
+      });
+      return entries;
+    }
+    const entries: PreviewEntry[] = [];
+    radioStations.slice(0, 20).forEach(s => {
+      s.emails.forEach(email => {
+        const vars = { stationName: s.name, trackTitle, driveLink, senderName };
+        const bodyParts = [renderTemplateClient(radioTemplate, vars)];
+        if (signOff?.trim()) bodyParts.push(renderTemplateClient(signOff, vars));
+        entries.push({
+          label: `${s.name} <${email}>`,
+          to: email,
+          subject: `Music Submission: ${trackTitle} for ${s.name}`,
+          body: bodyParts.join('\n\n'),
+        });
+      });
+    });
+    return entries;
+  }, [previewModalType, sortedArtists, radioStations, demosTemplate, demosFollowUpTemplate, useFollowUp, radioTemplate, signOff, trackTitle, driveLink, senderName, customContacts]);
 
   const NAV_ITEMS = [
     {
@@ -445,7 +709,7 @@ export default function Dashboard() {
         <a href="/api/logout" className="text-sm text-zinc-400 hover:text-white transition">Log out</a>
       </header>
 
-      {/* Mobile nav — shown below header on small screens */}
+      {/* Mobile nav */}
       <div className="md:hidden border-b border-zinc-800 bg-zinc-950 px-2 py-2 flex gap-1">
         {NAV_ITEMS.map(item => (
           <button
@@ -462,16 +726,14 @@ export default function Dashboard() {
       </div>
 
       <div className="flex flex-1 min-h-0">
-        {/* Desktop sidebar — hidden on mobile */}
+        {/* Desktop sidebar */}
         <nav className="hidden md:flex flex-col w-52 shrink-0 border-r border-zinc-800 p-3 gap-1">
           {NAV_ITEMS.map(item => (
             <button
               key={item.id}
               onClick={() => setActiveSection(item.id)}
               className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition text-left w-full ${
-                activeSection === item.id
-                  ? 'bg-zinc-800 text-white'
-                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                activeSection === item.id ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
               }`}
             >
               {item.icon}
@@ -487,7 +749,6 @@ export default function Dashboard() {
             {/* ── Song Demos ── */}
             {activeSection === 'demos' && (
               <>
-                {/* Sub-tabs */}
                 <div className="flex gap-1 bg-zinc-900 rounded-lg p-1 w-fit border border-zinc-800">
                   {(['compose', 'template'] as const).map(t => (
                     <button key={t} onClick={() => setDemosTab(t)}
@@ -498,301 +759,436 @@ export default function Dashboard() {
                 </div>
 
                 {demosTab === 'template' && (
-                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                    <div>
-                      <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Email Template</h2>
-                      <p className="text-sm text-zinc-500 mb-2">Click a variable to copy it:</p>
+                  <div className="space-y-6">
+                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                      <div>
+                        <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Main Template</h2>
+                        <p className="text-sm text-zinc-500 mb-2">Click a variable to copy it:</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {['{{managerName}}', '{{artistName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}', '{{managementCompany}}'].map(v => (
+                            <CopyChip key={v} value={v} />
+                          ))}
+                        </div>
+                      </div>
+                      <textarea value={demosTemplate} onChange={e => setDemosTemplate(e.target.value)} rows={14}
+                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
+                      <button onClick={() => setDemosTemplate(DEFAULT_DEMOS_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                        Reset to default
+                      </button>
+                    </section>
+
+                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                      <div>
+                        <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Follow-up Template</h2>
+                        <p className="text-xs text-zinc-500">Used when the follow-up toggle is enabled on the Compose tab.</p>
+                      </div>
                       <div className="flex flex-wrap gap-1.5">
-                        {['{{managerName}}', '{{artistName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}', '{{managementCompany}}'].map(v => (
+                        {['{{managerName}}', '{{artistName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}'].map(v => (
                           <CopyChip key={v} value={v} />
                         ))}
                       </div>
-                    </div>
-                    <textarea value={demosTemplate} onChange={e => setDemosTemplate(e.target.value)} rows={16}
-                      className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
-                    <button onClick={() => setDemosTemplate(DEFAULT_DEMOS_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
-                      Reset to default
-                    </button>
-                  </section>
+                      <textarea value={demosFollowUpTemplate} onChange={e => setDemosFollowUpTemplate(e.target.value)} rows={12}
+                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
+                      <button onClick={() => setDemosFollowUpTemplate(DEFAULT_FOLLOWUP_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                        Reset to default
+                      </button>
+                    </section>
+                  </div>
                 )}
 
                 {demosTab === 'compose' && (<>
-                {/* Track Info */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Track Details</h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-zinc-300 mb-1.5">Your Name</label>
-                      <input type="text" value={senderName} onChange={e => setSenderName(e.target.value)}
-                        placeholder="Eren Senbay"
-                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                  {/* Track Info */}
+                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Track Details</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-zinc-300 mb-1.5">Your Name</label>
+                        <input type="text" value={senderName} onChange={e => setSenderName(e.target.value)}
+                          placeholder="Eren Senbay"
+                          className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-zinc-300 mb-1.5">Track Title</label>
+                        <input type="text" value={trackTitle} onChange={e => setTrackTitle(e.target.value)}
+                          placeholder="e.g. Give Me A Sign"
+                          className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                      </div>
+                      <div className="md:col-span-2">
+                        <label className="block text-sm font-medium text-zinc-300 mb-1.5">Google Drive Link</label>
+                        <input type="url" value={driveLink} onChange={e => setDriveLink(e.target.value)}
+                          placeholder="https://drive.google.com/file/d/..."
+                          className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                      </div>
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-zinc-300 mb-1.5">Track Title</label>
-                      <input type="text" value={trackTitle} onChange={e => setTrackTitle(e.target.value)}
-                        placeholder="e.g. Give Me A Sign"
-                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
-                    </div>
-                    <div className="md:col-span-2">
-                      <label className="block text-sm font-medium text-zinc-300 mb-1.5">Google Drive Link</label>
-                      <input type="url" value={driveLink} onChange={e => setDriveLink(e.target.value)}
-                        placeholder="https://drive.google.com/file/d/..."
-                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
-                    </div>
-                  </div>
-                </section>
+                  </section>
 
-                {/* Genre Selector */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Select Genres</h2>
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-xs text-zinc-500">Match:</span>
-                      {(['any', 'all'] as const).map(mode => (
-                        <button key={mode} onClick={() => { setDemosMatchMode(mode); setPreviewDone(false); setSendResult(null); }}
-                          className={`px-3 py-1 rounded-full text-xs font-medium border transition ${demosMatchMode === mode ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
-                          {mode === 'any' ? 'Any genre' : 'All genres'}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <p className="text-sm text-zinc-500">
-                    {demosMatchMode === 'any'
-                      ? 'Artists tagged with at least one of the selected genres.'
-                      : 'Artists tagged with every selected genre.'}
-                  </p>
-                  {selectedGenres.length > 0 && (
-                    <div className="flex flex-wrap gap-2">
-                      {selectedGenres.map(g => (
-                        <button key={g} onClick={() => toggleGenre(g)}
-                          className="inline-flex items-center gap-1.5 bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium px-3 py-1 rounded-full transition">
-                          {g}<span className="text-violet-200">×</span>
-                        </button>
-                      ))}
-                      <button onClick={() => { setSelectedGenres([]); setPreviewDone(false); setSendResult(null); }}
-                        className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 transition">
-                        Clear all
-                      </button>
-                    </div>
-                  )}
-                  <div className="relative">
-                    <input type="text" value={genreSearch} onChange={e => setGenreSearch(e.target.value)}
-                      onFocus={() => setShowGenreDropdown(true)}
-                      onBlur={() => setTimeout(() => setShowGenreDropdown(false), 150)}
-                      placeholder="Search genres (e.g. Pop, R&B, Hip Hop...)"
-                      className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
-                    {showGenreDropdown && filteredGenres.length > 0 && (
-                      <div className="absolute z-10 mt-1 w-full bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl max-h-56 overflow-y-auto">
-                        {filteredGenres.map(g => (
-                          <button key={g} onMouseDown={() => { toggleGenre(g); setGenreSearch(''); }}
-                            className="w-full text-left px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700 transition">
-                            {g}
+                  {/* Genre Selector */}
+                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Select Genres</h2>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs text-zinc-500">Match:</span>
+                        {(['any', 'all'] as const).map(mode => (
+                          <button key={mode} onClick={() => { setDemosMatchMode(mode); setPreviewDone(false); setSendResult(null); }}
+                            className={`px-3 py-1 rounded-full text-xs font-medium border transition ${demosMatchMode === mode ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                            {mode === 'any' ? 'Any genre' : 'All genres'}
                           </button>
                         ))}
+                      </div>
+                    </div>
+                    <p className="text-sm text-zinc-500">
+                      {demosMatchMode === 'any' ? 'Artists tagged with at least one of the selected genres.' : 'Artists tagged with every selected genre.'}
+                    </p>
+                    {selectedGenres.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {selectedGenres.map(g => (
+                          <button key={g} onClick={() => toggleGenre(g)}
+                            className="inline-flex items-center gap-1.5 bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium px-3 py-1 rounded-full transition">
+                            {g}<span className="text-violet-200">×</span>
+                          </button>
+                        ))}
+                        <button onClick={() => { setSelectedGenres([]); setPreviewDone(false); setSendResult(null); }}
+                          className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 transition">Clear all</button>
                       </div>
                     )}
-                  </div>
-                </section>
-
-                {/* Filters */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-5">
-                  <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Filters</h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium text-zinc-400">Min Spotify followers</p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {FOLLOWER_STEPS.map(opt => (
-                          <button key={`min-sp-${opt.value}`} onClick={() => { setMinAudience(opt.value); resetFilters(); }}
-                            className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${minAudience === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium text-zinc-400">Max Spotify followers</p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {FOLLOWER_STEPS.map(opt => (
-                          <button key={`max-sp-${opt.value}`} onClick={() => { setMaxAudience(opt.value); resetFilters(); }}
-                            className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${maxAudience === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="md:col-span-2 space-y-3">
-                      <button onClick={() => setShowInstagram(p => !p)}
-                        className="flex items-center gap-1.5 text-xs font-medium text-zinc-400 hover:text-zinc-200 transition">
-                        <svg viewBox="0 0 24 24" className={`w-3.5 h-3.5 fill-none stroke-current stroke-2 transition-transform ${showInstagram ? 'rotate-180' : ''}`} strokeLinecap="round" strokeLinejoin="round">
-                          <polyline points="6 9 12 15 18 9"/>
-                        </svg>
-                        Instagram followers
-                        {(minInstagram > 0 || maxInstagram > 0) && !showInstagram && (
-                          <span className="text-violet-400">
-                            {minInstagram > 0 && maxInstagram > 0
-                              ? `${minInstagram >= 1_000_000 ? `${(minInstagram/1_000_000).toFixed(1)}M` : `${Math.round(minInstagram/1_000)}K`} – ${maxInstagram >= 1_000_000 ? `${(maxInstagram/1_000_000).toFixed(1)}M` : `${Math.round(maxInstagram/1_000)}K`}`
-                              : minInstagram > 0
-                              ? `min ${minInstagram >= 1_000_000 ? `${(minInstagram/1_000_000).toFixed(1)}M` : `${Math.round(minInstagram/1_000)}K`}`
-                              : `max ${maxInstagram >= 1_000_000 ? `${(maxInstagram/1_000_000).toFixed(1)}M` : `${Math.round(maxInstagram/1_000)}K`}`}
-                          </span>
-                        )}
-                      </button>
-                      {showInstagram && (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-5 pt-1">
-                          <div className="space-y-2">
-                            <p className="text-xs font-medium text-zinc-400">Min</p>
-                            <div className="flex flex-wrap gap-1.5">
-                              {FOLLOWER_STEPS.map(opt => (
-                                <button key={`min-ig-${opt.value}`} onClick={() => { setMinInstagram(opt.value); resetFilters(); }}
-                                  className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${minInstagram === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
-                                  {opt.label}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                          <div className="space-y-2">
-                            <p className="text-xs font-medium text-zinc-400">Max</p>
-                            <div className="flex flex-wrap gap-1.5">
-                              {FOLLOWER_STEPS.map(opt => (
-                                <button key={`max-ig-${opt.value}`} onClick={() => { setMaxInstagram(opt.value); resetFilters(); }}
-                                  className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${maxInstagram === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
-                                  {opt.label}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
+                    <div className="relative">
+                      <input type="text" value={genreSearch} onChange={e => setGenreSearch(e.target.value)}
+                        onFocus={() => setShowGenreDropdown(true)}
+                        onBlur={() => setTimeout(() => setShowGenreDropdown(false), 150)}
+                        placeholder="Search genres (e.g. Pop, R&B, Hip Hop...)"
+                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                      {showGenreDropdown && filteredGenres.length > 0 && (
+                        <div className="absolute z-10 mt-1 w-full bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl max-h-56 overflow-y-auto">
+                          {filteredGenres.map(g => (
+                            <button key={g} onMouseDown={() => { toggleGenre(g); setGenreSearch(''); }}
+                              className="w-full text-left px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700 transition">{g}</button>
+                          ))}
                         </div>
                       )}
                     </div>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium text-zinc-400">Artist gender</p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {GENDER_OPTIONS.map(opt => (
-                          <button key={`gender-${opt.value}`} onClick={() => { setGender(opt.value); resetFilters(); }}
-                            className={`px-3 py-1 rounded-full text-xs font-medium border transition ${gender === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium text-zinc-400">Artist type</p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {ARTIST_TYPE_OPTIONS.map(opt => (
-                          <button key={`type-${opt.value}`} onClick={() => { setArtistType(opt.value); resetFilters(); }}
-                            className={`px-3 py-1 rounded-full text-xs font-medium border transition ${artistType === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </section>
+                  </section>
 
-                {/* Preview */}
-                <div className="flex items-center gap-4">
-                  <button onClick={handlePreview} disabled={!selectedGenres.length || previewLoading}
-                    className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-5 py-2.5 text-sm font-semibold text-white transition">
-                    {previewLoading ? 'Loading...' : 'Preview Recipients'}
-                  </button>
-                  {previewDone && (
-                    <span className="text-sm text-zinc-400">{previewArtists.length} artists · {totalEmails} emails</span>
-                  )}
-                </div>
-
-                {previewDone && previewArtists.length > 0 && (
-                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden">
-                    <div className="px-4 md:px-6 py-3 md:py-4 border-b border-zinc-800 flex flex-wrap items-center justify-between gap-2">
-                      <h3 className="text-sm font-semibold text-zinc-300">Recipients Preview <span className="text-zinc-500 font-normal">· {previewArtists.length} artists</span></h3>
-                      <select value={sortOrder} onChange={e => setSortOrder(e.target.value as typeof sortOrder)}
-                        className="text-xs bg-zinc-800 border border-zinc-700 text-zinc-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-500">
-                        <option value="followers-desc">Followers: High → Low</option>
-                        <option value="followers-asc">Followers: Low → High</option>
-                        <option value="alpha-asc">A → Z</option>
-                        <option value="alpha-desc">Z → A</option>
-                        <option value="random">Random</option>
-                      </select>
-                    </div>
-                    <div className="divide-y divide-zinc-800 max-h-[32rem] overflow-y-auto">
-                      {sortedArtists.map(a => (
-                        <div key={a.name} className="px-4 md:px-6 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="shrink-0 w-10 h-10 rounded-full overflow-hidden bg-zinc-700">
-                              {a.avatarUrl ? (
-                                <img src={a.avatarUrl} alt={a.name} width={40} height={40} className="w-full h-full object-cover" />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center text-zinc-500 text-xs font-bold">{a.name.charAt(0)}</div>
-                              )}
-                            </div>
-                            <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                                <p className="text-sm font-medium text-white">{a.name}</p>
-                                {a.instagramHandle && (
-                                  <a href={`https://instagram.com/${a.instagramHandle.replace('@', '')}`} target="_blank" rel="noopener noreferrer"
-                                    className="text-xs text-pink-400 hover:text-pink-300 transition">{a.instagramHandle}</a>
-                                )}
-                                {a.spotifyFollowers > 0 && (
-                                  <span className="inline-flex items-center gap-1 text-xs bg-zinc-800 text-green-400 px-1.5 py-0.5 rounded font-medium">
-                                    <svg viewBox="0 0 24 24" className="w-3 h-3 fill-green-400 shrink-0"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
-                                    {a.spotifyFollowers >= 1_000_000 ? `${(a.spotifyFollowers / 1_000_000).toFixed(1)}M` : `${Math.round(a.spotifyFollowers / 1_000)}K`}
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-xs text-zinc-500 mt-0.5">{a.managementCompany || 'Independent'}</p>
-                            </div>
-                          </div>
-                          <div className="pl-[52px] sm:pl-0 sm:text-right sm:shrink-0 space-y-0.5">
-                            {a.managerEmails.map((email, i) => (
-                              <p key={email} className="text-xs text-violet-400 break-all sm:break-normal">
-                                {a.managerNames[i] ? `${a.managerNames[i]} — ` : ''}{email}
-                              </p>
-                            ))}
-                          </div>
+                  {/* Filters */}
+                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-5">
+                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Filters</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium text-zinc-400">Min Spotify followers</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {FOLLOWER_STEPS.map(opt => (
+                            <button key={`min-sp-${opt.value}`} onClick={() => { setMinAudience(opt.value); resetFilters(); }}
+                              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${minAudience === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                              {opt.label}
+                            </button>
+                          ))}
                         </div>
-                      ))}
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium text-zinc-400">Max Spotify followers</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {FOLLOWER_STEPS.map(opt => (
+                            <button key={`max-sp-${opt.value}`} onClick={() => { setMaxAudience(opt.value); resetFilters(); }}
+                              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${maxAudience === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="md:col-span-2 space-y-3">
+                        <button onClick={() => setShowInstagram(p => !p)}
+                          className="flex items-center gap-1.5 text-xs font-medium text-zinc-400 hover:text-zinc-200 transition">
+                          <svg viewBox="0 0 24 24" className={`w-3.5 h-3.5 fill-none stroke-current stroke-2 transition-transform ${showInstagram ? 'rotate-180' : ''}`} strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="6 9 12 15 18 9"/>
+                          </svg>
+                          Instagram followers
+                          {(minInstagram > 0 || maxInstagram > 0) && !showInstagram && (
+                            <span className="text-violet-400">
+                              {minInstagram > 0 && maxInstagram > 0
+                                ? `${minInstagram >= 1_000_000 ? `${(minInstagram/1_000_000).toFixed(1)}M` : `${Math.round(minInstagram/1_000)}K`} – ${maxInstagram >= 1_000_000 ? `${(maxInstagram/1_000_000).toFixed(1)}M` : `${Math.round(maxInstagram/1_000)}K`}`
+                                : minInstagram > 0
+                                ? `min ${minInstagram >= 1_000_000 ? `${(minInstagram/1_000_000).toFixed(1)}M` : `${Math.round(minInstagram/1_000)}K`}`
+                                : `max ${maxInstagram >= 1_000_000 ? `${(maxInstagram/1_000_000).toFixed(1)}M` : `${Math.round(maxInstagram/1_000)}K`}`}
+                            </span>
+                          )}
+                        </button>
+                        {showInstagram && (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-5 pt-1">
+                            <div className="space-y-2">
+                              <p className="text-xs font-medium text-zinc-400">Min</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {FOLLOWER_STEPS.map(opt => (
+                                  <button key={`min-ig-${opt.value}`} onClick={() => { setMinInstagram(opt.value); resetFilters(); }}
+                                    className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${minInstagram === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                                    {opt.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                            <div className="space-y-2">
+                              <p className="text-xs font-medium text-zinc-400">Max</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {FOLLOWER_STEPS.map(opt => (
+                                  <button key={`max-ig-${opt.value}`} onClick={() => { setMaxInstagram(opt.value); resetFilters(); }}
+                                    className={`px-2.5 py-1 rounded-full text-xs font-medium border transition ${maxInstagram === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                                    {opt.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium text-zinc-400">Artist gender</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {GENDER_OPTIONS.map(opt => (
+                            <button key={`gender-${opt.value}`} onClick={() => { setGender(opt.value); resetFilters(); }}
+                              className={`px-3 py-1 rounded-full text-xs font-medium border transition ${gender === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium text-zinc-400">Artist type</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {ARTIST_TYPE_OPTIONS.map(opt => (
+                            <button key={`type-${opt.value}`} onClick={() => { setArtistType(opt.value); resetFilters(); }}
+                              className={`px-3 py-1 rounded-full text-xs font-medium border transition ${artistType === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   </section>
-                )}
 
-                {previewDone && previewArtists.length === 0 && (
-                  <p className="text-sm text-zinc-500">No artists with manager emails found for the selected genres.</p>
-                )}
+                  {/* Custom Contacts */}
+                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Custom Contacts</h2>
+                        <p className="text-xs text-zinc-500 mt-0.5">Add contacts outside the database — always included in sends.</p>
+                      </div>
+                      {customContacts.length > 0 && (
+                        <span className="text-xs text-zinc-500">{customContacts.length} contact{customContacts.length !== 1 ? 's' : ''}</span>
+                      )}
+                    </div>
+                    {customContacts.length > 0 && (
+                      <div className="divide-y divide-zinc-800 border border-zinc-800 rounded-lg overflow-hidden">
+                        {customContacts.map(c => (
+                          <div key={c.id} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                            <div className="min-w-0">
+                              <p className="text-sm text-white font-medium">{c.artistName}</p>
+                              <p className="text-xs text-zinc-500">{c.managerName ? `${c.managerName} · ` : ''}{c.managerEmail}</p>
+                            </div>
+                            <button onClick={() => removeCustomContact(c.id)}
+                              className="text-zinc-600 hover:text-red-400 transition text-lg leading-none shrink-0">×</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {showAddCustomContact ? (
+                      <div className="border border-zinc-700 rounded-xl p-4 space-y-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs text-zinc-400 mb-1">Artist / Project Name *</label>
+                            <input value={newCustomContact.artistName} onChange={e => setNewCustomContact(p => ({ ...p, artistName: e.target.value }))}
+                              placeholder="Artist name"
+                              className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-zinc-400 mb-1">Manager Name</label>
+                            <input value={newCustomContact.managerName} onChange={e => setNewCustomContact(p => ({ ...p, managerName: e.target.value }))}
+                              placeholder="Manager name (optional)"
+                              className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                          </div>
+                          <div className="sm:col-span-2">
+                            <label className="block text-xs text-zinc-400 mb-1">Email Address *</label>
+                            <input type="email" value={newCustomContact.managerEmail} onChange={e => setNewCustomContact(p => ({ ...p, managerEmail: e.target.value }))}
+                              placeholder="contact@example.com"
+                              className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                          </div>
+                        </div>
+                        <div className="flex gap-2 pt-1">
+                          <button onClick={addCustomContact} disabled={!newCustomContact.artistName || !newCustomContact.managerEmail}
+                            className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-4 py-2 text-sm font-semibold text-white transition">
+                            Add Contact
+                          </button>
+                          <button onClick={() => { setShowAddCustomContact(false); setNewCustomContact({ artistName: '', managerName: '', managerEmail: '' }); }}
+                            className="rounded-lg bg-zinc-800 hover:bg-zinc-700 px-4 py-2 text-sm text-zinc-300 transition">
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button onClick={() => setShowAddCustomContact(true)} className="text-sm text-violet-400 hover:text-violet-300 transition">
+                        + Add custom contact
+                      </button>
+                    )}
+                  </section>
 
-                {sendResult && (
-                  <div className="rounded-lg bg-green-900/30 border border-green-700 px-5 py-4">
-                    <p className="text-green-400 font-semibold">
-                      Sent {sendResult.sent} of {sendResult.total} emails successfully.
-                      {sendResult.failed > 0 && ` ${sendResult.failed} failed.`}
-                    </p>
+                  {/* Preview */}
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button onClick={handlePreview} disabled={!selectedGenres.length || previewLoading}
+                      className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-5 py-2.5 text-sm font-semibold text-white transition">
+                      {previewLoading ? 'Loading...' : 'Preview Recipients'}
+                    </button>
+                    {(previewDone || customContacts.length > 0) && (
+                      <button
+                        onClick={() => { setPreviewModalType('demos'); setPreviewModalIdx(0); }}
+                        className="rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-4 py-2.5 text-sm font-medium text-zinc-300 transition">
+                        Preview Email
+                      </button>
+                    )}
+                    {previewDone && (
+                      <span className="text-sm text-zinc-400">{previewArtists.length} artists · {totalEmails} emails</span>
+                    )}
+                    {!previewDone && customContacts.length > 0 && (
+                      <span className="text-sm text-zinc-400">{customContacts.length} custom contact{customContacts.length !== 1 ? 's' : ''}</span>
+                    )}
                   </div>
-                )}
-                {sendError && (
-                  <div className="rounded-lg bg-red-900/30 border border-red-700 px-5 py-4">
-                    <p className="text-red-400 text-sm">{sendError}</p>
-                  </div>
-                )}
 
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3 pb-6">
-                  <button onClick={handleSend} disabled={!canSend || sending}
-                    className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-6 py-3 font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-zinc-950 text-sm">
-                    {sending ? 'Sending...' : canSend ? `Send to ${totalEmails} recipient${totalEmails !== 1 ? 's' : ''}` : 'Preview recipients first'}
-                  </button>
-                  {selectedAccount ? (
-                    <span className="text-xs text-zinc-500">Sending from <span className="text-zinc-300">{selectedAccount.name}</span> ({selectedAccount.email || selectedAccount.smtpUser})</span>
-                  ) : (
-                    <span className="text-xs text-amber-500">No email account selected — <button onClick={() => setActiveSection('account')} className="underline hover:text-amber-400">add one</button></span>
+                  {previewDone && previewArtists.length > 0 && (
+                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden">
+                      <div className="px-4 md:px-6 py-3 md:py-4 border-b border-zinc-800 flex flex-wrap items-center justify-between gap-2">
+                        <h3 className="text-sm font-semibold text-zinc-300">Recipients Preview <span className="text-zinc-500 font-normal">· {previewArtists.length} artists</span></h3>
+                        <select value={sortOrder} onChange={e => setSortOrder(e.target.value as typeof sortOrder)}
+                          className="text-xs bg-zinc-800 border border-zinc-700 text-zinc-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-500">
+                          <option value="followers-desc">Followers: High → Low</option>
+                          <option value="followers-asc">Followers: Low → High</option>
+                          <option value="alpha-asc">A → Z</option>
+                          <option value="alpha-desc">Z → A</option>
+                          <option value="random">Random</option>
+                        </select>
+                      </div>
+                      <div className="divide-y divide-zinc-800 max-h-[32rem] overflow-y-auto">
+                        {sortedArtists.map(a => {
+                          const pitchedTracks = a.managerEmails.flatMap(email => pitchedEmailMap.get(email.toLowerCase()) ?? []);
+                          const uniquePitched = [...new Set(pitchedTracks)];
+                          return (
+                            <div key={a.name} className="px-4 md:px-6 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="shrink-0 w-10 h-10 rounded-full overflow-hidden bg-zinc-700">
+                                  {a.avatarUrl ? (
+                                    <img src={a.avatarUrl} alt={a.name} width={40} height={40} className="w-full h-full object-cover" />
+                                  ) : (
+                                    <div className="w-full h-full flex items-center justify-center text-zinc-500 text-xs font-bold">{a.name.charAt(0)}</div>
+                                  )}
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <p className="text-sm font-medium text-white">{a.name}</p>
+                                    {uniquePitched.length > 0 && <PitchedBadge tracks={uniquePitched} />}
+                                    {a.instagramHandle && (
+                                      <a href={`https://instagram.com/${a.instagramHandle.replace('@', '')}`} target="_blank" rel="noopener noreferrer"
+                                        className="text-xs text-pink-400 hover:text-pink-300 transition">{a.instagramHandle}</a>
+                                    )}
+                                    {a.spotifyFollowers > 0 && (
+                                      <span className="inline-flex items-center gap-1 text-xs bg-zinc-800 text-green-400 px-1.5 py-0.5 rounded font-medium">
+                                        <svg viewBox="0 0 24 24" className="w-3 h-3 fill-green-400 shrink-0"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+                                        {a.spotifyFollowers >= 1_000_000 ? `${(a.spotifyFollowers / 1_000_000).toFixed(1)}M` : `${Math.round(a.spotifyFollowers / 1_000)}K`}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-xs text-zinc-500 mt-0.5">{a.managementCompany || 'Independent'}</p>
+                                </div>
+                              </div>
+                              <div className="pl-[52px] sm:pl-0 sm:text-right sm:shrink-0 space-y-0.5">
+                                {a.managerEmails.map((email, i) => (
+                                  <p key={email} className="text-xs text-violet-400 break-all sm:break-normal">
+                                    {a.managerNames[i] ? `${a.managerNames[i]} — ` : ''}{email}
+                                  </p>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
                   )}
-                </div>
+
+                  {previewDone && previewArtists.length === 0 && !customContacts.length && (
+                    <p className="text-sm text-zinc-500">No artists with manager emails found for the selected genres.</p>
+                  )}
+
+                  {/* Custom contacts in preview */}
+                  {customContacts.length > 0 && (
+                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden">
+                      <div className="px-4 md:px-6 py-3 border-b border-zinc-800">
+                        <h3 className="text-sm font-semibold text-zinc-300">Custom Contacts <span className="text-zinc-500 font-normal">· {customContacts.length}</span></h3>
+                      </div>
+                      <div className="divide-y divide-zinc-800">
+                        {customContacts.map(c => {
+                          const pitchedTracks = pitchedEmailMap.get(c.managerEmail.toLowerCase()) ?? [];
+                          return (
+                            <div key={c.id} className="px-4 md:px-6 py-3 flex items-center justify-between gap-4">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                  <p className="text-sm font-medium text-white">{c.artistName}</p>
+                                  <span className="text-xs bg-zinc-700 text-zinc-300 px-1.5 py-0.5 rounded">Custom</span>
+                                  {pitchedTracks.length > 0 && <PitchedBadge tracks={pitchedTracks} />}
+                                </div>
+                                {c.managerName && <p className="text-xs text-zinc-500 mt-0.5">{c.managerName}</p>}
+                              </div>
+                              <p className="text-xs text-violet-400 text-right shrink-0">{c.managerEmail}</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  )}
+
+                  {sendResult && (
+                    <div className="rounded-lg bg-green-900/30 border border-green-700 px-5 py-4">
+                      <p className="text-green-400 font-semibold">
+                        Sent {sendResult.sent} of {sendResult.total} emails successfully.
+                        {sendResult.failed > 0 && ` ${sendResult.failed} failed.`}
+                      </p>
+                    </div>
+                  )}
+                  {sendError && (
+                    <div className="rounded-lg bg-red-900/30 border border-red-700 px-5 py-4">
+                      <p className="text-red-400 text-sm">{sendError}</p>
+                    </div>
+                  )}
+
+                  <div className="space-y-3 pb-6">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <label className="flex items-center gap-2 cursor-pointer select-none">
+                        <div
+                          onClick={() => setUseFollowUp(p => !p)}
+                          className={`relative w-9 h-5 rounded-full transition ${useFollowUp ? 'bg-violet-600' : 'bg-zinc-700'}`}
+                        >
+                          <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${useFollowUp ? 'translate-x-4' : 'translate-x-0'}`} />
+                        </div>
+                        <span className="text-sm text-zinc-300">Send as follow-up</span>
+                      </label>
+                      {useFollowUp && (
+                        <span className="text-xs text-amber-400 bg-amber-600/15 border border-amber-600/30 px-2 py-0.5 rounded-full">Using follow-up template</span>
+                      )}
+                    </div>
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                      <button onClick={handleSend} disabled={!canSend || sending}
+                        className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-6 py-3 font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-zinc-950 text-sm">
+                        {sending ? 'Sending...' : canSend ? `Send to ${totalEmails} recipient${totalEmails !== 1 ? 's' : ''}` : 'Preview recipients first'}
+                      </button>
+                      {selectedAccount ? (
+                        <span className="text-xs text-zinc-500">From <span className="text-zinc-300">{selectedAccount.name}</span> ({selectedAccount.email || selectedAccount.smtpUser})</span>
+                      ) : (
+                        <span className="text-xs text-amber-500">No email account — <button onClick={() => setActiveSection('account')} className="underline hover:text-amber-400">add one</button></span>
+                      )}
+                    </div>
+                  </div>
                 </>)}
               </>
             )}
 
-            {/* ── Track Promotion (Radio) ── */}
+            {/* ── Track Promotion ── */}
             {activeSection === 'promotion' && (
               <>
-                {/* Sub-tabs */}
                 <div className="flex gap-1 bg-zinc-900 rounded-lg p-1 w-fit border border-zinc-800">
                   {(['compose', 'template'] as const).map(t => (
                     <button key={t} onClick={() => setPromotionTab(t)}
@@ -805,7 +1201,7 @@ export default function Dashboard() {
                 {promotionTab === 'template' && (
                   <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
                     <div>
-                      <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Email Template</h2>
+                      <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Radio Email Template</h2>
                       <p className="text-sm text-zinc-500 mb-2">Click a variable to copy it:</p>
                       <div className="flex flex-wrap gap-1.5">
                         {['{{stationName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}'].map(v => (
@@ -822,169 +1218,211 @@ export default function Dashboard() {
                 )}
 
                 {promotionTab === 'compose' && (<>
-                {/* Track Info */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Track Details</h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-zinc-300 mb-1.5">Your Name</label>
-                      <input type="text" value={senderName} onChange={e => setSenderName(e.target.value)}
-                        placeholder="Eren Senbay"
-                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-zinc-300 mb-1.5">Track Title</label>
-                      <input type="text" value={trackTitle} onChange={e => setTrackTitle(e.target.value)}
-                        placeholder="e.g. Give Me A Sign"
-                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
-                    </div>
-                    <div className="md:col-span-2">
-                      <label className="block text-sm font-medium text-zinc-300 mb-1.5">Google Drive Link</label>
-                      <input type="url" value={driveLink} onChange={e => setDriveLink(e.target.value)}
-                        placeholder="https://drive.google.com/file/d/..."
-                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
-                    </div>
-                  </div>
-                </section>
-
-                {/* Genre Filter */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Genre Filter</h2>
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-xs text-zinc-500">Match:</span>
-                      {(['any', 'all'] as const).map(mode => (
-                        <button key={mode} onClick={() => { setRadioMatchMode(mode); setRadioPreviewDone(false); setRadioSendResult(null); }}
-                          className={`px-3 py-1 rounded-full text-xs font-medium border transition ${radioMatchMode === mode ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
-                          {mode === 'any' ? 'Any genre' : 'All genres'}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <p className="text-sm text-zinc-500">
-                    {radioMatchMode === 'any'
-                      ? 'Stations tagged with at least one of the selected genres. Leave empty to include all.'
-                      : 'Stations tagged with every selected genre.'}
-                  </p>
-                  {selectedRadioGenres.length > 0 && (
-                    <div className="flex flex-wrap gap-2">
-                      {selectedRadioGenres.map(g => (
-                        <button key={g} onClick={() => toggleRadioGenre(g)}
-                          className="inline-flex items-center gap-1.5 bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium px-3 py-1 rounded-full transition">
-                          {g}<span className="text-violet-200">×</span>
-                        </button>
-                      ))}
-                      <button onClick={() => { setSelectedRadioGenres([]); setRadioPreviewDone(false); setRadioSendResult(null); }}
-                        className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 transition">Clear all</button>
-                    </div>
-                  )}
-                  <div className="relative">
-                    <input type="text" value={radioGenreSearch} onChange={e => setRadioGenreSearch(e.target.value)}
-                      onFocus={() => setShowRadioGenreDropdown(true)}
-                      onBlur={() => setTimeout(() => setShowRadioGenreDropdown(false), 150)}
-                      placeholder="Search genres (e.g. Pop, Alternative, Indie...)"
-                      className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
-                    {showRadioGenreDropdown && filteredRadioGenres.length > 0 && (
-                      <div className="absolute z-10 mt-1 w-full bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl max-h-56 overflow-y-auto">
-                        {filteredRadioGenres.map(g => (
-                          <button key={g} onMouseDown={() => { toggleRadioGenre(g); setRadioGenreSearch(''); }}
-                            className="w-full text-left px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700 transition">{g}</button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </section>
-
-                {/* Location Filter */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Location Filter</h2>
-                  <p className="text-sm text-zinc-500">Filter stations by region. Leave empty to include all locations.</p>
-                  <div className="flex flex-wrap gap-2">
-                    {LOCATION_OPTIONS.map(loc => (
-                      <button key={loc} onClick={() => toggleLocation(loc)}
-                        className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${
-                          selectedLocations.includes(loc)
-                            ? 'bg-violet-600 border-violet-500 text-white'
-                            : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
-                        }`}>
-                        {loc}
+                  {/* Section toggle: Radio / Playlists */}
+                  <div className="flex gap-1.5">
+                    {(['radio', 'playlists'] as const).map(sec => (
+                      <button key={sec} onClick={() => setPromotionSection(sec)}
+                        className={`px-4 py-1.5 rounded-full text-xs font-medium border transition capitalize ${promotionSection === sec ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                        {sec === 'radio' ? 'Radio' : 'Playlist Curators'}
                       </button>
                     ))}
-                    {selectedLocations.length > 0 && (
-                      <button onClick={() => { setSelectedLocations([]); setRadioPreviewDone(false); setRadioSendResult(null); }}
-                        className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 transition">Clear</button>
-                    )}
                   </div>
-                </section>
 
-                {/* Preview */}
-                <div className="flex items-center gap-4">
-                  <button onClick={handleRadioPreview} disabled={radioPreviewLoading}
-                    className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-5 py-2.5 text-sm font-semibold text-white transition">
-                    {radioPreviewLoading ? 'Loading...' : 'Preview Stations'}
-                  </button>
-                  {radioPreviewDone && (
-                    <span className="text-sm text-zinc-400">{radioStations.length} stations · {radioTotalEmails} emails</span>
+                  {/* Playlists: Coming Soon */}
+                  {promotionSection === 'playlists' && (
+                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-8 flex flex-col items-center justify-center gap-3 text-center">
+                      <div className="w-12 h-12 rounded-full bg-zinc-800 flex items-center justify-center">
+                        <svg viewBox="0 0 24 24" className="w-6 h-6 text-zinc-500" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M9 18V5l12-2v13"/>
+                          <circle cx="6" cy="18" r="3"/>
+                          <circle cx="18" cy="16" r="3"/>
+                        </svg>
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-zinc-300">Playlist Curators</p>
+                        <p className="text-xs text-zinc-500 mt-1">Coming soon — curator database in progress.</p>
+                      </div>
+                    </section>
                   )}
-                </div>
 
-                {radioPreviewDone && radioStations.length > 0 && (
-                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden">
-                    <div className="px-4 md:px-6 py-3 md:py-4 border-b border-zinc-800">
-                      <h3 className="text-sm font-semibold text-zinc-300">Stations Preview <span className="text-zinc-500 font-normal">· {radioStations.length} stations</span></h3>
-                    </div>
-                    <div className="divide-y divide-zinc-800 max-h-[32rem] overflow-y-auto">
-                      {radioStations.map(s => (
-                        <div key={s.name} className="px-4 md:px-6 py-3 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-4">
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium text-white">{s.name}</p>
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
-                              <span className="text-xs text-zinc-500">{s.region}</span>
-                              {s.genres.slice(0, 3).map(g => (
-                                <span key={g} className="text-xs bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded">{g}</span>
-                              ))}
-                            </div>
-                          </div>
-                          <div className="sm:text-right sm:shrink-0 space-y-0.5">
-                            {s.emails.map(email => (
-                              <p key={email} className="text-xs text-violet-400 break-all sm:break-normal">{email}</p>
+                  {/* Radio section */}
+                  {promotionSection === 'radio' && (<>
+                    {/* Track Info */}
+                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                      <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Track Details</h2>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-zinc-300 mb-1.5">Your Name</label>
+                          <input type="text" value={senderName} onChange={e => setSenderName(e.target.value)}
+                            placeholder="Eren Senbay"
+                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-zinc-300 mb-1.5">Track Title</label>
+                          <input type="text" value={trackTitle} onChange={e => setTrackTitle(e.target.value)}
+                            placeholder="e.g. Give Me A Sign"
+                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                        </div>
+                        <div className="md:col-span-2">
+                          <label className="block text-sm font-medium text-zinc-300 mb-1.5">Google Drive Link</label>
+                          <input type="url" value={driveLink} onChange={e => setDriveLink(e.target.value)}
+                            placeholder="https://drive.google.com/file/d/..."
+                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                        </div>
+                      </div>
+                    </section>
+
+                    {/* Genre Filter */}
+                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Genre Filter</h2>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs text-zinc-500">Match:</span>
+                          {(['any', 'all'] as const).map(mode => (
+                            <button key={mode} onClick={() => { setRadioMatchMode(mode); setRadioPreviewDone(false); setRadioSendResult(null); }}
+                              className={`px-3 py-1 rounded-full text-xs font-medium border transition ${radioMatchMode === mode ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                              {mode === 'any' ? 'Any genre' : 'All genres'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <p className="text-sm text-zinc-500">
+                        {radioMatchMode === 'any' ? 'Stations tagged with at least one selected genre. Leave empty to include all.' : 'Stations tagged with every selected genre.'}
+                      </p>
+                      {selectedRadioGenres.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {selectedRadioGenres.map(g => (
+                            <button key={g} onClick={() => toggleRadioGenre(g)}
+                              className="inline-flex items-center gap-1.5 bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium px-3 py-1 rounded-full transition">
+                              {g}<span className="text-violet-200">×</span>
+                            </button>
+                          ))}
+                          <button onClick={() => { setSelectedRadioGenres([]); setRadioPreviewDone(false); setRadioSendResult(null); }}
+                            className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 transition">Clear all</button>
+                        </div>
+                      )}
+                      <div className="relative">
+                        <input type="text" value={radioGenreSearch} onChange={e => setRadioGenreSearch(e.target.value)}
+                          onFocus={() => setShowRadioGenreDropdown(true)}
+                          onBlur={() => setTimeout(() => setShowRadioGenreDropdown(false), 150)}
+                          placeholder="Search genres (e.g. Pop, Alternative, Indie...)"
+                          className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                        {showRadioGenreDropdown && filteredRadioGenres.length > 0 && (
+                          <div className="absolute z-10 mt-1 w-full bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl max-h-56 overflow-y-auto">
+                            {filteredRadioGenres.map(g => (
+                              <button key={g} onMouseDown={() => { toggleRadioGenre(g); setRadioGenreSearch(''); }}
+                                className="w-full text-left px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700 transition">{g}</button>
                             ))}
                           </div>
-                        </div>
-                      ))}
+                        )}
+                      </div>
+                    </section>
+
+                    {/* Location Filter */}
+                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                      <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Location Filter</h2>
+                      <p className="text-sm text-zinc-500">Filter stations by region. Leave empty to include all locations.</p>
+                      <div className="flex flex-wrap gap-2">
+                        {LOCATION_OPTIONS.map(loc => (
+                          <button key={loc} onClick={() => toggleLocation(loc)}
+                            className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${
+                              selectedLocations.includes(loc)
+                                ? 'bg-violet-600 border-violet-500 text-white'
+                                : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
+                            }`}>
+                            {loc}
+                          </button>
+                        ))}
+                        {selectedLocations.length > 0 && (
+                          <button onClick={() => { setSelectedLocations([]); setRadioPreviewDone(false); setRadioSendResult(null); }}
+                            className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 transition">Clear</button>
+                        )}
+                      </div>
+                    </section>
+
+                    {/* Preview */}
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button onClick={handleRadioPreview} disabled={radioPreviewLoading}
+                        className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-5 py-2.5 text-sm font-semibold text-white transition">
+                        {radioPreviewLoading ? 'Loading...' : 'Preview Stations'}
+                      </button>
+                      {radioPreviewDone && (
+                        <>
+                          <button
+                            onClick={() => { setPreviewModalType('radio'); setPreviewModalIdx(0); }}
+                            className="rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-4 py-2.5 text-sm font-medium text-zinc-300 transition">
+                            Preview Email
+                          </button>
+                          <span className="text-sm text-zinc-400">{radioStations.length} stations · {radioTotalEmails} emails</span>
+                        </>
+                      )}
                     </div>
-                  </section>
-                )}
 
-                {radioPreviewDone && radioStations.length === 0 && (
-                  <p className="text-sm text-zinc-500">No stations found for the selected filters.</p>
-                )}
+                    {radioPreviewDone && radioStations.length > 0 && (
+                      <section className="bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden">
+                        <div className="px-4 md:px-6 py-3 md:py-4 border-b border-zinc-800">
+                          <h3 className="text-sm font-semibold text-zinc-300">Stations Preview <span className="text-zinc-500 font-normal">· {radioStations.length} stations</span></h3>
+                        </div>
+                        <div className="divide-y divide-zinc-800 max-h-[32rem] overflow-y-auto">
+                          {radioStations.map(s => {
+                            const pitchedTracks = s.emails.flatMap(email => pitchedEmailMap.get(email.toLowerCase()) ?? []);
+                            const uniquePitched = [...new Set(pitchedTracks)];
+                            return (
+                              <div key={s.name} className="px-4 md:px-6 py-3 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-4">
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <p className="text-sm font-medium text-white">{s.name}</p>
+                                    {uniquePitched.length > 0 && <PitchedBadge tracks={uniquePitched} />}
+                                  </div>
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
+                                    <span className="text-xs text-zinc-500">{s.region}</span>
+                                    {s.genres.slice(0, 3).map(g => (
+                                      <span key={g} className="text-xs bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded">{g}</span>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div className="sm:text-right sm:shrink-0 space-y-0.5">
+                                  {s.emails.map(email => (
+                                    <p key={email} className="text-xs text-violet-400 break-all sm:break-normal">{email}</p>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </section>
+                    )}
 
-                {radioSendResult && (
-                  <div className="rounded-lg bg-green-900/30 border border-green-700 px-5 py-4">
-                    <p className="text-green-400 font-semibold">
-                      Sent {radioSendResult.sent} of {radioSendResult.total} emails successfully.
-                      {radioSendResult.failed > 0 && ` ${radioSendResult.failed} failed.`}
-                    </p>
-                  </div>
-                )}
-                {radioSendError && (
-                  <div className="rounded-lg bg-red-900/30 border border-red-700 px-5 py-4">
-                    <p className="text-red-400 text-sm">{radioSendError}</p>
-                  </div>
-                )}
+                    {radioPreviewDone && radioStations.length === 0 && (
+                      <p className="text-sm text-zinc-500">No stations found for the selected filters.</p>
+                    )}
 
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3 pb-6">
-                  <button onClick={handleRadioSend} disabled={!canSendRadio || radioSending}
-                    className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-6 py-3 font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-zinc-950 text-sm">
-                    {radioSending ? 'Sending...' : canSendRadio ? `Send to ${radioTotalEmails} station${radioTotalEmails !== 1 ? 's' : ''}` : 'Preview stations first'}
-                  </button>
-                  {selectedAccount ? (
-                    <span className="text-xs text-zinc-500">Sending from <span className="text-zinc-300">{selectedAccount.name}</span> ({selectedAccount.email || selectedAccount.smtpUser})</span>
-                  ) : (
-                    <span className="text-xs text-amber-500">No email account selected — <button onClick={() => setActiveSection('account')} className="underline hover:text-amber-400">add one</button></span>
-                  )}
-                </div>
+                    {radioSendResult && (
+                      <div className="rounded-lg bg-green-900/30 border border-green-700 px-5 py-4">
+                        <p className="text-green-400 font-semibold">
+                          Sent {radioSendResult.sent} of {radioSendResult.total} emails successfully.
+                          {radioSendResult.failed > 0 && ` ${radioSendResult.failed} failed.`}
+                        </p>
+                      </div>
+                    )}
+                    {radioSendError && (
+                      <div className="rounded-lg bg-red-900/30 border border-red-700 px-5 py-4">
+                        <p className="text-red-400 text-sm">{radioSendError}</p>
+                      </div>
+                    )}
+
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-3 pb-6">
+                      <button onClick={handleRadioSend} disabled={!canSendRadio || radioSending}
+                        className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-6 py-3 font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-zinc-950 text-sm">
+                        {radioSending ? 'Sending...' : canSendRadio ? `Send to ${radioTotalEmails} station${radioTotalEmails !== 1 ? 's' : ''}` : 'Preview stations first'}
+                      </button>
+                      {selectedAccount ? (
+                        <span className="text-xs text-zinc-500">From <span className="text-zinc-300">{selectedAccount.name}</span> ({selectedAccount.email || selectedAccount.smtpUser})</span>
+                      ) : (
+                        <span className="text-xs text-amber-500">No email account — <button onClick={() => setActiveSection('account')} className="underline hover:text-amber-400">add one</button></span>
+                      )}
+                    </div>
+                  </>)}
                 </>)}
               </>
             )}
@@ -992,7 +1430,7 @@ export default function Dashboard() {
             {/* ── Account ── */}
             {activeSection === 'account' && (
               <div className="space-y-6 pb-6">
-                {/* From Account */}
+                {/* Email Accounts */}
                 <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
                   <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Email Accounts</h2>
                   {emailAccounts.length > 0 && (
@@ -1026,42 +1464,24 @@ export default function Dashboard() {
                     <div className="border border-zinc-700 rounded-xl p-4 space-y-3">
                       <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">New Account</p>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-xs text-zinc-400 mb-1">Display Name</label>
-                          <input value={newAccount.name} onChange={e => setNewAccount(p => ({ ...p, name: e.target.value }))}
-                            placeholder="e.g. Work Email"
-                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
-                        </div>
-                        <div>
-                          <label className="block text-xs text-zinc-400 mb-1">From Address</label>
-                          <input value={newAccount.email} onChange={e => setNewAccount(p => ({ ...p, email: e.target.value }))}
-                            placeholder="you@example.com"
-                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
-                        </div>
-                        <div>
-                          <label className="block text-xs text-zinc-400 mb-1">SMTP Host</label>
-                          <input value={newAccount.smtpHost} onChange={e => setNewAccount(p => ({ ...p, smtpHost: e.target.value }))}
-                            placeholder="smtp.zoho.com"
-                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
-                        </div>
-                        <div>
-                          <label className="block text-xs text-zinc-400 mb-1">Port</label>
-                          <input value={newAccount.smtpPort} onChange={e => setNewAccount(p => ({ ...p, smtpPort: e.target.value }))}
-                            placeholder="465"
-                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
-                        </div>
-                        <div>
-                          <label className="block text-xs text-zinc-400 mb-1">SMTP Username</label>
-                          <input value={newAccount.smtpUser} onChange={e => setNewAccount(p => ({ ...p, smtpUser: e.target.value }))}
-                            placeholder="your@email.com"
-                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
-                        </div>
-                        <div>
-                          <label className="block text-xs text-zinc-400 mb-1">Password / App Password</label>
-                          <input type="password" value={newAccount.smtpPass} onChange={e => setNewAccount(p => ({ ...p, smtpPass: e.target.value }))}
-                            placeholder="••••••••"
-                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
-                        </div>
+                        {[
+                          { label: 'Display Name', key: 'name', placeholder: 'e.g. Work Email', type: 'text' },
+                          { label: 'From Address', key: 'email', placeholder: 'you@example.com', type: 'email' },
+                          { label: 'SMTP Host', key: 'smtpHost', placeholder: 'smtp.zoho.com', type: 'text' },
+                          { label: 'Port', key: 'smtpPort', placeholder: '465', type: 'text' },
+                          { label: 'SMTP Username', key: 'smtpUser', placeholder: 'your@email.com', type: 'text' },
+                          { label: 'Password / App Password', key: 'smtpPass', placeholder: '••••••••', type: 'password' },
+                        ].map(({ label, key, placeholder, type }) => (
+                          <div key={key}>
+                            <label className="block text-xs text-zinc-400 mb-1">{label}</label>
+                            <input
+                              type={type}
+                              value={newAccount[key as keyof typeof newAccount]}
+                              onChange={e => setNewAccount(p => ({ ...p, [key]: e.target.value }))}
+                              placeholder={placeholder}
+                              className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                          </div>
+                        ))}
                       </div>
                       <p className="text-xs text-zinc-500">For Gmail use an App Password. For Zoho use your account password or an app-specific password.</p>
                       <div className="flex gap-2 pt-1">
@@ -1088,11 +1508,8 @@ export default function Dashboard() {
                     className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
                   {signOffImage ? (
                     <div className="flex items-start gap-3 pt-1">
-                      <img src={signOffImage} alt="Signature"
-                        className="max-h-20 max-w-xs rounded border border-zinc-700 object-contain bg-zinc-800" />
-                      <button onClick={() => setSignOffImage(null)} className="text-xs text-red-400 hover:text-red-300 transition mt-1">
-                        Remove image
-                      </button>
+                      <img src={signOffImage} alt="Signature" className="max-h-20 max-w-xs rounded border border-zinc-700 object-contain bg-zinc-800" />
+                      <button onClick={() => setSignOffImage(null)} className="text-xs text-red-400 hover:text-red-300 transition mt-1">Remove image</button>
                     </div>
                   ) : (
                     <label className="inline-flex items-center gap-2 cursor-pointer px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 hover:border-zinc-500 text-xs text-zinc-300 transition w-fit">
@@ -1105,16 +1522,68 @@ export default function Dashboard() {
                       <input type="file" accept="image/*" className="hidden" onChange={handleSignOffImageUpload} />
                     </label>
                   )}
-                  <button onClick={() => setSignOff(DEFAULT_SIGN_OFF)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
-                    Reset to default
-                  </button>
+                  <button onClick={() => setSignOff(DEFAULT_SIGN_OFF)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">Reset to default</button>
+                </section>
+
+                {/* Blacklist */}
+                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                  <div>
+                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Do Not Contact</h2>
+                    <p className="text-xs text-zinc-500">Emails on this list are skipped from all sends.</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="email"
+                      value={newBlacklistEmail}
+                      onChange={e => setNewBlacklistEmail(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') addToBlacklist(); }}
+                      placeholder="email@example.com"
+                      className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition text-sm"
+                    />
+                    <button onClick={addToBlacklist} disabled={!newBlacklistEmail}
+                      className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2.5 text-sm font-semibold text-white transition shrink-0">
+                      Add
+                    </button>
+                  </div>
+                  {blacklist.length > 0 ? (
+                    <div className="space-y-1 max-h-48 overflow-y-auto">
+                      {blacklist.map(email => (
+                        <div key={email} className="flex items-center justify-between px-3 py-2 bg-zinc-800 rounded-lg">
+                          <span className="text-xs text-zinc-300 font-mono">{email}</span>
+                          <button onClick={() => removeFromBlacklist(email)} className="text-zinc-600 hover:text-red-400 transition text-lg leading-none ml-3">×</button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-zinc-600">No blocked emails.</p>
+                  )}
+                </section>
+
+                {/* Send Rate Limiter */}
+                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                  <div>
+                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Send Rate</h2>
+                    <p className="text-xs text-zinc-500">Delay between each email to avoid triggering spam filters.</p>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {SEND_DELAY_OPTIONS.map(opt => (
+                      <button key={opt.value}
+                        onClick={() => { setSendDelay(opt.value); localStorage.setItem('tp_send_delay', String(opt.value)); }}
+                        className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${sendDelay === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  {sendDelay > 0 && (
+                    <p className="text-xs text-zinc-500">{sendDelay / 1000}s delay between each email.</p>
+                  )}
                 </section>
 
                 {/* Test Email */}
                 <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
                   <div>
                     <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Send Test Email</h2>
-                    <p className="text-xs text-zinc-500">Send a test to confirm your email account is connected and working.</p>
+                    <p className="text-xs text-zinc-500">Confirm your email account is connected and working.</p>
                   </div>
                   <div className="flex flex-col sm:flex-row gap-3">
                     <input
@@ -1132,14 +1601,63 @@ export default function Dashboard() {
                       {testEmailSending ? 'Sending...' : 'Send'}
                     </button>
                   </div>
-                  {testEmailResult === 'success' && (
-                    <p className="text-sm text-green-400">Test email sent successfully. Check your inbox.</p>
-                  )}
-                  {testEmailResult === 'error' && (
-                    <p className="text-sm text-red-400">{testEmailError}</p>
-                  )}
-                  {!selectedAccountId && (
-                    <p className="text-xs text-amber-500">Add and select an email account above first.</p>
+                  {testEmailResult === 'success' && <p className="text-sm text-green-400">Test email sent successfully. Check your inbox.</p>}
+                  {testEmailResult === 'error' && <p className="text-sm text-red-400">{testEmailError}</p>}
+                  {!selectedAccountId && <p className="text-xs text-amber-500">Add and select an email account above first.</p>}
+                </section>
+
+                {/* Deliverability Checker */}
+                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                  <div>
+                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Deliverability Check</h2>
+                    <p className="text-xs text-zinc-500">Checks SPF, DKIM, and MX DNS records for your sending domain.</p>
+                  </div>
+                  {selectedAccount ? (
+                    <div className="space-y-4">
+                      <p className="text-xs text-zinc-400">
+                        Domain: <span className="text-zinc-200 font-mono">{(selectedAccount.email || selectedAccount.smtpUser).split('@')[1]}</span>
+                      </p>
+                      <button
+                        onClick={handleDeliverabilityCheck}
+                        disabled={deliverabilityLoading}
+                        className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2.5 text-sm font-semibold text-white transition"
+                      >
+                        {deliverabilityLoading ? 'Checking...' : 'Run Check'}
+                      </button>
+                      {deliverabilityResult && (
+                        <div className="space-y-2">
+                          {[
+                            {
+                              label: 'SPF',
+                              pass: deliverabilityResult.spf,
+                              detail: deliverabilityResult.spf ? deliverabilityResult.spfRecord : 'No SPF record found',
+                            },
+                            {
+                              label: 'DKIM',
+                              pass: deliverabilityResult.dkim,
+                              detail: deliverabilityResult.dkim ? `Selector: ${deliverabilityResult.dkimSelector}` : 'No DKIM record found',
+                            },
+                            {
+                              label: 'MX',
+                              pass: deliverabilityResult.mx,
+                              detail: deliverabilityResult.mx ? deliverabilityResult.mxRecords.join(', ') : 'No MX records found',
+                            },
+                          ].map(item => (
+                            <div key={item.label} className={`flex items-start gap-3 px-4 py-3 rounded-lg border ${item.pass ? 'border-green-700/50 bg-green-900/10' : 'border-red-700/50 bg-red-900/10'}`}>
+                              <span className={`text-lg leading-none mt-0.5 ${item.pass ? 'text-green-400' : 'text-red-400'}`}>
+                                {item.pass ? '✓' : '✗'}
+                              </span>
+                              <div className="min-w-0">
+                                <p className={`text-sm font-semibold ${item.pass ? 'text-green-400' : 'text-red-400'}`}>{item.label}</p>
+                                <p className="text-xs text-zinc-400 mt-0.5 break-all">{item.detail}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-amber-500">Select an email account above to check its domain.</p>
                   )}
                 </section>
               </div>
@@ -1153,12 +1671,45 @@ export default function Dashboard() {
       {isDirty && (
         <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-6 md:bottom-6 md:w-auto z-50 flex items-center gap-2 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl shadow-black/50 px-4 py-3">
           <span className="text-xs text-zinc-400 mr-1 flex-1 md:flex-none">Unsaved changes</span>
-          <button onClick={discardChanges} className="text-xs text-zinc-400 hover:text-zinc-200 px-2 py-1.5 rounded transition hover:bg-zinc-800">
-            Discard
-          </button>
-          <button onClick={saveAll} className="text-xs bg-violet-600 hover:bg-violet-500 text-white font-semibold px-3 py-1.5 rounded-lg transition">
-            Save
-          </button>
+          <button onClick={discardChanges} className="text-xs text-zinc-400 hover:text-zinc-200 px-2 py-1.5 rounded transition hover:bg-zinc-800">Discard</button>
+          <button onClick={saveAll} className="text-xs bg-violet-600 hover:bg-violet-500 text-white font-semibold px-3 py-1.5 rounded-lg transition">Save</button>
+        </div>
+      )}
+
+      {/* Email Preview Modal */}
+      {previewModalType && previewModalEntries.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center p-4 md:p-8 bg-black/70 backdrop-blur-sm overflow-y-auto">
+          <div className="bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl w-full max-w-2xl mt-4 mb-8">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800">
+              <h2 className="text-sm font-semibold text-white">Email Preview</h2>
+              <button onClick={() => setPreviewModalType(null)} className="text-zinc-500 hover:text-white transition text-xl leading-none">×</button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs text-zinc-400 mb-1.5">Recipient</label>
+                <select
+                  value={previewModalIdx}
+                  onChange={e => setPreviewModalIdx(Number(e.target.value))}
+                  className="w-full bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                >
+                  {previewModalEntries.map((entry, i) => (
+                    <option key={i} value={i}>{entry.label}</option>
+                  ))}
+                </select>
+              </div>
+              {previewModalEntries[previewModalIdx] && (
+                <div className="space-y-3">
+                  <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg px-4 py-3 space-y-1.5">
+                    <p className="text-xs text-zinc-500"><span className="text-zinc-400 font-medium">To:</span> {previewModalEntries[previewModalIdx].to}</p>
+                    <p className="text-xs text-zinc-500"><span className="text-zinc-400 font-medium">Subject:</span> {previewModalEntries[previewModalIdx].subject}</p>
+                  </div>
+                  <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg px-4 py-3">
+                    <pre className="text-sm text-zinc-200 whitespace-pre-wrap font-sans leading-relaxed">{previewModalEntries[previewModalIdx].body}</pre>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
