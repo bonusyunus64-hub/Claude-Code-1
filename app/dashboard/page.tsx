@@ -1386,7 +1386,7 @@ export default function Dashboard() {
       </header>
 
       {/* Mobile nav */}
-      <div className="md:hidden border-b border-zinc-800 bg-zinc-950 px-2 py-2 flex gap-1">
+      <div className="md:hidden border-b border-zinc-800 bg-zinc-950 px-2 py-2 flex gap-1 overflow-x-auto">
         {NAV_ITEMS.map(item => (
           <button
             key={item.id}
@@ -1394,7 +1394,7 @@ export default function Dashboard() {
               if (item.id === 'campaigns') { router.push('/dashboard/campaigns'); return; }
               setActiveSection(item.id);
             }}
-            className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg text-xs font-medium transition ${
+            className={`shrink-0 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap transition ${
               activeSection === item.id ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200'
             }`}
           >
