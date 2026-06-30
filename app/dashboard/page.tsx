@@ -31,10 +31,21 @@ I've attached the track "{{trackTitle}}" — you can listen here:
 
 I believe this would be a great fit for your station and listeners. Please let me know if you'd like any additional information.`;
 
+const DEFAULT_PLAYLIST_TEMPLATE = `Hi,
+
+My name is {{senderName}}, and I'm submitting a track for consideration for your playlist, {{curatorName}}.
+
+I've attached the track "{{trackTitle}}" — you can listen here:
+{{driveLink}}
+
+I believe this would be a great fit for your playlist and listeners. Please let me know if you'd like any additional information.`;
+
 const DEFAULT_SIGN_OFF = `Best regards,
 {{senderName}}`;
 
 const LOCATION_OPTIONS = ['National', 'ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA', 'International'];
+
+const PLATFORM_OPTIONS = ['Spotify', 'Apple Music', 'YouTube Music', 'Amazon Music', 'Deezer', 'Tidal', 'SoundCloud'];
 
 const SEND_DELAY_OPTIONS = [
   { label: 'None', value: 0 },
@@ -108,6 +119,14 @@ interface RadioStation {
   phone?: string;
 }
 
+interface PlaylistCurator {
+  name: string;
+  platform: string;
+  genres: string[];
+  emails: string[];
+  followers?: number;
+}
+
 interface EmailAccount {
   id: string;
   name: string;
@@ -122,7 +141,7 @@ interface Campaign {
   id: string;
   trackTitle: string;
   date: string;
-  type: 'demos' | 'radio';
+  type: 'demos' | 'radio' | 'playlists';
   emails: string[];
 }
 
@@ -162,6 +181,20 @@ interface RadioFilterPreset {
   genres: string[];
   locations: string[];
   matchMode: 'any' | 'all';
+}
+
+interface PlaylistFilterPreset {
+  id: string;
+  name: string;
+  genres: string[];
+  platforms: string[];
+  matchMode: 'any' | 'all';
+}
+
+interface SavedTemplate {
+  id: string;
+  name: string;
+  body: string;
 }
 
 function renderTemplateClient(template: string, vars: Record<string, string>): string {
@@ -233,7 +266,7 @@ const BLANK_ACCOUNT: Omit<EmailAccount, 'id'> = {
 };
 
 export default function Dashboard() {
-  const [activeSection, setActiveSection] = useState<'demos' | 'promotion' | 'account' | 'history'>('demos');
+  const [activeSection, setActiveSection] = useState<'overview' | 'demos' | 'promotion' | 'account' | 'history'>('demos');
   const [demosTab, setDemosTab] = useState<'compose' | 'template'>('compose');
   const [promotionTab, setPromotionTab] = useState<'compose' | 'template'>('compose');
   const [promotionSection, setPromotionSection] = useState<'radio' | 'playlists'>('radio');
@@ -270,6 +303,10 @@ export default function Dashboard() {
   const [sendFailedEmails, setSendFailedEmails] = useState<string[]>([]);
   const [demosPresets, setDemosPresets] = useState<DemosFilterPreset[]>([]);
   const [newDemosPresetName, setNewDemosPresetName] = useState('');
+  const [demosTemplateLibrary, setDemosTemplateLibrary] = useState<SavedTemplate[]>([]);
+  const [newDemosTemplateName, setNewDemosTemplateName] = useState('');
+  const [followUpTemplateLibrary, setFollowUpTemplateLibrary] = useState<SavedTemplate[]>([]);
+  const [newFollowUpTemplateName, setNewFollowUpTemplateName] = useState('');
 
   // Track Promotion (Radio) state
   const [radioAllGenres, setRadioAllGenres] = useState<string[]>([]);
@@ -287,6 +324,28 @@ export default function Dashboard() {
   const [radioSendFailedEmails, setRadioSendFailedEmails] = useState<string[]>([]);
   const [radioPresets, setRadioPresets] = useState<RadioFilterPreset[]>([]);
   const [newRadioPresetName, setNewRadioPresetName] = useState('');
+  const [radioTemplateLibrary, setRadioTemplateLibrary] = useState<SavedTemplate[]>([]);
+  const [newRadioTemplateName, setNewRadioTemplateName] = useState('');
+
+  // Track Promotion (Playlists) state
+  const [playlistAllGenres, setPlaylistAllGenres] = useState<string[]>([]);
+  const [playlistGenreSearch, setPlaylistGenreSearch] = useState('');
+  const [selectedPlaylistGenres, setSelectedPlaylistGenres] = useState<string[]>([]);
+  const [showPlaylistGenreDropdown, setShowPlaylistGenreDropdown] = useState(false);
+  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
+  const [playlistMatchMode, setPlaylistMatchMode] = useState<'any' | 'all'>('any');
+  const [playlistTemplate, setPlaylistTemplate] = useState(DEFAULT_PLAYLIST_TEMPLATE);
+  const [playlistCurators, setPlaylistCurators] = useState<PlaylistCurator[]>([]);
+  const [playlistPreviewDone, setPlaylistPreviewDone] = useState(false);
+  const [playlistPreviewLoading, setPlaylistPreviewLoading] = useState(false);
+  const [playlistSending, setPlaylistSending] = useState(false);
+  const [playlistSendResult, setPlaylistSendResult] = useState<{ sent: number; failed: number; total: number } | null>(null);
+  const [playlistSendError, setPlaylistSendError] = useState('');
+  const [playlistSendFailedEmails, setPlaylistSendFailedEmails] = useState<string[]>([]);
+  const [playlistPresets, setPlaylistPresets] = useState<PlaylistFilterPreset[]>([]);
+  const [newPlaylistPresetName, setNewPlaylistPresetName] = useState('');
+  const [playlistTemplateLibrary, setPlaylistTemplateLibrary] = useState<SavedTemplate[]>([]);
+  const [newPlaylistTemplateName, setNewPlaylistTemplateName] = useState('');
 
   // Account state
   const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
@@ -302,6 +361,7 @@ export default function Dashboard() {
   const [sendDelay, setSendDelay] = useState(0);
   const [dailySendCap, setDailySendCap] = useState(0);
   const [sendsToday, setSendsToday] = useState(0);
+  const [sendsTodayByAccount, setSendsTodayByAccount] = useState<Record<string, number>>({});
 
   // Blacklist
   const [blacklist, setBlacklist] = useState<string[]>([]);
@@ -315,25 +375,31 @@ export default function Dashboard() {
   // Campaigns
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [expandedCampaignId, setExpandedCampaignId] = useState<string | null>(null);
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyTypeFilter, setHistoryTypeFilter] = useState<'all' | Campaign['type']>('all');
+  const [historyDateFrom, setHistoryDateFrom] = useState('');
+  const [historyDateTo, setHistoryDateTo] = useState('');
 
   // Deliverability
   const [deliverabilityResult, setDeliverabilityResult] = useState<DeliverabilityResult | null>(null);
   const [deliverabilityLoading, setDeliverabilityLoading] = useState(false);
 
   // Email preview modal
-  const [previewModalType, setPreviewModalType] = useState<'demos' | 'radio' | null>(null);
+  const [previewModalType, setPreviewModalType] = useState<'demos' | 'radio' | 'playlists' | null>(null);
   const [previewModalIdx, setPreviewModalIdx] = useState(0);
 
   // Save tracking
   const [lastSavedDemosTemplate, setLastSavedDemosTemplate] = useState(DEFAULT_DEMOS_TEMPLATE);
   const [lastSavedFollowUpTemplate, setLastSavedFollowUpTemplate] = useState(DEFAULT_FOLLOWUP_TEMPLATE);
   const [lastSavedRadioTemplate, setLastSavedRadioTemplate] = useState(DEFAULT_RADIO_TEMPLATE);
+  const [lastSavedPlaylistTemplate, setLastSavedPlaylistTemplate] = useState(DEFAULT_PLAYLIST_TEMPLATE);
   const [lastSavedSignOff, setLastSavedSignOff] = useState(DEFAULT_SIGN_OFF);
   const [lastSavedSignOffImage, setLastSavedSignOffImage] = useState<string | null>(null);
 
   useEffect(() => {
     fetch('/api/genres').then(r => r.json()).then(d => setAllGenres(d.genres || []));
     fetch('/api/radio-genres').then(r => r.json()).then(d => setRadioAllGenres(d.genres || []));
+    fetch('/api/playlist-genres').then(r => r.json()).then(d => setPlaylistAllGenres(d.genres || []));
     try {
       const accounts = JSON.parse(localStorage.getItem('tp_email_accounts') || '[]') as EmailAccount[];
       setEmailAccounts(accounts);
@@ -356,6 +422,9 @@ export default function Dashboard() {
       const savedRadioTemplate = localStorage.getItem('tp_radio_template');
       if (savedRadioTemplate !== null) { setRadioTemplate(savedRadioTemplate); setLastSavedRadioTemplate(savedRadioTemplate); }
 
+      const savedPlaylistTemplate = localStorage.getItem('tp_playlist_template');
+      if (savedPlaylistTemplate !== null) { setPlaylistTemplate(savedPlaylistTemplate); setLastSavedPlaylistTemplate(savedPlaylistTemplate); }
+
       const savedCampaigns = localStorage.getItem('tp_campaigns');
       if (savedCampaigns) setCampaigns(JSON.parse(savedCampaigns));
 
@@ -374,11 +443,29 @@ export default function Dashboard() {
       const savedRadioPresets = localStorage.getItem('tp_radio_presets');
       if (savedRadioPresets) setRadioPresets(JSON.parse(savedRadioPresets));
 
+      const savedPlaylistPresets = localStorage.getItem('tp_playlist_presets');
+      if (savedPlaylistPresets) setPlaylistPresets(JSON.parse(savedPlaylistPresets));
+
+      const savedDemosTemplates = localStorage.getItem('tp_demos_templates');
+      if (savedDemosTemplates) setDemosTemplateLibrary(JSON.parse(savedDemosTemplates));
+
+      const savedFollowUpTemplates = localStorage.getItem('tp_followup_templates');
+      if (savedFollowUpTemplates) setFollowUpTemplateLibrary(JSON.parse(savedFollowUpTemplates));
+
+      const savedRadioTemplates = localStorage.getItem('tp_radio_templates');
+      if (savedRadioTemplates) setRadioTemplateLibrary(JSON.parse(savedRadioTemplates));
+
+      const savedPlaylistTemplates = localStorage.getItem('tp_playlist_templates');
+      if (savedPlaylistTemplates) setPlaylistTemplateLibrary(JSON.parse(savedPlaylistTemplates));
+
       const savedDailyCap = localStorage.getItem('tp_daily_cap');
       if (savedDailyCap !== null) setDailySendCap(Number(savedDailyCap));
 
       const savedSendsToday = JSON.parse(localStorage.getItem('tp_sends_today') || '{}');
-      if (savedSendsToday.date === getTodayDateStr()) setSendsToday(savedSendsToday.count || 0);
+      if (savedSendsToday.date === getTodayDateStr()) {
+        setSendsToday(savedSendsToday.count || 0);
+        setSendsTodayByAccount(savedSendsToday.byAccount || {});
+      }
     } catch {}
   }, []);
 
@@ -412,10 +499,83 @@ export default function Dashboard() {
       .reduce((sum, c) => sum + c.emails.length, 0);
   }, [campaigns, trackTitle]);
 
+  const playlistPitchCount = useMemo(() => {
+    const title = trackTitle.trim().toLowerCase();
+    if (!title) return 0;
+    return campaigns
+      .filter(c => c.type === 'playlists' && c.trackTitle.trim().toLowerCase() === title)
+      .reduce((sum, c) => sum + c.emails.length, 0);
+  }, [campaigns, trackTitle]);
+
+  const analyticsStats = useMemo(() => {
+    const totalCampaigns = campaigns.length;
+    const totalEmailsSent = campaigns.reduce((s, c) => s + c.emails.length, 0);
+    const demosCampaigns = campaigns.filter(c => c.type === 'demos');
+    const radioCampaigns = campaigns.filter(c => c.type === 'radio');
+    const playlistCampaigns = campaigns.filter(c => c.type === 'playlists');
+    const demosEmailsSent = demosCampaigns.reduce((s, c) => s + c.emails.length, 0);
+    const radioEmailsSent = radioCampaigns.reduce((s, c) => s + c.emails.length, 0);
+    const playlistEmailsSent = playlistCampaigns.reduce((s, c) => s + c.emails.length, 0);
+
+    const trackCounts = new Map<string, number>();
+    campaigns.forEach(c => trackCounts.set(c.trackTitle, (trackCounts.get(c.trackTitle) ?? 0) + c.emails.length));
+    const topTracks = Array.from(trackCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+    const dayCounts = new Map<string, number>();
+    campaigns.forEach(c => {
+      const day = c.date.slice(0, 10);
+      dayCounts.set(day, (dayCounts.get(day) ?? 0) + c.emails.length);
+    });
+    const today = new Date();
+    const last14Days = Array.from({ length: 14 }, (_, i) => {
+      const d = new Date(today);
+      d.setDate(d.getDate() - (13 - i));
+      const key = d.toISOString().slice(0, 10);
+      return { date: key, count: dayCounts.get(key) ?? 0 };
+    });
+    const maxDayCount = Math.max(1, ...last14Days.map(d => d.count));
+
+    return {
+      totalCampaigns, totalEmailsSent,
+      demosCampaignCount: demosCampaigns.length, radioCampaignCount: radioCampaigns.length, playlistCampaignCount: playlistCampaigns.length,
+      demosEmailsSent, radioEmailsSent, playlistEmailsSent,
+      topTracks, last14Days, maxDayCount,
+      lastCampaignDate: campaigns.length ? campaigns.slice().sort((a, b) => b.date.localeCompare(a.date))[0].date : null,
+    };
+  }, [campaigns]);
+
+  const filteredCampaigns = useMemo(() => {
+    const search = historySearch.trim().toLowerCase();
+    return campaigns.filter(c => {
+      if (historyTypeFilter !== 'all' && c.type !== historyTypeFilter) return false;
+      if (search && !c.trackTitle.toLowerCase().includes(search)) return false;
+      const day = c.date.slice(0, 10);
+      if (historyDateFrom && day < historyDateFrom) return false;
+      if (historyDateTo && day > historyDateTo) return false;
+      return true;
+    });
+  }, [campaigns, historySearch, historyTypeFilter, historyDateFrom, historyDateTo]);
+
+  function findDuplicateRecipients(emails: string[]): string[] {
+    const title = trackTitle.trim().toLowerCase();
+    if (!title) return [];
+    const seen = new Set<string>();
+    const dupes: string[] = [];
+    for (const email of emails) {
+      const key = email.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const tracks = pitchedEmailMap.get(key) ?? [];
+      if (tracks.some(t => t.trim().toLowerCase() === title)) dupes.push(email);
+    }
+    return dupes;
+  }
+
   const isDirty =
     demosTemplate !== lastSavedDemosTemplate ||
     demosFollowUpTemplate !== lastSavedFollowUpTemplate ||
     radioTemplate !== lastSavedRadioTemplate ||
+    playlistTemplate !== lastSavedPlaylistTemplate ||
     signOff !== lastSavedSignOff ||
     signOffImage !== lastSavedSignOffImage;
 
@@ -423,12 +583,14 @@ export default function Dashboard() {
     localStorage.setItem('tp_email_template', demosTemplate);
     localStorage.setItem('tp_followup_template', demosFollowUpTemplate);
     localStorage.setItem('tp_radio_template', radioTemplate);
+    localStorage.setItem('tp_playlist_template', playlistTemplate);
     localStorage.setItem('tp_sign_off', signOff);
     if (signOffImage) localStorage.setItem('tp_sign_off_image', signOffImage);
     else localStorage.removeItem('tp_sign_off_image');
     setLastSavedDemosTemplate(demosTemplate);
     setLastSavedFollowUpTemplate(demosFollowUpTemplate);
     setLastSavedRadioTemplate(radioTemplate);
+    setLastSavedPlaylistTemplate(playlistTemplate);
     setLastSavedSignOff(signOff);
     setLastSavedSignOffImage(signOffImage);
   }
@@ -437,6 +599,7 @@ export default function Dashboard() {
     setDemosTemplate(lastSavedDemosTemplate);
     setDemosFollowUpTemplate(lastSavedFollowUpTemplate);
     setRadioTemplate(lastSavedRadioTemplate);
+    setPlaylistTemplate(lastSavedPlaylistTemplate);
     setSignOff(lastSavedSignOff);
     setSignOffImage(lastSavedSignOffImage);
   }
@@ -511,7 +674,7 @@ export default function Dashboard() {
     localStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
   }
 
-  function logCampaign(type: 'demos' | 'radio', title: string, emails: string[]) {
+  function logCampaign(type: 'demos' | 'radio' | 'playlists', title: string, emails: string[]) {
     if (!emails.length) return;
     const campaign: Campaign = { id: Date.now().toString(), trackTitle: title, date: new Date().toISOString(), type, emails };
     const updated = [...campaigns, campaign];
@@ -524,10 +687,10 @@ export default function Dashboard() {
     localStorage.removeItem('tp_campaigns');
   }
 
-  function exportCampaignsCsv() {
+  function exportCampaignsCsv(list: Campaign[] = campaigns) {
     const rows = [
       ['Date', 'Type', 'Track', 'Recipients', 'Emails'],
-      ...campaigns
+      ...list
         .slice()
         .sort((a, b) => b.date.localeCompare(a.date))
         .map(c => [new Date(c.date).toLocaleString(), c.type, c.trackTitle, String(c.emails.length), c.emails.join('; ')]),
@@ -535,11 +698,14 @@ export default function Dashboard() {
     downloadCsv('campaign-history.csv', rows);
   }
 
-  function addSendsToday(n: number) {
+  function addSendsToday(n: number, accountId?: string) {
     const today = getTodayDateStr();
-    const updated = sendsToday + n;
-    setSendsToday(updated);
-    localStorage.setItem('tp_sends_today', JSON.stringify({ date: today, count: updated }));
+    const updatedTotal = sendsToday + n;
+    const updatedByAccount = { ...sendsTodayByAccount };
+    if (accountId) updatedByAccount[accountId] = (updatedByAccount[accountId] ?? 0) + n;
+    setSendsToday(updatedTotal);
+    setSendsTodayByAccount(updatedByAccount);
+    localStorage.setItem('tp_sends_today', JSON.stringify({ date: today, count: updatedTotal, byAccount: updatedByAccount }));
   }
 
   function setDailyCap(value: number) {
@@ -603,6 +769,112 @@ export default function Dashboard() {
     const updated = radioPresets.filter(p => p.id !== id);
     setRadioPresets(updated);
     localStorage.setItem('tp_radio_presets', JSON.stringify(updated));
+  }
+
+  function savePlaylistPreset() {
+    const name = newPlaylistPresetName.trim();
+    if (!name) return;
+    const preset: PlaylistFilterPreset = {
+      id: Date.now().toString(), name, genres: selectedPlaylistGenres, platforms: selectedPlatforms, matchMode: playlistMatchMode,
+    };
+    const updated = [...playlistPresets, preset];
+    setPlaylistPresets(updated);
+    localStorage.setItem('tp_playlist_presets', JSON.stringify(updated));
+    setNewPlaylistPresetName('');
+  }
+
+  function loadPlaylistPreset(preset: PlaylistFilterPreset) {
+    setSelectedPlaylistGenres(preset.genres);
+    setSelectedPlatforms(preset.platforms);
+    setPlaylistMatchMode(preset.matchMode);
+    setPlaylistPreviewDone(false);
+    setPlaylistSendResult(null);
+  }
+
+  function deletePlaylistPreset(id: string) {
+    const updated = playlistPresets.filter(p => p.id !== id);
+    setPlaylistPresets(updated);
+    localStorage.setItem('tp_playlist_presets', JSON.stringify(updated));
+  }
+
+  function saveDemosTemplateToLibrary() {
+    const name = newDemosTemplateName.trim();
+    if (!name) return;
+    const template: SavedTemplate = { id: Date.now().toString(), name, body: demosTemplate };
+    const updated = [...demosTemplateLibrary, template];
+    setDemosTemplateLibrary(updated);
+    localStorage.setItem('tp_demos_templates', JSON.stringify(updated));
+    setNewDemosTemplateName('');
+  }
+
+  function loadDemosTemplateFromLibrary(template: SavedTemplate) {
+    setDemosTemplate(template.body);
+  }
+
+  function deleteDemosTemplateFromLibrary(id: string) {
+    const updated = demosTemplateLibrary.filter(t => t.id !== id);
+    setDemosTemplateLibrary(updated);
+    localStorage.setItem('tp_demos_templates', JSON.stringify(updated));
+  }
+
+  function saveFollowUpTemplateToLibrary() {
+    const name = newFollowUpTemplateName.trim();
+    if (!name) return;
+    const template: SavedTemplate = { id: Date.now().toString(), name, body: demosFollowUpTemplate };
+    const updated = [...followUpTemplateLibrary, template];
+    setFollowUpTemplateLibrary(updated);
+    localStorage.setItem('tp_followup_templates', JSON.stringify(updated));
+    setNewFollowUpTemplateName('');
+  }
+
+  function loadFollowUpTemplateFromLibrary(template: SavedTemplate) {
+    setDemosFollowUpTemplate(template.body);
+  }
+
+  function deleteFollowUpTemplateFromLibrary(id: string) {
+    const updated = followUpTemplateLibrary.filter(t => t.id !== id);
+    setFollowUpTemplateLibrary(updated);
+    localStorage.setItem('tp_followup_templates', JSON.stringify(updated));
+  }
+
+  function saveRadioTemplateToLibrary() {
+    const name = newRadioTemplateName.trim();
+    if (!name) return;
+    const template: SavedTemplate = { id: Date.now().toString(), name, body: radioTemplate };
+    const updated = [...radioTemplateLibrary, template];
+    setRadioTemplateLibrary(updated);
+    localStorage.setItem('tp_radio_templates', JSON.stringify(updated));
+    setNewRadioTemplateName('');
+  }
+
+  function loadRadioTemplateFromLibrary(template: SavedTemplate) {
+    setRadioTemplate(template.body);
+  }
+
+  function deleteRadioTemplateFromLibrary(id: string) {
+    const updated = radioTemplateLibrary.filter(t => t.id !== id);
+    setRadioTemplateLibrary(updated);
+    localStorage.setItem('tp_radio_templates', JSON.stringify(updated));
+  }
+
+  function savePlaylistTemplateToLibrary() {
+    const name = newPlaylistTemplateName.trim();
+    if (!name) return;
+    const template: SavedTemplate = { id: Date.now().toString(), name, body: playlistTemplate };
+    const updated = [...playlistTemplateLibrary, template];
+    setPlaylistTemplateLibrary(updated);
+    localStorage.setItem('tp_playlist_templates', JSON.stringify(updated));
+    setNewPlaylistTemplateName('');
+  }
+
+  function loadPlaylistTemplateFromLibrary(template: SavedTemplate) {
+    setPlaylistTemplate(template.body);
+  }
+
+  function deletePlaylistTemplateFromLibrary(id: string) {
+    const updated = playlistTemplateLibrary.filter(t => t.id !== id);
+    setPlaylistTemplateLibrary(updated);
+    localStorage.setItem('tp_playlist_templates', JSON.stringify(updated));
   }
 
   function handleCustomContactsCsv(e: React.ChangeEvent<HTMLInputElement>) {
@@ -753,7 +1025,7 @@ export default function Dashboard() {
         const sentEmails = results.filter(r => r.success).map(r => r.to);
         setSendFailedEmails(results.filter(r => !r.success).map(r => r.to));
         logCampaign('demos', trackTitle, sentEmails);
-        if (sentEmails.length) addSendsToday(sentEmails.length);
+        if (sentEmails.length) addSendsToday(sentEmails.length, selectedAccountId);
       }
     } catch { setSendError('Network error. Please try again.'); }
     finally { setSending(false); }
@@ -773,6 +1045,11 @@ export default function Dashboard() {
   const totalEmails = previewArtists.reduce((acc, a) => acc + a.managerEmails.length, 0) + customContacts.length;
   const canSend = !!trackTitle && !!driveLink && (selectedGenres.length > 0 || customContacts.length > 0) &&
     (previewDone || selectedGenres.length === 0);
+
+  const demosDuplicateRecipients = useMemo(
+    () => findDuplicateRecipients([...previewArtists.flatMap(a => a.managerEmails), ...customContacts.map(c => c.managerEmail)]),
+    [previewArtists, customContacts, trackTitle, pitchedEmailMap]
+  );
 
   const filteredRadioGenres = useMemo(() =>
     radioAllGenres.filter(g => g.toLowerCase().includes(radioGenreSearch.toLowerCase()) && !selectedRadioGenres.includes(g)).slice(0, 50),
@@ -831,7 +1108,7 @@ export default function Dashboard() {
         const sentEmails = results.filter(r => r.success).map(r => r.to);
         setRadioSendFailedEmails(results.filter(r => !r.success).map(r => r.to));
         logCampaign('radio', trackTitle, sentEmails);
-        if (sentEmails.length) addSendsToday(sentEmails.length);
+        if (sentEmails.length) addSendsToday(sentEmails.length, selectedAccountId);
       }
     } catch { setRadioSendError('Network error. Please try again.'); }
     finally { setRadioSending(false); }
@@ -840,7 +1117,83 @@ export default function Dashboard() {
   const radioTotalEmails = radioStations.reduce((acc, s) => acc + s.emails.length, 0);
   const canSendRadio = !!trackTitle && !!driveLink && radioPreviewDone;
 
+  const radioDuplicateRecipients = useMemo(
+    () => findDuplicateRecipients(radioStations.flatMap(s => s.emails)),
+    [radioStations, trackTitle, pitchedEmailMap]
+  );
+
   const selectedAccount = emailAccounts.find(a => a.id === selectedAccountId);
+
+  const filteredPlaylistGenres = useMemo(() =>
+    playlistAllGenres.filter(g => g.toLowerCase().includes(playlistGenreSearch.toLowerCase()) && !selectedPlaylistGenres.includes(g)).slice(0, 50),
+    [playlistAllGenres, playlistGenreSearch, selectedPlaylistGenres]
+  );
+
+  const togglePlaylistGenre = useCallback((genre: string) => {
+    setSelectedPlaylistGenres(prev => prev.includes(genre) ? prev.filter(g => g !== genre) : [...prev, genre]);
+    setPlaylistPreviewDone(false); setPlaylistSendResult(null);
+  }, []);
+
+  const togglePlatform = useCallback((platform: string) => {
+    setSelectedPlatforms(prev => prev.includes(platform) ? prev.filter(p => p !== platform) : [...prev, platform]);
+    setPlaylistPreviewDone(false); setPlaylistSendResult(null);
+  }, []);
+
+  async function handlePlaylistPreview() {
+    setPlaylistPreviewLoading(true); setPlaylistPreviewDone(false);
+    try {
+      const res = await fetch('/api/playlist-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ genres: selectedPlaylistGenres, platforms: selectedPlatforms, matchMode: playlistMatchMode }),
+      });
+      const data = await res.json();
+      setPlaylistCurators(data.curators || []);
+      setPlaylistPreviewDone(true);
+    } finally { setPlaylistPreviewLoading(false); }
+  }
+
+  async function handlePlaylistSend() {
+    if (!trackTitle || !driveLink) return;
+    if (dailySendCap > 0 && sendsToday + playlistTotalEmails > dailySendCap) {
+      setPlaylistSendError(`Daily send limit reached (${sendsToday}/${dailySendCap} sent today). Wait until tomorrow or raise the limit in Account settings.`);
+      return;
+    }
+    setPlaylistSending(true); setPlaylistSendError(''); setPlaylistSendResult(null); setPlaylistSendFailedEmails([]);
+    try {
+      const acc = emailAccounts.find(a => a.id === selectedAccountId);
+      const res = await fetch('/api/playlist-send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trackTitle, driveLink, genres: selectedPlaylistGenres, platforms: selectedPlatforms,
+          emailTemplate: playlistTemplate, senderName, signOff, signOffImage, matchMode: playlistMatchMode,
+          sendDelay: sendDelay > 0 ? sendDelay : undefined,
+          blacklist: blacklist.length > 0 ? blacklist : undefined,
+          fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setPlaylistSendError(data.error || 'Failed to send.'); }
+      else {
+        setPlaylistSendResult({ sent: data.sent, failed: data.failed, total: data.total });
+        const results = (data.results as { to: string; success: boolean }[] | undefined) ?? [];
+        const sentEmails = results.filter(r => r.success).map(r => r.to);
+        setPlaylistSendFailedEmails(results.filter(r => !r.success).map(r => r.to));
+        logCampaign('playlists', trackTitle, sentEmails);
+        if (sentEmails.length) addSendsToday(sentEmails.length, selectedAccountId);
+      }
+    } catch { setPlaylistSendError('Network error. Please try again.'); }
+    finally { setPlaylistSending(false); }
+  }
+
+  const playlistTotalEmails = playlistCurators.reduce((acc, c) => acc + c.emails.length, 0);
+  const canSendPlaylist = !!trackTitle && !!driveLink && playlistPreviewDone;
+
+  const playlistDuplicateRecipients = useMemo(
+    () => findDuplicateRecipients(playlistCurators.flatMap(c => c.emails)),
+    [playlistCurators, trackTitle, pitchedEmailMap]
+  );
 
   // Build email preview modal entries
   type PreviewEntry = { label: string; to: string; subject: string; body: string };
@@ -876,6 +1229,23 @@ export default function Dashboard() {
       });
       return entries;
     }
+    if (previewModalType === 'playlists') {
+      const entries: PreviewEntry[] = [];
+      playlistCurators.slice(0, 20).forEach(c => {
+        c.emails.forEach(email => {
+          const vars = { curatorName: c.name, trackTitle, driveLink, senderName };
+          const bodyParts = [renderTemplateClient(playlistTemplate, vars)];
+          if (signOff?.trim()) bodyParts.push(renderTemplateClient(signOff, vars));
+          entries.push({
+            label: `${c.name} <${email}>`,
+            to: email,
+            subject: `Music Submission: ${trackTitle} for ${c.name}`,
+            body: bodyParts.join('\n\n'),
+          });
+        });
+      });
+      return entries;
+    }
     const entries: PreviewEntry[] = [];
     radioStations.slice(0, 20).forEach(s => {
       s.emails.forEach(email => {
@@ -891,9 +1261,19 @@ export default function Dashboard() {
       });
     });
     return entries;
-  }, [previewModalType, sortedArtists, radioStations, demosTemplate, demosFollowUpTemplate, useFollowUp, radioTemplate, signOff, trackTitle, driveLink, senderName, customContacts]);
+  }, [previewModalType, sortedArtists, radioStations, playlistCurators, demosTemplate, demosFollowUpTemplate, useFollowUp, radioTemplate, playlistTemplate, signOff, trackTitle, driveLink, senderName, customContacts]);
 
   const NAV_ITEMS = [
+    {
+      id: 'overview' as const,
+      label: 'Overview',
+      icon: (
+        <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 3v18h18"/>
+          <path d="M7 16l4-6 3 3 5-7"/>
+        </svg>
+      ),
+    },
     {
       id: 'demos' as const,
       label: 'Song Demos',
@@ -981,6 +1361,81 @@ export default function Dashboard() {
         <main className="flex-1 overflow-y-auto">
           <div className="max-w-4xl mx-auto px-4 py-5 md:px-8 md:py-10 space-y-5 md:space-y-6">
 
+            {/* ── Overview ── */}
+            {activeSection === 'overview' && (
+              <div className="space-y-5 pb-6">
+                <div>
+                  <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Overview</h2>
+                  <p className="text-xs text-zinc-500">All-time stats derived from your campaign history on this device.</p>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                  <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
+                    <p className="text-2xl font-bold text-white">{analyticsStats.totalEmailsSent}</p>
+                    <p className="text-xs text-zinc-500 mt-1">Emails sent</p>
+                  </div>
+                  <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
+                    <p className="text-2xl font-bold text-white">{analyticsStats.totalCampaigns}</p>
+                    <p className="text-xs text-zinc-500 mt-1">Campaigns</p>
+                  </div>
+                  <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
+                    <p className="text-2xl font-bold text-violet-400">{analyticsStats.demosEmailsSent}</p>
+                    <p className="text-xs text-zinc-500 mt-1">Via Song Demos ({analyticsStats.demosCampaignCount})</p>
+                  </div>
+                  <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
+                    <p className="text-2xl font-bold text-sky-400">{analyticsStats.radioEmailsSent}</p>
+                    <p className="text-xs text-zinc-500 mt-1">Via Track Promotion ({analyticsStats.radioCampaignCount})</p>
+                  </div>
+                  <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
+                    <p className="text-2xl font-bold text-emerald-400">{analyticsStats.playlistEmailsSent}</p>
+                    <p className="text-xs text-zinc-500 mt-1">Via Playlist Curators ({analyticsStats.playlistCampaignCount})</p>
+                  </div>
+                </div>
+
+                {analyticsStats.totalCampaigns === 0 ? (
+                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-8 flex flex-col items-center justify-center gap-2 text-center">
+                    <p className="text-sm font-semibold text-zinc-300">No activity yet</p>
+                    <p className="text-xs text-zinc-500">Send your first campaign to see stats here.</p>
+                  </section>
+                ) : (
+                  <>
+                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-3">
+                      <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Sends, last 14 days</h3>
+                      <div className="flex items-end gap-1.5 h-24">
+                        {analyticsStats.last14Days.map(d => (
+                          <div key={d.date} className="flex-1 flex flex-col items-center justify-end gap-1 group relative">
+                            <div
+                              className={`w-full rounded-t transition-colors ${d.count > 0 ? 'bg-violet-600 group-hover:bg-violet-500' : 'bg-zinc-800'}`}
+                              style={{ height: `${Math.max(2, (d.count / analyticsStats.maxDayCount) * 100)}%` }}
+                              title={`${new Date(d.date).toLocaleDateString()}: ${d.count} sent`}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex justify-between text-[10px] text-zinc-600">
+                        <span>{new Date(analyticsStats.last14Days[0].date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+                        <span>{new Date(analyticsStats.last14Days[13].date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+                      </div>
+                    </section>
+
+                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-2">
+                      <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1">Top pitched tracks</h3>
+                      {analyticsStats.topTracks.map(([title, count]) => (
+                        <div key={title} className="flex items-center justify-between text-sm">
+                          <span className="text-zinc-300 truncate">{title}</span>
+                          <span className="text-zinc-500 font-mono text-xs shrink-0 ml-3">{count} recipient{count !== 1 ? 's' : ''}</span>
+                        </div>
+                      ))}
+                    </section>
+
+                    {analyticsStats.lastCampaignDate && (
+                      <p className="text-xs text-zinc-600">Last campaign: {new Date(analyticsStats.lastCampaignDate).toLocaleString()}</p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
             {/* ── Song Demos ── */}
             {activeSection === 'demos' && (
               <>
@@ -1010,6 +1465,29 @@ export default function Dashboard() {
                       <button onClick={() => setDemosTemplate(DEFAULT_DEMOS_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
                         Reset to default
                       </button>
+                      <div className="pt-3 border-t border-zinc-800 space-y-3">
+                        <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Saved Templates</h3>
+                        {demosTemplateLibrary.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {demosTemplateLibrary.map(t => (
+                              <div key={t.id} className="inline-flex items-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded-full pl-3 pr-1.5 py-1">
+                                <button onClick={() => loadDemosTemplateFromLibrary(t)} className="text-xs text-zinc-200 hover:text-violet-400 transition">{t.name}</button>
+                                <button onClick={() => deleteDemosTemplateFromLibrary(t.id)} className="text-zinc-600 hover:text-red-400 transition text-sm leading-none px-1">×</button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div className="flex gap-2">
+                          <input value={newDemosTemplateName} onChange={e => setNewDemosTemplateName(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') saveDemosTemplateToLibrary(); }}
+                            placeholder="Name this template (e.g. Casual Tone)"
+                            className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                          <button onClick={saveDemosTemplateToLibrary} disabled={!newDemosTemplateName.trim()}
+                            className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2 text-sm font-semibold text-white transition shrink-0">
+                            Save Current
+                          </button>
+                        </div>
+                      </div>
                     </section>
 
                     <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
@@ -1027,6 +1505,29 @@ export default function Dashboard() {
                       <button onClick={() => setDemosFollowUpTemplate(DEFAULT_FOLLOWUP_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
                         Reset to default
                       </button>
+                      <div className="pt-3 border-t border-zinc-800 space-y-3">
+                        <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Saved Templates</h3>
+                        {followUpTemplateLibrary.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {followUpTemplateLibrary.map(t => (
+                              <div key={t.id} className="inline-flex items-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded-full pl-3 pr-1.5 py-1">
+                                <button onClick={() => loadFollowUpTemplateFromLibrary(t)} className="text-xs text-zinc-200 hover:text-violet-400 transition">{t.name}</button>
+                                <button onClick={() => deleteFollowUpTemplateFromLibrary(t.id)} className="text-zinc-600 hover:text-red-400 transition text-sm leading-none px-1">×</button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div className="flex gap-2">
+                          <input value={newFollowUpTemplateName} onChange={e => setNewFollowUpTemplateName(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') saveFollowUpTemplateToLibrary(); }}
+                            placeholder="Name this template (e.g. Second Nudge)"
+                            className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                          <button onClick={saveFollowUpTemplateToLibrary} disabled={!newFollowUpTemplateName.trim()}
+                            className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2 text-sm font-semibold text-white transition shrink-0">
+                            Save Current
+                          </button>
+                        </div>
+                      </div>
                     </section>
                   </div>
                 )}
@@ -1411,6 +1912,14 @@ export default function Dashboard() {
                     </section>
                   )}
 
+                  {!sendResult && demosDuplicateRecipients.length > 0 && (
+                    <div className="rounded-lg bg-amber-900/20 border border-amber-700/40 px-5 py-3">
+                      <p className="text-amber-400 text-sm">
+                        {demosDuplicateRecipients.length} recipient{demosDuplicateRecipients.length !== 1 ? 's have' : ' has'} already been pitched &ldquo;{trackTitle}&rdquo; before (via Song Demos or Track Promotion). You can still send.
+                      </p>
+                    </div>
+                  )}
+
                   {sendResult && (
                     <div className="rounded-lg bg-green-900/30 border border-green-700 px-5 py-4 space-y-2">
                       <p className="text-green-400 font-semibold">
@@ -1474,7 +1983,7 @@ export default function Dashboard() {
                   ))}
                 </div>
 
-                {promotionTab === 'template' && (
+                {promotionTab === 'template' && promotionSection === 'radio' && (
                   <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
                     <div>
                       <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Radio Email Template</h2>
@@ -1490,6 +1999,71 @@ export default function Dashboard() {
                     <button onClick={() => setRadioTemplate(DEFAULT_RADIO_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
                       Reset to default
                     </button>
+                    <div className="pt-3 border-t border-zinc-800 space-y-3">
+                      <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Saved Templates</h3>
+                      {radioTemplateLibrary.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {radioTemplateLibrary.map(t => (
+                            <div key={t.id} className="inline-flex items-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded-full pl-3 pr-1.5 py-1">
+                              <button onClick={() => loadRadioTemplateFromLibrary(t)} className="text-xs text-zinc-200 hover:text-violet-400 transition">{t.name}</button>
+                              <button onClick={() => deleteRadioTemplateFromLibrary(t.id)} className="text-zinc-600 hover:text-red-400 transition text-sm leading-none px-1">×</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex gap-2">
+                        <input value={newRadioTemplateName} onChange={e => setNewRadioTemplateName(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') saveRadioTemplateToLibrary(); }}
+                          placeholder="Name this template (e.g. Indie Stations)"
+                          className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                        <button onClick={saveRadioTemplateToLibrary} disabled={!newRadioTemplateName.trim()}
+                          className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2 text-sm font-semibold text-white transition shrink-0">
+                          Save Current
+                        </button>
+                      </div>
+                    </div>
+                  </section>
+                )}
+
+                {promotionTab === 'template' && promotionSection === 'playlists' && (
+                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                    <div>
+                      <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Playlist Email Template</h2>
+                      <p className="text-sm text-zinc-500 mb-2">Click a variable to copy it:</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {['{{curatorName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}'].map(v => (
+                          <CopyChip key={v} value={v} />
+                        ))}
+                      </div>
+                    </div>
+                    <textarea value={playlistTemplate} onChange={e => setPlaylistTemplate(e.target.value)} rows={16}
+                      className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
+                    <button onClick={() => setPlaylistTemplate(DEFAULT_PLAYLIST_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                      Reset to default
+                    </button>
+                    <div className="pt-3 border-t border-zinc-800 space-y-3">
+                      <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Saved Templates</h3>
+                      {playlistTemplateLibrary.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {playlistTemplateLibrary.map(t => (
+                            <div key={t.id} className="inline-flex items-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded-full pl-3 pr-1.5 py-1">
+                              <button onClick={() => loadPlaylistTemplateFromLibrary(t)} className="text-xs text-zinc-200 hover:text-violet-400 transition">{t.name}</button>
+                              <button onClick={() => deletePlaylistTemplateFromLibrary(t.id)} className="text-zinc-600 hover:text-red-400 transition text-sm leading-none px-1">×</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex gap-2">
+                        <input value={newPlaylistTemplateName} onChange={e => setNewPlaylistTemplateName(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') savePlaylistTemplateToLibrary(); }}
+                          placeholder="Name this template (e.g. Indie Pop Playlists)"
+                          className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                        <button onClick={savePlaylistTemplateToLibrary} disabled={!newPlaylistTemplateName.trim()}
+                          className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2 text-sm font-semibold text-white transition shrink-0">
+                          Save Current
+                        </button>
+                      </div>
+                    </div>
                   </section>
                 )}
 
@@ -1504,22 +2078,228 @@ export default function Dashboard() {
                     ))}
                   </div>
 
-                  {/* Playlists: Coming Soon */}
-                  {promotionSection === 'playlists' && (
-                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-8 flex flex-col items-center justify-center gap-3 text-center">
-                      <div className="w-12 h-12 rounded-full bg-zinc-800 flex items-center justify-center">
-                        <svg viewBox="0 0 24 24" className="w-6 h-6 text-zinc-500" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M9 18V5l12-2v13"/>
-                          <circle cx="6" cy="18" r="3"/>
-                          <circle cx="18" cy="16" r="3"/>
-                        </svg>
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold text-zinc-300">Playlist Curators</p>
-                        <p className="text-xs text-zinc-500 mt-1">Coming soon — curator database in progress.</p>
+                  {/* Playlists section */}
+                  {promotionSection === 'playlists' && (<>
+                    {/* Track Info */}
+                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                      <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Track Details</h2>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-zinc-300 mb-1.5">Your Name</label>
+                          <input type="text" value={senderName} onChange={e => setSenderName(e.target.value)}
+                            placeholder="Eren Senbay"
+                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-zinc-300 mb-1.5">Track Title</label>
+                          <input type="text" value={trackTitle} onChange={e => setTrackTitle(e.target.value)}
+                            placeholder="e.g. Give Me A Sign"
+                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                          {playlistPitchCount > 0 && (
+                            <p className="text-xs text-amber-400 mt-1.5">Already pitched to {playlistPitchCount} recipient{playlistPitchCount !== 1 ? 's' : ''} for this track.</p>
+                          )}
+                        </div>
+                        <div className="md:col-span-2">
+                          <label className="block text-sm font-medium text-zinc-300 mb-1.5">Google Drive Link</label>
+                          <input type="url" value={driveLink} onChange={e => setDriveLink(e.target.value)}
+                            placeholder="https://drive.google.com/file/d/..."
+                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                        </div>
                       </div>
                     </section>
-                  )}
+
+                    {/* Saved Filter Presets */}
+                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-3">
+                      <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Saved Filters</h2>
+                      {playlistPresets.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {playlistPresets.map(p => (
+                            <div key={p.id} className="inline-flex items-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded-full pl-3 pr-1.5 py-1">
+                              <button onClick={() => loadPlaylistPreset(p)} className="text-xs text-zinc-200 hover:text-violet-400 transition">{p.name}</button>
+                              <button onClick={() => deletePlaylistPreset(p.id)} className="text-zinc-600 hover:text-red-400 transition text-sm leading-none px-1">×</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex gap-2">
+                        <input value={newPlaylistPresetName} onChange={e => setNewPlaylistPresetName(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') savePlaylistPreset(); }}
+                          placeholder="Name this filter set (e.g. Indie Pop Playlists)"
+                          className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
+                        <button onClick={savePlaylistPreset} disabled={!newPlaylistPresetName.trim()}
+                          className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2 text-sm font-semibold text-white transition shrink-0">
+                          Save Current
+                        </button>
+                      </div>
+                    </section>
+
+                    {/* Genre Filter */}
+                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Genre Filter</h2>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs text-zinc-500">Match:</span>
+                          {(['any', 'all'] as const).map(mode => (
+                            <button key={mode} onClick={() => { setPlaylistMatchMode(mode); setPlaylistPreviewDone(false); setPlaylistSendResult(null); }}
+                              className={`px-3 py-1 rounded-full text-xs font-medium border transition ${playlistMatchMode === mode ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                              {mode === 'any' ? 'Any genre' : 'All genres'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <p className="text-sm text-zinc-500">
+                        {playlistMatchMode === 'any' ? 'Curators tagged with at least one selected genre. Leave empty to include all.' : 'Curators tagged with every selected genre.'}
+                      </p>
+                      {selectedPlaylistGenres.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {selectedPlaylistGenres.map(g => (
+                            <button key={g} onClick={() => togglePlaylistGenre(g)}
+                              className="inline-flex items-center gap-1.5 bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium px-3 py-1 rounded-full transition">
+                              {g}<span className="text-violet-200">×</span>
+                            </button>
+                          ))}
+                          <button onClick={() => { setSelectedPlaylistGenres([]); setPlaylistPreviewDone(false); setPlaylistSendResult(null); }}
+                            className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 transition">Clear all</button>
+                        </div>
+                      )}
+                      <div className="relative">
+                        <input type="text" value={playlistGenreSearch} onChange={e => setPlaylistGenreSearch(e.target.value)}
+                          onFocus={() => setShowPlaylistGenreDropdown(true)}
+                          onBlur={() => setTimeout(() => setShowPlaylistGenreDropdown(false), 150)}
+                          placeholder="Search genres (e.g. Pop, Alternative, Indie...)"
+                          className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                        {showPlaylistGenreDropdown && filteredPlaylistGenres.length > 0 && (
+                          <div className="absolute z-10 mt-1 w-full bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl max-h-56 overflow-y-auto">
+                            {filteredPlaylistGenres.map(g => (
+                              <button key={g} onMouseDown={() => { togglePlaylistGenre(g); setPlaylistGenreSearch(''); }}
+                                className="w-full text-left px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700 transition">{g}</button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </section>
+
+                    {/* Platform Filter */}
+                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                      <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Platform Filter</h2>
+                      <p className="text-sm text-zinc-500">Filter curators by streaming platform. Leave empty to include all platforms.</p>
+                      <div className="flex flex-wrap gap-2">
+                        {PLATFORM_OPTIONS.map(platform => (
+                          <button key={platform} onClick={() => togglePlatform(platform)}
+                            className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${
+                              selectedPlatforms.includes(platform)
+                                ? 'bg-violet-600 border-violet-500 text-white'
+                                : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
+                            }`}>
+                            {platform}
+                          </button>
+                        ))}
+                        {selectedPlatforms.length > 0 && (
+                          <button onClick={() => { setSelectedPlatforms([]); setPlaylistPreviewDone(false); setPlaylistSendResult(null); }}
+                            className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 transition">Clear</button>
+                        )}
+                      </div>
+                    </section>
+
+                    {/* Preview */}
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button onClick={handlePlaylistPreview} disabled={playlistPreviewLoading}
+                        className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-5 py-2.5 text-sm font-semibold text-white transition">
+                        {playlistPreviewLoading ? 'Loading...' : 'Preview Curators'}
+                      </button>
+                      {playlistPreviewDone && (
+                        <>
+                          <button
+                            onClick={() => { setPreviewModalType('playlists'); setPreviewModalIdx(0); }}
+                            className="rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-4 py-2.5 text-sm font-medium text-zinc-300 transition">
+                            Preview Email
+                          </button>
+                          <span className="text-sm text-zinc-400">{playlistCurators.length} curators · {playlistTotalEmails} emails</span>
+                        </>
+                      )}
+                    </div>
+
+                    {playlistPreviewDone && playlistCurators.length > 0 && (
+                      <section className="bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden">
+                        <div className="px-4 md:px-6 py-3 md:py-4 border-b border-zinc-800">
+                          <h3 className="text-sm font-semibold text-zinc-300">Curators Preview <span className="text-zinc-500 font-normal">· {playlistCurators.length} curators</span></h3>
+                        </div>
+                        <div className="divide-y divide-zinc-800 max-h-[32rem] overflow-y-auto">
+                          {playlistCurators.map(c => {
+                            const pitchedTracks = c.emails.flatMap(email => pitchedEmailMap.get(email.toLowerCase()) ?? []);
+                            const uniquePitched = [...new Set(pitchedTracks)];
+                            return (
+                              <div key={c.name} className="px-4 md:px-6 py-3 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-4">
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <p className="text-sm font-medium text-white">{c.name}</p>
+                                    {uniquePitched.length > 0 && <PitchedBadge tracks={uniquePitched} />}
+                                  </div>
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
+                                    <span className="text-xs text-zinc-500">{c.platform}{c.followers ? ` · ${c.followers.toLocaleString()} followers` : ''}</span>
+                                    {c.genres.slice(0, 3).map(g => (
+                                      <span key={g} className="text-xs bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded">{g}</span>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div className="sm:text-right sm:shrink-0 space-y-0.5">
+                                  {c.emails.map(email => (
+                                    <p key={email} className="text-xs text-violet-400 break-all sm:break-normal">{email}</p>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </section>
+                    )}
+
+                    {playlistPreviewDone && playlistCurators.length === 0 && (
+                      <p className="text-sm text-zinc-500">No curators found for the selected filters.</p>
+                    )}
+
+                    {!playlistSendResult && playlistDuplicateRecipients.length > 0 && (
+                      <div className="rounded-lg bg-amber-900/20 border border-amber-700/40 px-5 py-3">
+                        <p className="text-amber-400 text-sm">
+                          {playlistDuplicateRecipients.length} recipient{playlistDuplicateRecipients.length !== 1 ? 's have' : ' has'} already been pitched &ldquo;{trackTitle}&rdquo; before (via Song Demos or Track Promotion). You can still send.
+                        </p>
+                      </div>
+                    )}
+
+                    {playlistSendResult && (
+                      <div className="rounded-lg bg-green-900/30 border border-green-700 px-5 py-4 space-y-2">
+                        <p className="text-green-400 font-semibold">
+                          Sent {playlistSendResult.sent} of {playlistSendResult.total} emails successfully.
+                          {playlistSendResult.failed > 0 && ` ${playlistSendResult.failed} failed.`}
+                        </p>
+                        {playlistSendFailedEmails.length > 0 && (
+                          <button
+                            onClick={() => { addFailedToBlacklist(playlistSendFailedEmails); setPlaylistSendFailedEmails([]); }}
+                            className="text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 rounded-lg text-zinc-300 transition"
+                          >
+                            Add {playlistSendFailedEmails.length} failed address{playlistSendFailedEmails.length !== 1 ? 'es' : ''} to blacklist
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {playlistSendError && (
+                      <div className="rounded-lg bg-red-900/30 border border-red-700 px-5 py-4">
+                        <p className="text-red-400 text-sm">{playlistSendError}</p>
+                      </div>
+                    )}
+
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-3 pb-6">
+                      <button onClick={handlePlaylistSend} disabled={!canSendPlaylist || playlistSending}
+                        className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-6 py-3 font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-zinc-950 text-sm">
+                        {playlistSending ? 'Sending...' : canSendPlaylist ? `Send to ${playlistTotalEmails} curator${playlistTotalEmails !== 1 ? 's' : ''}` : 'Preview curators first'}
+                      </button>
+                      {selectedAccount ? (
+                        <span className="text-xs text-zinc-500">From <span className="text-zinc-300">{selectedAccount.name}</span> ({selectedAccount.email || selectedAccount.smtpUser})</span>
+                      ) : (
+                        <span className="text-xs text-amber-500">No email account — <button onClick={() => setActiveSection('account')} className="underline hover:text-amber-400">add one</button></span>
+                      )}
+                    </div>
+                  </>)}
 
                   {/* Radio section */}
                   {promotionSection === 'radio' && (<>
@@ -1699,6 +2479,14 @@ export default function Dashboard() {
 
                     {radioPreviewDone && radioStations.length === 0 && (
                       <p className="text-sm text-zinc-500">No stations found for the selected filters.</p>
+                    )}
+
+                    {!radioSendResult && radioDuplicateRecipients.length > 0 && (
+                      <div className="rounded-lg bg-amber-900/20 border border-amber-700/40 px-5 py-3">
+                        <p className="text-amber-400 text-sm">
+                          {radioDuplicateRecipients.length} recipient{radioDuplicateRecipients.length !== 1 ? 's have' : ' has'} already been pitched &ldquo;{trackTitle}&rdquo; before (via Song Demos or Track Promotion). You can still send.
+                        </p>
+                      </div>
                     )}
 
                     {radioSendResult && (
@@ -1909,6 +2697,17 @@ export default function Dashboard() {
                   <p className="text-xs text-zinc-500">
                     {dailySendCap > 0 ? `${sendsToday} of ${dailySendCap} sent today.` : `${sendsToday} sent today. No limit set.`}
                   </p>
+                  {emailAccounts.length > 1 && sendsToday > 0 && (
+                    <div className="space-y-1 pt-1 border-t border-zinc-800">
+                      <p className="text-xs text-zinc-600 uppercase tracking-wider pt-2">By account</p>
+                      {emailAccounts.map(acc => (
+                        <div key={acc.id} className="flex items-center justify-between text-xs text-zinc-400">
+                          <span>{acc.name || acc.email}</span>
+                          <span className="font-mono text-zinc-300">{sendsTodayByAccount[acc.id] ?? 0}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </section>
 
                 {/* Test Email */}
@@ -2005,7 +2804,7 @@ export default function Dashboard() {
                   </div>
                   {campaigns.length > 0 && (
                     <div className="flex gap-2">
-                      <button onClick={exportCampaignsCsv}
+                      <button onClick={() => exportCampaignsCsv(filteredCampaigns)}
                         className="rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-2 text-xs font-medium text-zinc-300 transition">
                         Export CSV
                       </button>
@@ -2017,22 +2816,65 @@ export default function Dashboard() {
                   )}
                 </div>
 
+                {campaigns.length > 0 && (
+                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 space-y-3">
+                    <input
+                      type="text"
+                      value={historySearch}
+                      onChange={e => setHistorySearch(e.target.value)}
+                      placeholder="Search by track title..."
+                      className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition"
+                    />
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="flex gap-1.5">
+                        {(['all', 'demos', 'radio', 'playlists'] as const).map(t => (
+                          <button key={t} onClick={() => setHistoryTypeFilter(t)}
+                            className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${historyTypeFilter === t ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                            {t === 'all' ? 'All' : t === 'demos' ? 'Demos' : t === 'radio' ? 'Radio' : 'Playlists'}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-zinc-500">
+                        <input type="date" value={historyDateFrom} onChange={e => setHistoryDateFrom(e.target.value)}
+                          className="rounded-lg bg-zinc-800 border border-zinc-700 px-2 py-1.5 text-zinc-300 focus:outline-none focus:ring-2 focus:ring-violet-500" />
+                        <span>to</span>
+                        <input type="date" value={historyDateTo} onChange={e => setHistoryDateTo(e.target.value)}
+                          className="rounded-lg bg-zinc-800 border border-zinc-700 px-2 py-1.5 text-zinc-300 focus:outline-none focus:ring-2 focus:ring-violet-500" />
+                      </div>
+                      {(historySearch || historyTypeFilter !== 'all' || historyDateFrom || historyDateTo) && (
+                        <button onClick={() => { setHistorySearch(''); setHistoryTypeFilter('all'); setHistoryDateFrom(''); setHistoryDateTo(''); }}
+                          className="text-xs text-zinc-500 hover:text-zinc-300 transition underline">
+                          Clear filters
+                        </button>
+                      )}
+                    </div>
+                  </section>
+                )}
+
                 {campaigns.length === 0 ? (
                   <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-8 flex flex-col items-center justify-center gap-2 text-center">
                     <p className="text-sm font-semibold text-zinc-300">No campaigns yet</p>
                     <p className="text-xs text-zinc-500">Sent pitches will show up here.</p>
                   </section>
+                ) : filteredCampaigns.length === 0 ? (
+                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-8 flex flex-col items-center justify-center gap-2 text-center">
+                    <p className="text-sm font-semibold text-zinc-300">No campaigns match your filters</p>
+                    <button onClick={() => { setHistorySearch(''); setHistoryTypeFilter('all'); setHistoryDateFrom(''); setHistoryDateTo(''); }}
+                      className="text-xs text-violet-400 hover:text-violet-300 transition underline">
+                      Clear filters
+                    </button>
+                  </section>
                 ) : (
                   <section className="bg-zinc-900 rounded-xl border border-zinc-800 divide-y divide-zinc-800 overflow-hidden">
-                    {campaigns.slice().sort((a, b) => b.date.localeCompare(a.date)).map(c => (
+                    {filteredCampaigns.slice().sort((a, b) => b.date.localeCompare(a.date)).map(c => (
                       <div key={c.id}>
                         <button
                           onClick={() => setExpandedCampaignId(p => p === c.id ? null : c.id)}
                           className="w-full flex items-center justify-between gap-3 px-4 md:px-6 py-3.5 text-left hover:bg-zinc-800/50 transition"
                         >
                           <div className="min-w-0 flex items-center gap-3">
-                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium shrink-0 ${c.type === 'demos' ? 'bg-violet-600/20 text-violet-400 border border-violet-600/30' : 'bg-sky-600/20 text-sky-400 border border-sky-600/30'}`}>
-                              {c.type === 'demos' ? 'Demos' : 'Radio'}
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium shrink-0 ${c.type === 'demos' ? 'bg-violet-600/20 text-violet-400 border border-violet-600/30' : c.type === 'radio' ? 'bg-sky-600/20 text-sky-400 border border-sky-600/30' : 'bg-emerald-600/20 text-emerald-400 border border-emerald-600/30'}`}>
+                              {c.type === 'demos' ? 'Demos' : c.type === 'radio' ? 'Radio' : 'Playlists'}
                             </span>
                             <div className="min-w-0">
                               <p className="text-sm font-medium text-white truncate">{c.trackTitle}</p>
