@@ -91,6 +91,10 @@ export function upsertCampaign(campaign: OutreachCampaign): void {
   saveCampaigns(campaigns);
 }
 
+export function deleteCampaign(id: string): void {
+  saveCampaigns(loadCampaigns().filter(c => c.id !== id));
+}
+
 export function campaignProgress(campaign: OutreachCampaign): { found: number; contacted: number; responded: number } {
   const found = campaign.targets.length;
   const contacted = campaign.targets.filter(t => t.status === 'contacted' || t.status === 'responded').length;

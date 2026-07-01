@@ -3,9 +3,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import CampaignChrome from '../_components/CampaignChrome';
+import ConfirmDeleteModal from '../_components/ConfirmDeleteModal';
 import {
   getCampaign,
   upsertCampaign,
+  deleteCampaign,
   campaignProgress,
   type OutreachCampaign,
   type CampaignTargetState,
@@ -34,6 +36,7 @@ export default function CampaignDetailPage() {
   const [draftDrafts, setDraftDrafts] = useState<Record<string, string>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [senderName, setSenderName] = useState('');
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   useEffect(() => {
     const c = getCampaign(params.id);
@@ -75,6 +78,12 @@ export default function CampaignDetailPage() {
       t.id === targetId ? { ...t, status, draft: draftDrafts[targetId] ?? t.draft } : t
     );
     persist({ ...campaign, targets });
+  }
+
+  function confirmDelete() {
+    if (!campaign) return;
+    deleteCampaign(campaign.id);
+    router.push('/dashboard/campaigns');
   }
 
   async function handleRefresh() {
@@ -124,7 +133,7 @@ export default function CampaignDetailPage() {
           <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">{campaign.songTitle}</h2>
           <p className="text-xs text-zinc-500">{GOAL_META[campaign.goal].label}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
           <div className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-center">
             <div className="text-sm font-bold text-white">{progress.found}</div>
             <div className="text-[10px] uppercase tracking-wide text-zinc-500">Found</div>
@@ -137,6 +146,12 @@ export default function CampaignDetailPage() {
             <div className="text-sm font-bold text-white">{progress.responded}</div>
             <div className="text-[10px] uppercase tracking-wide text-zinc-500">Responded</div>
           </div>
+          <button
+            onClick={() => setShowDeleteConfirm(true)}
+            className="shrink-0 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-red-900/40 border border-zinc-800 hover:border-red-700/60 text-zinc-400 hover:text-red-300 text-xs font-medium transition"
+          >
+            Delete
+          </button>
         </div>
       </div>
 
@@ -250,6 +265,14 @@ export default function CampaignDetailPage() {
             ))}
           </div>
         </section>
+      )}
+
+      {showDeleteConfirm && (
+        <ConfirmDeleteModal
+          songTitle={campaign.songTitle}
+          onCancel={() => setShowDeleteConfirm(false)}
+          onConfirm={confirmDelete}
+        />
       )}
     </CampaignChrome>
   );
