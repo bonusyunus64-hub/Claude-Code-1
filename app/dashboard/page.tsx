@@ -1957,20 +1957,52 @@ export default function Dashboard() {
                         <div className="px-4 md:px-6 py-4 space-y-3">
                           <p className="text-sm text-zinc-500">No artists match &ldquo;{recipientSearch}&rdquo; in your current filters.</p>
                           {outsideResultsQuery === recipientSearch.trim() && outsideResults.length > 0 ? (
-                            <div className="space-y-2">
-                              <p className="text-xs text-zinc-500">Found outside your filters:</p>
+                            <div className="border border-zinc-800 rounded-lg overflow-hidden divide-y divide-zinc-800">
                               {outsideResults.map(a => {
+                                const pitchedTracks = a.managerEmails.flatMap(email => pitchedEmailMap.get(email.toLowerCase()) ?? []);
+                                const uniquePitched = [...new Set(pitchedTracks)];
                                 const alreadyAdded = a.managerEmails.every(e => customContacts.some(c => c.managerEmail.toLowerCase() === e.toLowerCase()));
                                 return (
-                                  <div key={a.name} className="flex items-center justify-between gap-3 bg-zinc-800/60 rounded-lg px-3 py-2">
-                                    <div className="min-w-0">
-                                      <p className="text-sm font-medium text-white truncate">{a.name}</p>
-                                      <p className="text-xs text-zinc-500 truncate">{a.genres.join(', ') || 'No genres listed'} · {a.managerEmails.length} email{a.managerEmails.length !== 1 ? 's' : ''}</p>
+                                  <div key={a.name} className="px-3 py-2.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3">
+                                    <div className="flex items-center gap-2.5 min-w-0">
+                                      <div className="shrink-0 w-9 h-9 rounded-full overflow-hidden bg-zinc-700">
+                                        {a.avatarUrl ? (
+                                          <img src={a.avatarUrl} alt={a.name} width={36} height={36} className="w-full h-full object-cover" />
+                                        ) : (
+                                          <div className="w-full h-full flex items-center justify-center text-zinc-500 text-xs font-bold">{a.name.charAt(0)}</div>
+                                        )}
+                                      </div>
+                                      <div className="min-w-0">
+                                        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+                                          <p className="text-sm font-medium text-white">{a.name}</p>
+                                          {uniquePitched.length > 0 && <PitchedBadge tracks={uniquePitched} />}
+                                          {a.instagramHandle && (
+                                            <a href={`https://instagram.com/${a.instagramHandle.replace('@', '')}`} target="_blank" rel="noopener noreferrer"
+                                              className="text-xs text-pink-400 hover:text-pink-300 transition">{a.instagramHandle}</a>
+                                          )}
+                                          {a.spotifyFollowers > 0 && (
+                                            <span className="inline-flex items-center gap-1 text-xs bg-zinc-800 text-green-400 px-1.5 py-0.5 rounded font-medium">
+                                              <svg viewBox="0 0 24 24" className="w-3 h-3 fill-green-400 shrink-0"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+                                              {a.spotifyFollowers >= 1_000_000 ? `${(a.spotifyFollowers / 1_000_000).toFixed(1)}M` : `${Math.round(a.spotifyFollowers / 1_000)}K`}
+                                            </span>
+                                          )}
+                                        </div>
+                                        <p className="text-xs text-zinc-500 mt-0.5">{a.managementCompany || 'Independent'}</p>
+                                      </div>
                                     </div>
-                                    <button onClick={() => addOutsideArtistToContacts(a)} disabled={alreadyAdded}
-                                      className="shrink-0 text-xs rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:hover:bg-violet-600 px-3 py-1.5 font-medium text-white transition">
-                                      {alreadyAdded ? 'Added' : 'Add to send list'}
-                                    </button>
+                                    <div className="pl-[46px] sm:pl-0 flex items-center gap-2.5 sm:shrink-0">
+                                      <div className="sm:text-right space-y-0.5 min-w-0">
+                                        {a.managerEmails.map((email, i) => (
+                                          <p key={email} className="text-xs text-violet-400 break-all sm:break-normal">
+                                            {a.managerNames[i] ? `${a.managerNames[i]} — ` : ''}{email}
+                                          </p>
+                                        ))}
+                                      </div>
+                                      <button onClick={() => addOutsideArtistToContacts(a)} disabled={alreadyAdded}
+                                        className="shrink-0 text-xs rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:hover:bg-violet-600 px-2.5 py-1.5 font-medium text-white transition">
+                                        {alreadyAdded ? 'Added' : 'Add'}
+                                      </button>
+                                    </div>
                                   </div>
                                 );
                               })}
