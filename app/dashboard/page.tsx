@@ -348,6 +348,9 @@ export default function Dashboard() {
   const [previewDone, setPreviewDone] = useState(false);
   const [sortOrder, setSortOrder] = useState<'followers-desc' | 'followers-asc' | 'alpha-asc' | 'alpha-desc' | 'random'>('followers-desc');
   const [recipientSearch, setRecipientSearch] = useState('');
+  const [outsideResults, setOutsideResults] = useState<Artist[]>([]);
+  const [outsideResultsQuery, setOutsideResultsQuery] = useState('');
+  const [outsideSearchLoading, setOutsideSearchLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<{ sent: number; failed: number; total: number } | null>(null);
   const [sendError, setSendError] = useState('');
@@ -721,6 +724,36 @@ export default function Dashboard() {
 
   function removeCustomContact(id: string) {
     const updated = customContacts.filter(c => c.id !== id);
+    setCustomContacts(updated);
+    localStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
+  }
+
+  async function handleOutsideSearch(query: string) {
+    setOutsideSearchLoading(true);
+    try {
+      const res = await fetch('/api/artist-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query }),
+      });
+      const data = await res.json();
+      setOutsideResults(data.artists || []);
+      setOutsideResultsQuery(query);
+    } finally { setOutsideSearchLoading(false); }
+  }
+
+  function addOutsideArtistToContacts(a: Artist) {
+    const existingEmails = new Set(customContacts.map(c => c.managerEmail.toLowerCase()));
+    const additions: CustomContact[] = a.managerEmails
+      .filter(email => !existingEmails.has(email.toLowerCase()))
+      .map((email, i) => ({
+        id: `${Date.now()}-${i}`,
+        artistName: a.name,
+        managerName: a.managerNames[i] || '',
+        managerEmail: email,
+      }));
+    if (!additions.length) return;
+    const updated = [...customContacts, ...additions];
     setCustomContacts(updated);
     localStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
   }
@@ -1921,7 +1954,36 @@ export default function Dashboard() {
                         </div>
                       </div>
                       {visibleArtists.length === 0 && (
-                        <p className="px-4 md:px-6 py-4 text-sm text-zinc-500">No artists match &ldquo;{recipientSearch}&rdquo;.</p>
+                        <div className="px-4 md:px-6 py-4 space-y-3">
+                          <p className="text-sm text-zinc-500">No artists match &ldquo;{recipientSearch}&rdquo; in your current filters.</p>
+                          {outsideResultsQuery === recipientSearch.trim() && outsideResults.length > 0 ? (
+                            <div className="space-y-2">
+                              <p className="text-xs text-zinc-500">Found outside your filters:</p>
+                              {outsideResults.map(a => {
+                                const alreadyAdded = a.managerEmails.every(e => customContacts.some(c => c.managerEmail.toLowerCase() === e.toLowerCase()));
+                                return (
+                                  <div key={a.name} className="flex items-center justify-between gap-3 bg-zinc-800/60 rounded-lg px-3 py-2">
+                                    <div className="min-w-0">
+                                      <p className="text-sm font-medium text-white truncate">{a.name}</p>
+                                      <p className="text-xs text-zinc-500 truncate">{a.genres.join(', ') || 'No genres listed'} · {a.managerEmails.length} email{a.managerEmails.length !== 1 ? 's' : ''}</p>
+                                    </div>
+                                    <button onClick={() => addOutsideArtistToContacts(a)} disabled={alreadyAdded}
+                                      className="shrink-0 text-xs rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:hover:bg-violet-600 px-3 py-1.5 font-medium text-white transition">
+                                      {alreadyAdded ? 'Added' : 'Add to send list'}
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : outsideResultsQuery === recipientSearch.trim() ? (
+                            <p className="text-xs text-zinc-500">No matches found outside your filters either.</p>
+                          ) : (
+                            <button onClick={() => handleOutsideSearch(recipientSearch)} disabled={outsideSearchLoading || !recipientSearch.trim()}
+                              className="text-xs rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 disabled:opacity-40 px-3 py-1.5 font-medium text-zinc-300 transition">
+                              {outsideSearchLoading ? 'Searching...' : 'Show results outside your filters'}
+                            </button>
+                          )}
+                        </div>
                       )}
                       <div className="divide-y divide-zinc-800 max-h-[32rem] overflow-y-auto">
                         {visibleArtists.map(a => {

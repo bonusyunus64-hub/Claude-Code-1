@@ -66,3 +66,10 @@ export function getArtistsByGenres(
     return true;
   });
 }
+
+export function searchArtistsByName(query: string, limit = 20): Artist[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const { artists } = getRoster();
+  return artists.filter(a => a.managerEmails.length > 0 && a.name.toLowerCase().includes(q)).slice(0, limit);
+}
