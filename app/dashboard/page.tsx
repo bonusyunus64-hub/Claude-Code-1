@@ -347,6 +347,7 @@ export default function Dashboard() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewDone, setPreviewDone] = useState(false);
   const [sortOrder, setSortOrder] = useState<'followers-desc' | 'followers-asc' | 'alpha-asc' | 'alpha-desc' | 'random'>('followers-desc');
+  const [recipientSearch, setRecipientSearch] = useState('');
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<{ sent: number; failed: number; total: number } | null>(null);
   const [sendError, setSendError] = useState('');
@@ -1091,6 +1092,12 @@ export default function Dashboard() {
       case 'random':         return arr.sort(() => Math.random() - 0.5);
     }
   }, [previewArtists, sortOrder]);
+
+  const visibleArtists = useMemo(() => {
+    const q = recipientSearch.trim().toLowerCase();
+    if (!q) return sortedArtists;
+    return sortedArtists.filter(a => a.name.toLowerCase().includes(q));
+  }, [sortedArtists, recipientSearch]);
 
   const totalEmails = previewArtists.reduce((acc, a) => acc + a.managerEmails.length, 0) + customContacts.length;
   const canSend = !!trackTitle && !!driveLink && (selectedGenres.length > 0 || customContacts.length > 0) &&
@@ -1898,18 +1905,26 @@ export default function Dashboard() {
                   {previewDone && previewArtists.length > 0 && (
                     <section className="bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden">
                       <div className="px-4 md:px-6 py-3 md:py-4 border-b border-zinc-800 flex flex-wrap items-center justify-between gap-2">
-                        <h3 className="text-sm font-semibold text-zinc-300">Recipients Preview <span className="text-zinc-500 font-normal">· {previewArtists.length} artists</span></h3>
-                        <select value={sortOrder} onChange={e => setSortOrder(e.target.value as typeof sortOrder)}
-                          className="text-xs bg-zinc-800 border border-zinc-700 text-zinc-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-500">
-                          <option value="followers-desc">Followers: High → Low</option>
-                          <option value="followers-asc">Followers: Low → High</option>
-                          <option value="alpha-asc">A → Z</option>
-                          <option value="alpha-desc">Z → A</option>
-                          <option value="random">Random</option>
-                        </select>
+                        <h3 className="text-sm font-semibold text-zinc-300">Recipients Preview <span className="text-zinc-500 font-normal">· {visibleArtists.length}{visibleArtists.length !== previewArtists.length ? ` of ${previewArtists.length}` : ''} artists</span></h3>
+                        <div className="flex items-center gap-2">
+                          <input type="text" value={recipientSearch} onChange={e => setRecipientSearch(e.target.value)}
+                            placeholder="Search artist..."
+                            className="text-xs bg-zinc-800 border border-zinc-700 text-zinc-300 placeholder-zinc-500 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition w-36 sm:w-48" />
+                          <select value={sortOrder} onChange={e => setSortOrder(e.target.value as typeof sortOrder)}
+                            className="text-xs bg-zinc-800 border border-zinc-700 text-zinc-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-500">
+                            <option value="followers-desc">Followers: High → Low</option>
+                            <option value="followers-asc">Followers: Low → High</option>
+                            <option value="alpha-asc">A → Z</option>
+                            <option value="alpha-desc">Z → A</option>
+                            <option value="random">Random</option>
+                          </select>
+                        </div>
                       </div>
+                      {visibleArtists.length === 0 && (
+                        <p className="px-4 md:px-6 py-4 text-sm text-zinc-500">No artists match &ldquo;{recipientSearch}&rdquo;.</p>
+                      )}
                       <div className="divide-y divide-zinc-800 max-h-[32rem] overflow-y-auto">
-                        {sortedArtists.map(a => {
+                        {visibleArtists.map(a => {
                           const pitchedTracks = a.managerEmails.flatMap(email => pitchedEmailMap.get(email.toLowerCase()) ?? []);
                           const uniquePitched = [...new Set(pitchedTracks)];
                           return (
