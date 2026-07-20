@@ -997,6 +997,12 @@ export default function Dashboard() {
         body: JSON.stringify({
           to: testEmailTo,
           fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
+          emailTemplate: demosTemplate,
+          signOff,
+          signOffImage,
+          senderName,
+          trackTitle,
+          driveLink,
         }),
       });
       const data = await res.json();
