@@ -1157,12 +1157,13 @@ export default function Dashboard() {
     } finally { setPreviewLoading(false); }
   }
 
-  // Clicking a secondary genre chip on a preview card adds it to the active
-  // filters and immediately re-runs the preview with the updated genre list,
-  // instead of just clearing the results like toggleGenre does.
-  function addGenreFromPreview(genre: string) {
-    if (selectedGenres.includes(genre)) return;
-    const updated = [...selectedGenres, genre];
+  // Clicking a genre chip on a preview card toggles it in the active filters
+  // and immediately re-runs the preview with the updated genre list, instead
+  // of just clearing the results like toggleGenre does.
+  function toggleGenreFromPreview(genre: string) {
+    const updated = selectedGenres.includes(genre)
+      ? selectedGenres.filter(g => g !== genre)
+      : [...selectedGenres, genre];
     setSelectedGenres(updated);
     handlePreview(updated);
   }
@@ -2147,12 +2148,11 @@ export default function Dashboard() {
                                         return (
                                           <button
                                             key={g}
-                                            onClick={() => addGenreFromPreview(g)}
-                                            disabled={active}
-                                            title={active ? undefined : `Add "${g}" to genre filters and refresh`}
+                                            onClick={() => toggleGenreFromPreview(g)}
+                                            title={active ? `Remove "${g}" from genre filters and refresh` : `Add "${g}" to genre filters and refresh`}
                                             className={`text-[11px] px-2 py-0.5 rounded-full font-medium transition ${
                                               active
-                                                ? 'bg-violet-600/20 text-violet-300 border border-violet-600/30 cursor-default'
+                                                ? 'bg-violet-600/20 text-violet-300 border border-violet-600/30 hover:bg-violet-600/30 hover:border-violet-500'
                                                 : 'bg-zinc-800 text-zinc-400 border border-zinc-700 hover:border-violet-500 hover:text-violet-300'
                                             }`}
                                           >
