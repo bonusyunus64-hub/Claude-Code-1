@@ -35,7 +35,7 @@ export function getRoster(): RosterData {
   return cached;
 }
 
-export function getTopGenres(limit = 10): string[] {
+export function getTopGenres(limit = 20): string[] {
   const { artists } = getRoster();
   const counts = new Map<string, number>();
   artists.forEach(a => a.genres.forEach(g => counts.set(g, (counts.get(g) ?? 0) + 1)));
