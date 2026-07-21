@@ -35,6 +35,16 @@ export function getRoster(): RosterData {
   return cached;
 }
 
+export function getTopGenres(limit = 10): string[] {
+  const { artists } = getRoster();
+  const counts = new Map<string, number>();
+  artists.forEach(a => a.genres.forEach(g => counts.set(g, (counts.get(g) ?? 0) + 1)));
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([genre]) => genre);
+}
+
 export function getArtistsByGenres(
   selectedGenres: string[],
   minFollowers = 0,

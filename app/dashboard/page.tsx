@@ -375,6 +375,7 @@ export default function Dashboard() {
 
   // Song Demos state
   const [allGenres, setAllGenres] = useState<string[]>([]);
+  const [topGenres, setTopGenres] = useState<string[]>([]);
   const [genreSearch, setGenreSearch] = useState('');
   const [selectedGenres, setSelectedGenres] = useState<string[]>([]);
   const [showGenreDropdown, setShowGenreDropdown] = useState(false);
@@ -500,7 +501,7 @@ export default function Dashboard() {
   const [lastSavedSignOffImage, setLastSavedSignOffImage] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch('/api/genres').then(r => r.json()).then(d => setAllGenres(d.genres || []));
+    fetch('/api/genres').then(r => r.json()).then(d => { setAllGenres(d.genres || []); setTopGenres(d.topGenres || []); });
     fetch('/api/radio-genres').then(r => r.json()).then(d => setRadioAllGenres(d.genres || []));
     fetch('/api/playlist-genres').then(r => r.json()).then(d => setPlaylistAllGenres(d.genres || []));
     try {
@@ -1796,7 +1797,16 @@ export default function Dashboard() {
                         onBlur={() => setTimeout(() => setShowGenreDropdown(false), 150)}
                         placeholder="Search genres (e.g. Pop, R&B, Hip Hop...)"
                         className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
-                      {showGenreDropdown && filteredGenres.length > 0 && (
+                      {showGenreDropdown && genreSearch.trim() === '' && topGenres.length > 0 && (
+                        <div className="absolute z-10 mt-1 w-full bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl max-h-56 overflow-y-auto">
+                          <p className="px-4 pt-2 pb-1 text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">Most popular genres</p>
+                          {topGenres.filter(g => !selectedGenres.includes(g)).map(g => (
+                            <button key={g} onMouseDown={() => { toggleGenre(g); setGenreSearch(''); }}
+                              className="w-full text-left px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700 transition">{g}</button>
+                          ))}
+                        </div>
+                      )}
+                      {showGenreDropdown && genreSearch.trim() !== '' && filteredGenres.length > 0 && (
                         <div className="absolute z-10 mt-1 w-full bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl max-h-56 overflow-y-auto">
                           {filteredGenres.map(g => (
                             <button key={g} onMouseDown={() => { toggleGenre(g); setGenreSearch(''); }}
