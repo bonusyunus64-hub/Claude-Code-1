@@ -1143,18 +1143,28 @@ export default function Dashboard() {
     setPreviewDone(false); setSendResult(null);
   }, []);
 
-  async function handlePreview() {
+  async function handlePreview(genresOverride?: string[]) {
     setPreviewLoading(true); setPreviewDone(false);
     try {
       const res = await fetch('/api/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ genres: selectedGenres, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode: demosMatchMode }),
+        body: JSON.stringify({ genres: genresOverride ?? selectedGenres, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode: demosMatchMode }),
       });
       const data = await res.json();
       setPreviewArtists(data.artists || []);
       setPreviewDone(true);
     } finally { setPreviewLoading(false); }
+  }
+
+  // Clicking a secondary genre chip on a preview card adds it to the active
+  // filters and immediately re-runs the preview with the updated genre list,
+  // instead of just clearing the results like toggleGenre does.
+  function addGenreFromPreview(genre: string) {
+    if (selectedGenres.includes(genre)) return;
+    const updated = [...selectedGenres, genre];
+    setSelectedGenres(updated);
+    handlePreview(updated);
   }
 
   async function handleSend() {
@@ -1988,7 +1998,7 @@ export default function Dashboard() {
 
                   {/* Preview */}
                   <div className="flex flex-wrap items-center gap-3">
-                    <button onClick={handlePreview} disabled={!selectedGenres.length || previewLoading}
+                    <button onClick={() => handlePreview()} disabled={!selectedGenres.length || previewLoading}
                       className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-5 py-2.5 text-sm font-semibold text-white transition">
                       {previewLoading ? 'Loading...' : 'Preview Recipients'}
                     </button>
@@ -2130,6 +2140,28 @@ export default function Dashboard() {
                                     )}
                                   </div>
                                   <p className="text-xs text-zinc-500 mt-0.5">{a.managementCompany || 'Independent'}</p>
+                                  {a.genres.length > 0 && (
+                                    <div className="flex flex-wrap gap-1 mt-1">
+                                      {a.genres.map(g => {
+                                        const active = selectedGenres.includes(g);
+                                        return (
+                                          <button
+                                            key={g}
+                                            onClick={() => addGenreFromPreview(g)}
+                                            disabled={active}
+                                            title={active ? undefined : `Add "${g}" to genre filters and refresh`}
+                                            className={`text-[11px] px-2 py-0.5 rounded-full font-medium transition ${
+                                              active
+                                                ? 'bg-violet-600/20 text-violet-300 border border-violet-600/30 cursor-default'
+                                                : 'bg-zinc-800 text-zinc-400 border border-zinc-700 hover:border-violet-500 hover:text-violet-300'
+                                            }`}
+                                          >
+                                            {g}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
                                 </div>
                               </div>
                               <div className="pl-[52px] sm:pl-0 sm:text-right sm:shrink-0 space-y-0.5">
