@@ -1,15 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import nodemailer from 'nodemailer';
 import { renderTemplate, textToHtml } from '@/lib/emailTemplate';
-
-interface FromAccount {
-  name: string;
-  email: string;
-  smtpHost: string;
-  smtpPort: number;
-  smtpUser: string;
-  smtpPass: string;
-}
+import { resolveSmtpConfig, createTransport, FromAccount } from '@/lib/mailSend';
 
 interface TestEmailPayload {
   to: string;
@@ -30,12 +21,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Recipient email is required.' }, { status: 400 });
   }
 
-  const smtpUser = fromAccount?.smtpUser || process.env.ZOHO_USER;
-  const smtpPass = fromAccount?.smtpPass || process.env.ZOHO_PASS;
-  const smtpHost = fromAccount?.smtpHost || 'smtp.zoho.com';
-  const smtpPort = fromAccount?.smtpPort || 465;
-  const fromName = fromAccount?.name || 'TrackPitch';
-  const fromEmail = fromAccount?.email || smtpUser;
+  const { smtpUser, smtpPass, smtpHost, smtpPort, fromName, fromEmail } = resolveSmtpConfig(fromAccount, undefined);
 
   if (!smtpUser || !smtpPass) {
     return NextResponse.json(
@@ -46,12 +32,7 @@ export async function POST(req: NextRequest) {
 
   const siteUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://music-distribution-website.vercel.app';
 
-  const transporter = nodemailer.createTransport({
-    host: smtpHost,
-    port: smtpPort,
-    secure: smtpPort === 465,
-    auth: { user: smtpUser, pass: smtpPass },
-  });
+  const transporter = createTransport({ smtpHost, smtpPort, smtpUser, smtpPass });
 
   let subject = 'Email Test - TrackPitch';
   let text = `If you're reading this, your email connection is working successfully.\n\nHead back to TrackPitch here: ${siteUrl}`;

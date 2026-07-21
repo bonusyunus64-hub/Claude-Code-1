@@ -73,6 +73,47 @@ function getTodayDateStr(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+interface SendResultEntry { to: string; success: boolean; error?: string }
+type BatchProgress = { sent: number; failed: number; total: number };
+
+// Send routes page through recipients (offset/limit) instead of one long request, so a
+// large batch can't hit a serverless function timeout. This loops until the server
+// reports no more pages, reporting live progress as each page comes back.
+async function sendInBatches(
+  endpoint: string,
+  payload: Record<string, unknown>,
+  onProgress: (progress: BatchProgress) => void
+): Promise<{ ok: true; results: SendResultEntry[]; total: number } | { ok: false; error: string }> {
+  let offset = 0;
+  const allResults: SendResultEntry[] = [];
+  let total = 0;
+  for (;;) {
+    let res: Response;
+    let data: { error?: string; results?: SendResultEntry[]; total?: number; nextOffset?: number | null };
+    try {
+      res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, offset }),
+      });
+      data = await res.json();
+    } catch {
+      return { ok: false, error: 'Network error. Please try again.' };
+    }
+    if (!res.ok) return { ok: false, error: data.error || 'Failed to send.' };
+    allResults.push(...(data.results ?? []));
+    total = data.total ?? allResults.length;
+    onProgress({
+      sent: allResults.filter(r => r.success).length,
+      failed: allResults.filter(r => !r.success).length,
+      total,
+    });
+    if (data.nextOffset == null) break;
+    offset = data.nextOffset;
+  }
+  return { ok: true, results: allResults, total };
+}
+
 function csvEscape(value: string): string {
   if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
   return value;
@@ -425,6 +466,10 @@ export default function Dashboard() {
   const [blacklist, setBlacklist] = useState<string[]>([]);
   const [newBlacklistEmail, setNewBlacklistEmail] = useState('');
 
+  // Emails that bounced/failed on a send — kept separate from the blacklist so they can
+  // be reviewed (a failure can be a fluke) rather than silently blocked forever.
+  const [failedEmails, setFailedEmails] = useState<string[]>([]);
+
   // Custom contacts
   const [customContacts, setCustomContacts] = useState<CustomContact[]>([]);
   const [newCustomContact, setNewCustomContact] = useState({ artistName: '', managerName: '', managerEmail: '' });
@@ -488,6 +533,9 @@ export default function Dashboard() {
 
       const savedBlacklist = localStorage.getItem('tp_blacklist');
       if (savedBlacklist) setBlacklist(JSON.parse(savedBlacklist));
+
+      const savedFailedEmails = localStorage.getItem('tp_failed_emails');
+      if (savedFailedEmails) setFailedEmails(JSON.parse(savedFailedEmails));
 
       const savedCustomContacts = localStorage.getItem('tp_custom_contacts');
       if (savedCustomContacts) setCustomContacts(JSON.parse(savedCustomContacts));
@@ -990,6 +1038,28 @@ export default function Dashboard() {
     localStorage.setItem('tp_blacklist', JSON.stringify(merged));
   }
 
+  function recordFailedEmails(emails: string[]) {
+    if (!emails.length) return;
+    setFailedEmails(prev => {
+      const merged = [...new Set([...prev, ...emails.map(e => e.toLowerCase())])];
+      localStorage.setItem('tp_failed_emails', JSON.stringify(merged));
+      return merged;
+    });
+  }
+
+  function removeFromFailedEmails(email: string) {
+    setFailedEmails(prev => {
+      const updated = prev.filter(e => e !== email);
+      localStorage.setItem('tp_failed_emails', JSON.stringify(updated));
+      return updated;
+    });
+  }
+
+  function moveFailedToDoNotContact(email: string) {
+    addFailedToBlacklist([email]);
+    removeFromFailedEmails(email);
+  }
+
   async function handleTestEmail() {
     if (!testEmailTo) return;
     setTestEmailSending(true); setTestEmailResult(null); setTestEmailError('');
@@ -1095,34 +1165,28 @@ export default function Dashboard() {
     setSending(true); setSendError(''); setSendResult(null); setSendFailedEmails([]);
     try {
       const acc = emailAccounts.find(a => a.id === selectedAccountId);
-      const res = await fetch('/api/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          trackTitle, driveLink, genres: selectedGenres,
-          emailTemplate: useFollowUp ? demosFollowUpTemplate : demosTemplate,
-          senderName, signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram,
-          matchMode: demosMatchMode,
-          sendDelay: sendDelay > 0 ? sendDelay : undefined,
-          blacklist: blacklist.length > 0 ? blacklist : undefined,
-          customContacts: customContacts.length > 0
-            ? customContacts.map(c => ({ artistName: c.artistName, managerName: c.managerName, managerEmail: c.managerEmail }))
-            : undefined,
-          fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setSendError(data.error || 'Failed to send.'); }
+      const outcome = await sendInBatches('/api/send', {
+        trackTitle, driveLink, genres: selectedGenres,
+        emailTemplate: useFollowUp ? demosFollowUpTemplate : demosTemplate,
+        senderName, signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram,
+        matchMode: demosMatchMode,
+        sendDelay: sendDelay > 0 ? sendDelay : undefined,
+        blacklist: blacklist.length > 0 ? blacklist : undefined,
+        customContacts: customContacts.length > 0
+          ? customContacts.map(c => ({ artistName: c.artistName, managerName: c.managerName, managerEmail: c.managerEmail }))
+          : undefined,
+        fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
+      }, progress => setSendResult(progress));
+      if (!outcome.ok) { setSendError(outcome.error); }
       else {
-        setSendResult({ sent: data.sent, failed: data.failed, total: data.total });
-        const results = (data.results as { to: string; success: boolean }[] | undefined) ?? [];
-        const sentEmails = results.filter(r => r.success).map(r => r.to);
-        setSendFailedEmails(results.filter(r => !r.success).map(r => r.to));
+        const sentEmails = outcome.results.filter(r => r.success).map(r => r.to);
+        const failed = outcome.results.filter(r => !r.success).map(r => r.to);
+        setSendFailedEmails(failed);
+        recordFailedEmails(failed);
         logCampaign('demos', trackTitle, sentEmails);
         if (sentEmails.length) addSendsToday(sentEmails.length, selectedAccountId);
       }
-    } catch { setSendError('Network error. Please try again.'); }
-    finally { setSending(false); }
+    } finally { setSending(false); }
   }
 
   const sortedArtists = useMemo(() => {
@@ -1189,29 +1253,23 @@ export default function Dashboard() {
     setRadioSending(true); setRadioSendError(''); setRadioSendResult(null); setRadioSendFailedEmails([]);
     try {
       const acc = emailAccounts.find(a => a.id === selectedAccountId);
-      const res = await fetch('/api/radio-send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          trackTitle, driveLink, genres: selectedRadioGenres, locations: selectedLocations,
-          emailTemplate: radioTemplate, senderName, signOff, signOffImage, matchMode: radioMatchMode,
-          sendDelay: sendDelay > 0 ? sendDelay : undefined,
-          blacklist: blacklist.length > 0 ? blacklist : undefined,
-          fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setRadioSendError(data.error || 'Failed to send.'); }
+      const outcome = await sendInBatches('/api/radio-send', {
+        trackTitle, driveLink, genres: selectedRadioGenres, locations: selectedLocations,
+        emailTemplate: radioTemplate, senderName, signOff, signOffImage, matchMode: radioMatchMode,
+        sendDelay: sendDelay > 0 ? sendDelay : undefined,
+        blacklist: blacklist.length > 0 ? blacklist : undefined,
+        fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
+      }, progress => setRadioSendResult(progress));
+      if (!outcome.ok) { setRadioSendError(outcome.error); }
       else {
-        setRadioSendResult({ sent: data.sent, failed: data.failed, total: data.total });
-        const results = (data.results as { to: string; success: boolean }[] | undefined) ?? [];
-        const sentEmails = results.filter(r => r.success).map(r => r.to);
-        setRadioSendFailedEmails(results.filter(r => !r.success).map(r => r.to));
+        const sentEmails = outcome.results.filter(r => r.success).map(r => r.to);
+        const failed = outcome.results.filter(r => !r.success).map(r => r.to);
+        setRadioSendFailedEmails(failed);
+        recordFailedEmails(failed);
         logCampaign('radio', trackTitle, sentEmails);
         if (sentEmails.length) addSendsToday(sentEmails.length, selectedAccountId);
       }
-    } catch { setRadioSendError('Network error. Please try again.'); }
-    finally { setRadioSending(false); }
+    } finally { setRadioSending(false); }
   }
 
   const radioTotalEmails = radioStations.reduce((acc, s) => acc + s.emails.length, 0);
@@ -1262,29 +1320,23 @@ export default function Dashboard() {
     setPlaylistSending(true); setPlaylistSendError(''); setPlaylistSendResult(null); setPlaylistSendFailedEmails([]);
     try {
       const acc = emailAccounts.find(a => a.id === selectedAccountId);
-      const res = await fetch('/api/playlist-send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          trackTitle, driveLink, genres: selectedPlaylistGenres, platforms: selectedPlatforms,
-          emailTemplate: playlistTemplate, senderName, signOff, signOffImage, matchMode: playlistMatchMode,
-          sendDelay: sendDelay > 0 ? sendDelay : undefined,
-          blacklist: blacklist.length > 0 ? blacklist : undefined,
-          fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setPlaylistSendError(data.error || 'Failed to send.'); }
+      const outcome = await sendInBatches('/api/playlist-send', {
+        trackTitle, driveLink, genres: selectedPlaylistGenres, platforms: selectedPlatforms,
+        emailTemplate: playlistTemplate, senderName, signOff, signOffImage, matchMode: playlistMatchMode,
+        sendDelay: sendDelay > 0 ? sendDelay : undefined,
+        blacklist: blacklist.length > 0 ? blacklist : undefined,
+        fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
+      }, progress => setPlaylistSendResult(progress));
+      if (!outcome.ok) { setPlaylistSendError(outcome.error); }
       else {
-        setPlaylistSendResult({ sent: data.sent, failed: data.failed, total: data.total });
-        const results = (data.results as { to: string; success: boolean }[] | undefined) ?? [];
-        const sentEmails = results.filter(r => r.success).map(r => r.to);
-        setPlaylistSendFailedEmails(results.filter(r => !r.success).map(r => r.to));
+        const sentEmails = outcome.results.filter(r => r.success).map(r => r.to);
+        const failed = outcome.results.filter(r => !r.success).map(r => r.to);
+        setPlaylistSendFailedEmails(failed);
+        recordFailedEmails(failed);
         logCampaign('playlists', trackTitle, sentEmails);
         if (sentEmails.length) addSendsToday(sentEmails.length, selectedAccountId);
       }
-    } catch { setPlaylistSendError('Network error. Please try again.'); }
-    finally { setPlaylistSending(false); }
+    } finally { setPlaylistSending(false); }
   }
 
   const playlistTotalEmails = playlistCurators.reduce((acc, c) => acc + c.emails.length, 0);
@@ -2157,7 +2209,7 @@ export default function Dashboard() {
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                       <button onClick={handleSend} disabled={!canSend || sending}
                         className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-6 py-3 font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-zinc-950 text-sm">
-                        {sending ? 'Sending...' : canSend ? `Send to ${totalEmails} recipient${totalEmails !== 1 ? 's' : ''}` : 'Preview recipients first'}
+                        {sending ? `Sending... (${(sendResult?.sent ?? 0) + (sendResult?.failed ?? 0)}/${totalEmails})` : canSend ? `Send to ${totalEmails} recipient${totalEmails !== 1 ? 's' : ''}` : 'Preview recipients first'}
                       </button>
                       {selectedAccount ? (
                         <span className="text-xs text-zinc-500">From <span className="text-zinc-300">{selectedAccount.name}</span> ({selectedAccount.email || selectedAccount.smtpUser})</span>
@@ -2496,7 +2548,7 @@ export default function Dashboard() {
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3 pb-6">
                       <button onClick={handlePlaylistSend} disabled={!canSendPlaylist || playlistSending}
                         className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-6 py-3 font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-zinc-950 text-sm">
-                        {playlistSending ? 'Sending...' : canSendPlaylist ? `Send to ${playlistTotalEmails} curator${playlistTotalEmails !== 1 ? 's' : ''}` : 'Preview curators first'}
+                        {playlistSending ? `Sending... (${(playlistSendResult?.sent ?? 0) + (playlistSendResult?.failed ?? 0)}/${playlistTotalEmails})` : canSendPlaylist ? `Send to ${playlistTotalEmails} curator${playlistTotalEmails !== 1 ? 's' : ''}` : 'Preview curators first'}
                       </button>
                       {selectedAccount ? (
                         <span className="text-xs text-zinc-500">From <span className="text-zinc-300">{selectedAccount.name}</span> ({selectedAccount.email || selectedAccount.smtpUser})</span>
@@ -2719,7 +2771,7 @@ export default function Dashboard() {
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3 pb-6">
                       <button onClick={handleRadioSend} disabled={!canSendRadio || radioSending}
                         className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-6 py-3 font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-zinc-950 text-sm">
-                        {radioSending ? 'Sending...' : canSendRadio ? `Send to ${radioTotalEmails} station${radioTotalEmails !== 1 ? 's' : ''}` : 'Preview stations first'}
+                        {radioSending ? `Sending... (${(radioSendResult?.sent ?? 0) + (radioSendResult?.failed ?? 0)}/${radioTotalEmails})` : canSendRadio ? `Send to ${radioTotalEmails} station${radioTotalEmails !== 1 ? 's' : ''}` : 'Preview stations first'}
                       </button>
                       {selectedAccount ? (
                         <span className="text-xs text-zinc-500">From <span className="text-zinc-300">{selectedAccount.name}</span> ({selectedAccount.email || selectedAccount.smtpUser})</span>
@@ -2861,6 +2913,30 @@ export default function Dashboard() {
                     </div>
                   ) : (
                     <p className="text-xs text-zinc-600">No blocked emails.</p>
+                  )}
+                </section>
+
+                {/* Potential False Emails */}
+                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+                  <div>
+                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Potential False Emails</h2>
+                    <p className="text-xs text-zinc-500">Addresses that bounced or failed on a send land here automatically — review them, then move to Do Not Contact or dismiss if it was a fluke.</p>
+                  </div>
+                  {failedEmails.length > 0 ? (
+                    <div className="space-y-1 max-h-48 overflow-y-auto">
+                      {failedEmails.map(email => (
+                        <div key={email} className="flex items-center justify-between px-3 py-2 bg-zinc-800 rounded-lg gap-3">
+                          <span className="text-xs text-zinc-300 font-mono truncate">{email}</span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button onClick={() => moveFailedToDoNotContact(email)}
+                              className="text-xs text-amber-400 hover:text-amber-300 transition whitespace-nowrap">Do Not Contact</button>
+                            <button onClick={() => removeFromFailedEmails(email)} className="text-zinc-600 hover:text-red-400 transition text-lg leading-none">×</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-zinc-600">No failed sends recorded.</p>
                   )}
                 </section>
 
