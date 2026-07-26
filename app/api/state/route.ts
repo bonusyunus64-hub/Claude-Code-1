@@ -11,7 +11,16 @@ export async function GET(req: NextRequest) {
   if (!isAuthed(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   if (!isKvConfigured()) return NextResponse.json({ state: {} });
 
-  const state = (await getRedis().hgetall<Record<string, string>>(STATE_KEY)) ?? {};
+  // Upstash's client auto-parses any stored value that looks like valid JSON
+  // (e.g. our JSON.stringify'd arrays/objects) back into a real object, even
+  // though every value here was written as a plain string. Flatten it back
+  // to strings so this endpoint's contract (Record<string, string>) actually
+  // holds — the client mirrors these straight into localStorage as text.
+  const raw = (await getRedis().hgetall<Record<string, unknown>>(STATE_KEY)) ?? {};
+  const state: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    state[k] = typeof v === 'string' ? v : JSON.stringify(v);
+  }
   return NextResponse.json({ state });
 }
 
