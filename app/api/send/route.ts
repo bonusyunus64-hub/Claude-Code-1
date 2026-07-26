@@ -22,6 +22,7 @@ interface SendPayload {
   fromAccount?: FromAccount;
   sendDelay?: number;
   blacklist?: string[];
+  excludeEmails?: string[];
   customContacts?: { artistName: string; managerName: string; managerEmail: string }[];
   offset?: number;
   limit?: number;
@@ -59,7 +60,7 @@ export async function POST(req: NextRequest) {
   const {
     trackTitle, driveLink, genres, emailTemplate, subjectTemplate, senderName,
     signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode, fromAccount,
-    sendDelay, blacklist, customContacts, offset, limit,
+    sendDelay, blacklist, excludeEmails, customContacts, offset, limit,
   } = await req.json() as SendPayload;
 
   const subjectTpl = subjectTemplate?.trim() || `Music Submission: {{trackTitle}} for {{artistName}}`;
@@ -96,7 +97,7 @@ export async function POST(req: NextRequest) {
     return { to: cc.managerEmail, subject, body };
   });
 
-  const bl = (blacklist ?? []).map(e => e.toLowerCase());
+  const bl = [...(blacklist ?? []), ...(excludeEmails ?? [])].map(e => e.toLowerCase());
   const allMessages = [...artistMessages, ...customMessages].filter(msg => !bl.includes(msg.to.toLowerCase()));
 
   const { batch, total, nextOffset } = paginate(allMessages, offset ?? 0, limit ?? DEFAULT_SEND_BATCH_SIZE);

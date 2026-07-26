@@ -410,6 +410,7 @@ export default function Dashboard() {
   const [demosFollowUpSubject, setDemosFollowUpSubject] = useState(DEFAULT_FOLLOWUP_SUBJECT);
   const [useFollowUp, setUseFollowUp] = useState(false);
   const [previewArtists, setPreviewArtists] = useState<Artist[]>([]);
+  const [excludedArtistNames, setExcludedArtistNames] = useState<Set<string>>(new Set());
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewDone, setPreviewDone] = useState(false);
   const [sortOrder, setSortOrder] = useState<'followers-desc' | 'followers-asc' | 'alpha-asc' | 'alpha-desc' | 'random'>('followers-desc');
@@ -1259,6 +1260,7 @@ export default function Dashboard() {
       const data = await res.json();
       setPreviewArtists(data.artists || []);
       setPreviewDone(true);
+      setExcludedArtistNames(new Set());
     } finally { setPreviewLoading(false); }
   }
 
@@ -1271,6 +1273,14 @@ export default function Dashboard() {
       : [...selectedGenres, genre];
     setSelectedGenres(updated);
     handlePreview(updated);
+  }
+
+  function toggleArtistExclusion(name: string) {
+    setExcludedArtistNames(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
   }
 
   async function handleSend() {
@@ -1290,6 +1300,9 @@ export default function Dashboard() {
         matchMode: demosMatchMode,
         sendDelay: sendDelay > 0 ? sendDelay : undefined,
         blacklist: blacklist.length > 0 ? blacklist : undefined,
+        excludeEmails: excludedArtistNames.size > 0
+          ? previewArtists.filter(a => excludedArtistNames.has(a.name)).flatMap(a => a.managerEmails)
+          : undefined,
         customContacts: customContacts.length > 0
           ? customContacts.map(c => ({ artistName: c.artistName, managerName: c.managerName, managerEmail: c.managerEmail }))
           : undefined,
@@ -1324,13 +1337,18 @@ export default function Dashboard() {
     return sortedArtists.filter(a => a.name.toLowerCase().includes(q));
   }, [sortedArtists, recipientSearch]);
 
-  const totalEmails = previewArtists.reduce((acc, a) => acc + a.managerEmails.length, 0) + customContacts.length;
+  const includedArtists = useMemo(
+    () => previewArtists.filter(a => !excludedArtistNames.has(a.name)),
+    [previewArtists, excludedArtistNames]
+  );
+
+  const totalEmails = includedArtists.reduce((acc, a) => acc + a.managerEmails.length, 0) + customContacts.length;
   const canSend = !!trackTitle && !!driveLink && (selectedGenres.length > 0 || customContacts.length > 0) &&
-    (previewDone || selectedGenres.length === 0);
+    (previewDone || selectedGenres.length === 0) && totalEmails > 0;
 
   const demosDuplicateRecipients = useMemo(
-    () => findDuplicateRecipients([...previewArtists.flatMap(a => a.managerEmails), ...customContacts.map(c => c.managerEmail)]),
-    [previewArtists, customContacts, trackTitle, pitchedEmailMap]
+    () => findDuplicateRecipients([...includedArtists.flatMap(a => a.managerEmails), ...customContacts.map(c => c.managerEmail)]),
+    [includedArtists, customContacts, trackTitle, pitchedEmailMap]
   );
 
   const filteredRadioGenres = useMemo(() =>
@@ -1471,7 +1489,7 @@ export default function Dashboard() {
     if (!previewModalType) return [];
     if (previewModalType === 'demos') {
       const entries: PreviewEntry[] = [];
-      sortedArtists.slice(0, 20).forEach(a => {
+      includedArtists.slice(0, 20).forEach(a => {
         a.managerEmails.forEach((email, idx) => {
           const vars = { managerName: a.managerNames[idx] || 'there', artistName: a.name, trackTitle, driveLink, senderName, managementCompany: a.managementCompany, pronoun: pronounForClient(a.gender, a.type) };
           const tpl = useFollowUp ? demosFollowUpTemplate : demosTemplate;
@@ -1533,7 +1551,7 @@ export default function Dashboard() {
       });
     });
     return entries;
-  }, [previewModalType, sortedArtists, radioStations, playlistCurators, demosTemplate, demosSubject, demosFollowUpTemplate, demosFollowUpSubject, useFollowUp, radioTemplate, radioSubject, playlistTemplate, playlistSubject, signOff, trackTitle, driveLink, senderName, customContacts]);
+  }, [previewModalType, includedArtists, radioStations, playlistCurators, demosTemplate, demosSubject, demosFollowUpTemplate, demosFollowUpSubject, useFollowUp, radioTemplate, radioSubject, playlistTemplate, playlistSubject, signOff, trackTitle, driveLink, senderName, customContacts]);
 
   const NAV_ITEMS = [
     {
@@ -2129,7 +2147,9 @@ export default function Dashboard() {
                       </button>
                     )}
                     {previewDone && (
-                      <span className="text-sm text-zinc-400">{previewArtists.length} artists · {totalEmails} emails</span>
+                      <span className="text-sm text-zinc-400">
+                        {includedArtists.length}{includedArtists.length !== previewArtists.length ? ` of ${previewArtists.length}` : ''} artists selected · {totalEmails} emails
+                      </span>
                     )}
                     {!previewDone && customContacts.length > 0 && (
                       <span className="text-sm text-zinc-400">{customContacts.length} custom contact{customContacts.length !== 1 ? 's' : ''}</span>
@@ -2141,6 +2161,26 @@ export default function Dashboard() {
                       <div className="px-4 md:px-6 py-3 md:py-4 border-b border-zinc-800 flex flex-wrap items-center justify-between gap-2">
                         <h3 className="text-sm font-semibold text-zinc-300">Recipients Preview <span className="text-zinc-500 font-normal">· {visibleArtists.length}{visibleArtists.length !== previewArtists.length ? ` of ${previewArtists.length}` : ''} artists</span></h3>
                         <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setExcludedArtistNames(prev => {
+                              const next = new Set(prev);
+                              visibleArtists.forEach(a => next.add(a.name));
+                              return next;
+                            })}
+                            className="text-xs text-zinc-400 hover:text-zinc-200 transition"
+                            title="Uncheck all artists currently shown">
+                            Deselect all
+                          </button>
+                          <button
+                            onClick={() => setExcludedArtistNames(prev => {
+                              const next = new Set(prev);
+                              visibleArtists.forEach(a => next.delete(a.name));
+                              return next;
+                            })}
+                            className="text-xs text-zinc-400 hover:text-zinc-200 transition"
+                            title="Check all artists currently shown">
+                            Select all
+                          </button>
                           <input type="text" value={recipientSearch} onChange={e => setRecipientSearch(e.target.value)}
                             placeholder="Search artist..."
                             className="text-xs bg-zinc-800 border border-zinc-700 text-zinc-300 placeholder-zinc-500 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition w-36 sm:w-48" />
@@ -2227,9 +2267,13 @@ export default function Dashboard() {
                         {visibleArtists.map(a => {
                           const pitchedTracks = a.managerEmails.flatMap(email => pitchedEmailMap.get(email.toLowerCase()) ?? []);
                           const uniquePitched = [...new Set(pitchedTracks)];
+                          const isExcluded = excludedArtistNames.has(a.name);
                           return (
-                            <div key={a.name} className="px-4 md:px-6 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
+                            <div key={a.name} className={`px-4 md:px-6 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4 transition ${isExcluded ? 'opacity-40' : ''}`}>
                               <div className="flex items-center gap-3 min-w-0">
+                                <input type="checkbox" checked={!isExcluded} onChange={() => toggleArtistExclusion(a.name)}
+                                  title={isExcluded ? 'Excluded from this send — click to include' : 'Click to exclude from this send'}
+                                  className="shrink-0 w-4 h-4 rounded border-zinc-600 bg-zinc-800 text-violet-600 focus:ring-2 focus:ring-violet-500 focus:ring-offset-0 cursor-pointer accent-violet-600" />
                                 <div className="shrink-0 w-10 h-10 rounded-full overflow-hidden bg-zinc-700">
                                   {a.avatarUrl ? (
                                     <img src={a.avatarUrl} alt={a.name} width={40} height={40} className="w-full h-full object-cover" />
