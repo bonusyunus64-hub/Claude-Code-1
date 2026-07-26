@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getRedis, isKvConfigured } from '@/lib/kv';
-
-const STATE_KEY = 'trackpitch:settings';
+import { getRedis, isKvConfigured, STATE_KEY } from '@/lib/kv';
 
 function isAuthed(req: NextRequest): boolean {
   const auth = req.cookies.get('auth')?.value;

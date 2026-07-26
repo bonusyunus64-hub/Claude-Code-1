@@ -1,5 +1,7 @@
 import { Redis } from '@upstash/redis';
 
+export const STATE_KEY = 'trackpitch:settings';
+
 let client: Redis | null = null;
 
 // Vercel's Upstash/KV integration injects KV_REST_API_URL + KV_REST_API_TOKEN
