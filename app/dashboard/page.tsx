@@ -468,6 +468,9 @@ export default function Dashboard() {
   const [testEmailSending, setTestEmailSending] = useState(false);
   const [testEmailResult, setTestEmailResult] = useState<'success' | 'error' | null>(null);
   const [testEmailError, setTestEmailError] = useState('');
+  const [showTestEmailOptions, setShowTestEmailOptions] = useState(false);
+  const [testEmailSubject, setTestEmailSubject] = useState('');
+  const [testEmailMessage, setTestEmailMessage] = useState('');
   const [sendDelay, setSendDelay] = useState(0);
   const [dailySendCap, setDailySendCap] = useState(0);
   const [sendsToday, setSendsToday] = useState(0);
@@ -1118,8 +1121,8 @@ export default function Dashboard() {
         body: JSON.stringify({
           to: testEmailTo,
           fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
-          emailTemplate: demosTemplate,
-          subjectTemplate: demosSubject,
+          emailTemplate: testEmailMessage.trim() || demosTemplate,
+          subjectTemplate: testEmailSubject.trim() || demosSubject,
           signOff,
           signOffImage,
           senderName,
@@ -3129,6 +3132,42 @@ export default function Dashboard() {
                       {testEmailSending ? 'Sending...' : 'Send'}
                     </button>
                   </div>
+
+                  <div>
+                    <button
+                      onClick={() => setShowTestEmailOptions(p => !p)}
+                      className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition"
+                    >
+                      Optional: customize subject &amp; message
+                      <span className={`transition-transform inline-block ${showTestEmailOptions ? 'rotate-180' : ''}`}>▾</span>
+                    </button>
+                    {showTestEmailOptions && (
+                      <div className="mt-3 space-y-3 rounded-lg bg-zinc-800/50 border border-zinc-800 p-3">
+                        <div>
+                          <label className="block text-xs font-medium text-zinc-400 mb-1.5">Subject</label>
+                          <input
+                            type="text"
+                            value={testEmailSubject}
+                            onChange={e => setTestEmailSubject(e.target.value)}
+                            placeholder={demosSubject}
+                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-zinc-400 mb-1.5">Message</label>
+                          <textarea
+                            value={testEmailMessage}
+                            onChange={e => setTestEmailMessage(e.target.value)}
+                            placeholder={demosTemplate}
+                            rows={6}
+                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-600 font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y"
+                          />
+                        </div>
+                        <p className="text-xs text-zinc-600">Leave blank to send your Song Demos template as-is. Both support the same {'{{variables}}'}.</p>
+                      </div>
+                    )}
+                  </div>
+
                   {testEmailResult === 'success' && <p className="text-sm text-green-400">Test email sent successfully. Check your inbox.</p>}
                   {testEmailResult === 'error' && <p className="text-sm text-red-400">{testEmailError}</p>}
                   {!selectedAccountId && <p className="text-xs text-amber-500">Add and select an email account above first.</p>}
