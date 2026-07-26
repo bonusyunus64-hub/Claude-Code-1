@@ -196,6 +196,8 @@ interface Campaign {
   date: string;
   type: 'demos' | 'radio' | 'playlists';
   emails: string[];
+  accountId?: string;
+  responded?: string[];
 }
 
 interface CustomContact {
@@ -860,12 +862,43 @@ export default function Dashboard() {
     syncStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
   }
 
-  function logCampaign(type: 'demos' | 'radio' | 'playlists', title: string, emails: string[]) {
+  function logCampaign(type: 'demos' | 'radio' | 'playlists', title: string, emails: string[], accountId?: string) {
     if (!emails.length) return;
-    const campaign: Campaign = { id: Date.now().toString(), trackTitle: title, date: new Date().toISOString(), type, emails };
+    const campaign: Campaign = { id: Date.now().toString(), trackTitle: title, date: new Date().toISOString(), type, emails, accountId };
     const updated = [...campaigns, campaign];
     setCampaigns(updated);
     syncStorage.setItem('tp_campaigns', JSON.stringify(updated));
+  }
+
+  const [checkingRepliesId, setCheckingRepliesId] = useState<string | null>(null);
+  const [replyCheckError, setReplyCheckError] = useState('');
+
+  async function checkReplies(c: Campaign) {
+    const acc = emailAccounts.find(a => a.id === c.accountId);
+    if (!acc) { setReplyCheckError('The account this was sent from is no longer available.'); return; }
+    setCheckingRepliesId(c.id);
+    setReplyCheckError('');
+    try {
+      const res = await fetch('/api/check-replies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          emails: c.emails,
+          since: new Date(c.date).getTime(),
+          fromAccount: { ...acc, smtpPort: Number(acc.smtpPort) },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setReplyCheckError(data.error || 'Could not check replies.'); return; }
+      const responded = Array.from(new Set([...(c.responded ?? []), ...(data.responded as string[])]));
+      const updated = campaigns.map(x => x.id === c.id ? { ...x, responded } : x);
+      setCampaigns(updated);
+      syncStorage.setItem('tp_campaigns', JSON.stringify(updated));
+    } catch (err) {
+      setReplyCheckError(`Could not check replies: ${String(err)}`);
+    } finally {
+      setCheckingRepliesId(null);
+    }
   }
 
   function clearCampaignHistory() {
@@ -1250,7 +1283,7 @@ export default function Dashboard() {
         const failed = outcome.results.filter(r => !r.success).map(r => r.to);
         setSendFailedEmails(failed);
         recordFailedEmails(failed);
-        logCampaign('demos', trackTitle, sentEmails);
+        logCampaign('demos', trackTitle, sentEmails, selectedAccountId);
         if (sentEmails.length) addSendsToday(sentEmails.length, selectedAccountId);
       }
     } finally { setSending(false); }
@@ -1333,7 +1366,7 @@ export default function Dashboard() {
         const failed = outcome.results.filter(r => !r.success).map(r => r.to);
         setRadioSendFailedEmails(failed);
         recordFailedEmails(failed);
-        logCampaign('radio', trackTitle, sentEmails);
+        logCampaign('radio', trackTitle, sentEmails, selectedAccountId);
         if (sentEmails.length) addSendsToday(sentEmails.length, selectedAccountId);
       }
     } finally { setRadioSending(false); }
@@ -1400,7 +1433,7 @@ export default function Dashboard() {
         const failed = outcome.results.filter(r => !r.success).map(r => r.to);
         setPlaylistSendFailedEmails(failed);
         recordFailedEmails(failed);
-        logCampaign('playlists', trackTitle, sentEmails);
+        logCampaign('playlists', trackTitle, sentEmails, selectedAccountId);
         if (sentEmails.length) addSendsToday(sentEmails.length, selectedAccountId);
       }
     } finally { setPlaylistSending(false); }
@@ -3318,7 +3351,10 @@ export default function Dashboard() {
                             </span>
                             <div className="min-w-0">
                               <p className="text-sm font-medium text-white truncate">{c.trackTitle}</p>
-                              <p className="text-xs text-zinc-500">{new Date(c.date).toLocaleString()} · {c.emails.length} recipient{c.emails.length !== 1 ? 's' : ''}</p>
+                              <p className="text-xs text-zinc-500">
+                                {new Date(c.date).toLocaleString()} · {c.emails.length} recipient{c.emails.length !== 1 ? 's' : ''}
+                                {(c.responded?.length ?? 0) > 0 && <> · {c.responded!.length} responded</>}
+                              </p>
                             </div>
                           </div>
                           <svg viewBox="0 0 24 24" className={`w-4 h-4 shrink-0 text-zinc-500 transition-transform ${expandedCampaignId === c.id ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -3326,11 +3362,34 @@ export default function Dashboard() {
                           </svg>
                         </button>
                         {expandedCampaignId === c.id && (
-                          <div className="px-4 md:px-6 pb-4 -mt-1">
+                          <div className="px-4 md:px-6 pb-4 -mt-1 space-y-3">
+                            {c.accountId && (
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => checkReplies(c)}
+                                  disabled={checkingRepliesId === c.id}
+                                  className="rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 transition disabled:opacity-40"
+                                >
+                                  {checkingRepliesId === c.id ? 'Checking inbox…' : 'Check for replies'}
+                                </button>
+                                {checkingRepliesId === c.id && <span className="text-xs text-zinc-500">This can take a few seconds per recipient.</span>}
+                              </div>
+                            )}
+                            {replyCheckError && checkingRepliesId === null && (
+                              <p className="text-xs text-red-400">{replyCheckError}</p>
+                            )}
                             <div className="flex flex-wrap gap-1.5">
-                              {c.emails.map(email => (
-                                <span key={email} className="text-xs bg-zinc-800 text-zinc-300 px-2 py-1 rounded font-mono">{email}</span>
-                              ))}
+                              {c.emails.map(email => {
+                                const responded = c.responded?.includes(email);
+                                return (
+                                  <span
+                                    key={email}
+                                    className={`text-xs px-2 py-1 rounded font-mono border ${responded ? 'bg-emerald-900/30 text-emerald-300 border-emerald-700/40' : 'bg-zinc-800 text-zinc-300 border-transparent'}`}
+                                  >
+                                    {email}{responded && ' ✓'}
+                                  </span>
+                                );
+                              })}
                             </div>
                           </div>
                         )}
