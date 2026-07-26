@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { computeSpamScore } from '@/lib/spamScore';
+import { hydrateFromRemote, syncStorage } from '@/lib/remoteSync';
 
 const DEFAULT_DEMOS_TEMPLATE = `Hi {{managerName}},
 
@@ -521,6 +522,8 @@ export default function Dashboard() {
     fetch('/api/genres').then(r => r.json()).then(d => { setAllGenres(d.genres || []); setTopGenres(d.topGenres || []); });
     fetch('/api/radio-genres').then(r => r.json()).then(d => setRadioAllGenres(d.genres || []));
     fetch('/api/playlist-genres').then(r => r.json()).then(d => setPlaylistAllGenres(d.genres || []));
+    (async () => {
+    await hydrateFromRemote(); // pull latest settings from the server so a second device picks up what was saved elsewhere
     try {
       const accounts = JSON.parse(localStorage.getItem('tp_email_accounts') || '[]') as EmailAccount[];
       setEmailAccounts(accounts);
@@ -603,6 +606,7 @@ export default function Dashboard() {
         setSendsTodayByAccount(savedSendsToday.byAccount || {});
       }
     } catch {}
+    })();
   }, []);
 
   const pitchedEmailMap = useMemo(() => {
@@ -720,17 +724,17 @@ export default function Dashboard() {
     signOffImage !== lastSavedSignOffImage;
 
   function saveAll() {
-    localStorage.setItem('tp_email_template', demosTemplate);
-    localStorage.setItem('tp_email_subject', demosSubject);
-    localStorage.setItem('tp_followup_template', demosFollowUpTemplate);
-    localStorage.setItem('tp_followup_subject', demosFollowUpSubject);
-    localStorage.setItem('tp_radio_template', radioTemplate);
-    localStorage.setItem('tp_radio_subject', radioSubject);
-    localStorage.setItem('tp_playlist_template', playlistTemplate);
-    localStorage.setItem('tp_playlist_subject', playlistSubject);
-    localStorage.setItem('tp_sign_off', signOff);
-    if (signOffImage) localStorage.setItem('tp_sign_off_image', signOffImage);
-    else localStorage.removeItem('tp_sign_off_image');
+    syncStorage.setItem('tp_email_template', demosTemplate);
+    syncStorage.setItem('tp_email_subject', demosSubject);
+    syncStorage.setItem('tp_followup_template', demosFollowUpTemplate);
+    syncStorage.setItem('tp_followup_subject', demosFollowUpSubject);
+    syncStorage.setItem('tp_radio_template', radioTemplate);
+    syncStorage.setItem('tp_radio_subject', radioSubject);
+    syncStorage.setItem('tp_playlist_template', playlistTemplate);
+    syncStorage.setItem('tp_playlist_subject', playlistSubject);
+    syncStorage.setItem('tp_sign_off', signOff);
+    if (signOffImage) syncStorage.setItem('tp_sign_off_image', signOffImage);
+    else syncStorage.removeItem('tp_sign_off_image');
     setLastSavedDemosTemplate(demosTemplate);
     setLastSavedDemosSubject(demosSubject);
     setLastSavedFollowUpTemplate(demosFollowUpTemplate);
@@ -766,7 +770,7 @@ export default function Dashboard() {
 
   function persistAccounts(accounts: EmailAccount[]) {
     setEmailAccounts(accounts);
-    localStorage.setItem('tp_email_accounts', JSON.stringify(accounts));
+    syncStorage.setItem('tp_email_accounts', JSON.stringify(accounts));
   }
 
   function addAccount() {
@@ -775,7 +779,7 @@ export default function Dashboard() {
     const updated = [...emailAccounts, account];
     persistAccounts(updated);
     setSelectedAccountId(account.id);
-    localStorage.setItem('tp_selected_account', account.id);
+    syncStorage.setItem('tp_selected_account', account.id);
     setShowAddAccount(false);
     setNewAccount({ ...BLANK_ACCOUNT });
   }
@@ -786,13 +790,13 @@ export default function Dashboard() {
     if (selectedAccountId === id) {
       const next = updated[0]?.id ?? '';
       setSelectedAccountId(next);
-      localStorage.setItem('tp_selected_account', next);
+      syncStorage.setItem('tp_selected_account', next);
     }
   }
 
   function selectAccount(id: string) {
     setSelectedAccountId(id);
-    localStorage.setItem('tp_selected_account', id);
+    syncStorage.setItem('tp_selected_account', id);
   }
 
   function addToBlacklist() {
@@ -800,14 +804,14 @@ export default function Dashboard() {
     if (!email || blacklist.includes(email)) return;
     const updated = [...blacklist, email];
     setBlacklist(updated);
-    localStorage.setItem('tp_blacklist', JSON.stringify(updated));
+    syncStorage.setItem('tp_blacklist', JSON.stringify(updated));
     setNewBlacklistEmail('');
   }
 
   function removeFromBlacklist(email: string) {
     const updated = blacklist.filter(e => e !== email);
     setBlacklist(updated);
-    localStorage.setItem('tp_blacklist', JSON.stringify(updated));
+    syncStorage.setItem('tp_blacklist', JSON.stringify(updated));
   }
 
   function addCustomContact() {
@@ -815,7 +819,7 @@ export default function Dashboard() {
     const contact: CustomContact = { id: Date.now().toString(), ...newCustomContact };
     const updated = [...customContacts, contact];
     setCustomContacts(updated);
-    localStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
+    syncStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
     setShowAddCustomContact(false);
     setNewCustomContact({ artistName: '', managerName: '', managerEmail: '' });
   }
@@ -823,7 +827,7 @@ export default function Dashboard() {
   function removeCustomContact(id: string) {
     const updated = customContacts.filter(c => c.id !== id);
     setCustomContacts(updated);
-    localStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
+    syncStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
   }
 
   async function handleOutsideSearch(query: string) {
@@ -853,7 +857,7 @@ export default function Dashboard() {
     if (!additions.length) return;
     const updated = [...customContacts, ...additions];
     setCustomContacts(updated);
-    localStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
+    syncStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
   }
 
   function logCampaign(type: 'demos' | 'radio' | 'playlists', title: string, emails: string[]) {
@@ -861,12 +865,12 @@ export default function Dashboard() {
     const campaign: Campaign = { id: Date.now().toString(), trackTitle: title, date: new Date().toISOString(), type, emails };
     const updated = [...campaigns, campaign];
     setCampaigns(updated);
-    localStorage.setItem('tp_campaigns', JSON.stringify(updated));
+    syncStorage.setItem('tp_campaigns', JSON.stringify(updated));
   }
 
   function clearCampaignHistory() {
     setCampaigns([]);
-    localStorage.removeItem('tp_campaigns');
+    syncStorage.removeItem('tp_campaigns');
   }
 
   function exportCampaignsCsv(list: Campaign[] = campaigns) {
@@ -887,12 +891,12 @@ export default function Dashboard() {
     if (accountId) updatedByAccount[accountId] = (updatedByAccount[accountId] ?? 0) + n;
     setSendsToday(updatedTotal);
     setSendsTodayByAccount(updatedByAccount);
-    localStorage.setItem('tp_sends_today', JSON.stringify({ date: today, count: updatedTotal, byAccount: updatedByAccount }));
+    syncStorage.setItem('tp_sends_today', JSON.stringify({ date: today, count: updatedTotal, byAccount: updatedByAccount }));
   }
 
   function setDailyCap(value: number) {
     setDailySendCap(value);
-    localStorage.setItem('tp_daily_cap', String(value));
+    syncStorage.setItem('tp_daily_cap', String(value));
   }
 
   function saveDemosPreset() {
@@ -904,7 +908,7 @@ export default function Dashboard() {
     };
     const updated = [...demosPresets, preset];
     setDemosPresets(updated);
-    localStorage.setItem('tp_demos_presets', JSON.stringify(updated));
+    syncStorage.setItem('tp_demos_presets', JSON.stringify(updated));
     setNewDemosPresetName('');
   }
 
@@ -924,7 +928,7 @@ export default function Dashboard() {
   function deleteDemosPreset(id: string) {
     const updated = demosPresets.filter(p => p.id !== id);
     setDemosPresets(updated);
-    localStorage.setItem('tp_demos_presets', JSON.stringify(updated));
+    syncStorage.setItem('tp_demos_presets', JSON.stringify(updated));
   }
 
   function saveRadioPreset() {
@@ -935,7 +939,7 @@ export default function Dashboard() {
     };
     const updated = [...radioPresets, preset];
     setRadioPresets(updated);
-    localStorage.setItem('tp_radio_presets', JSON.stringify(updated));
+    syncStorage.setItem('tp_radio_presets', JSON.stringify(updated));
     setNewRadioPresetName('');
   }
 
@@ -950,7 +954,7 @@ export default function Dashboard() {
   function deleteRadioPreset(id: string) {
     const updated = radioPresets.filter(p => p.id !== id);
     setRadioPresets(updated);
-    localStorage.setItem('tp_radio_presets', JSON.stringify(updated));
+    syncStorage.setItem('tp_radio_presets', JSON.stringify(updated));
   }
 
   function savePlaylistPreset() {
@@ -961,7 +965,7 @@ export default function Dashboard() {
     };
     const updated = [...playlistPresets, preset];
     setPlaylistPresets(updated);
-    localStorage.setItem('tp_playlist_presets', JSON.stringify(updated));
+    syncStorage.setItem('tp_playlist_presets', JSON.stringify(updated));
     setNewPlaylistPresetName('');
   }
 
@@ -976,7 +980,7 @@ export default function Dashboard() {
   function deletePlaylistPreset(id: string) {
     const updated = playlistPresets.filter(p => p.id !== id);
     setPlaylistPresets(updated);
-    localStorage.setItem('tp_playlist_presets', JSON.stringify(updated));
+    syncStorage.setItem('tp_playlist_presets', JSON.stringify(updated));
   }
 
   function saveDemosTemplateToLibrary() {
@@ -985,7 +989,7 @@ export default function Dashboard() {
     const template: SavedTemplate = { id: Date.now().toString(), name, body: demosTemplate, subject: demosSubject };
     const updated = [...demosTemplateLibrary, template];
     setDemosTemplateLibrary(updated);
-    localStorage.setItem('tp_demos_templates', JSON.stringify(updated));
+    syncStorage.setItem('tp_demos_templates', JSON.stringify(updated));
     setNewDemosTemplateName('');
   }
 
@@ -997,7 +1001,7 @@ export default function Dashboard() {
   function deleteDemosTemplateFromLibrary(id: string) {
     const updated = demosTemplateLibrary.filter(t => t.id !== id);
     setDemosTemplateLibrary(updated);
-    localStorage.setItem('tp_demos_templates', JSON.stringify(updated));
+    syncStorage.setItem('tp_demos_templates', JSON.stringify(updated));
   }
 
   function saveFollowUpTemplateToLibrary() {
@@ -1006,7 +1010,7 @@ export default function Dashboard() {
     const template: SavedTemplate = { id: Date.now().toString(), name, body: demosFollowUpTemplate, subject: demosFollowUpSubject };
     const updated = [...followUpTemplateLibrary, template];
     setFollowUpTemplateLibrary(updated);
-    localStorage.setItem('tp_followup_templates', JSON.stringify(updated));
+    syncStorage.setItem('tp_followup_templates', JSON.stringify(updated));
     setNewFollowUpTemplateName('');
   }
 
@@ -1018,7 +1022,7 @@ export default function Dashboard() {
   function deleteFollowUpTemplateFromLibrary(id: string) {
     const updated = followUpTemplateLibrary.filter(t => t.id !== id);
     setFollowUpTemplateLibrary(updated);
-    localStorage.setItem('tp_followup_templates', JSON.stringify(updated));
+    syncStorage.setItem('tp_followup_templates', JSON.stringify(updated));
   }
 
   function saveRadioTemplateToLibrary() {
@@ -1027,7 +1031,7 @@ export default function Dashboard() {
     const template: SavedTemplate = { id: Date.now().toString(), name, body: radioTemplate, subject: radioSubject };
     const updated = [...radioTemplateLibrary, template];
     setRadioTemplateLibrary(updated);
-    localStorage.setItem('tp_radio_templates', JSON.stringify(updated));
+    syncStorage.setItem('tp_radio_templates', JSON.stringify(updated));
     setNewRadioTemplateName('');
   }
 
@@ -1039,7 +1043,7 @@ export default function Dashboard() {
   function deleteRadioTemplateFromLibrary(id: string) {
     const updated = radioTemplateLibrary.filter(t => t.id !== id);
     setRadioTemplateLibrary(updated);
-    localStorage.setItem('tp_radio_templates', JSON.stringify(updated));
+    syncStorage.setItem('tp_radio_templates', JSON.stringify(updated));
   }
 
   function savePlaylistTemplateToLibrary() {
@@ -1048,7 +1052,7 @@ export default function Dashboard() {
     const template: SavedTemplate = { id: Date.now().toString(), name, body: playlistTemplate, subject: playlistSubject };
     const updated = [...playlistTemplateLibrary, template];
     setPlaylistTemplateLibrary(updated);
-    localStorage.setItem('tp_playlist_templates', JSON.stringify(updated));
+    syncStorage.setItem('tp_playlist_templates', JSON.stringify(updated));
     setNewPlaylistTemplateName('');
   }
 
@@ -1060,7 +1064,7 @@ export default function Dashboard() {
   function deletePlaylistTemplateFromLibrary(id: string) {
     const updated = playlistTemplateLibrary.filter(t => t.id !== id);
     setPlaylistTemplateLibrary(updated);
-    localStorage.setItem('tp_playlist_templates', JSON.stringify(updated));
+    syncStorage.setItem('tp_playlist_templates', JSON.stringify(updated));
   }
 
   function handleCustomContactsCsv(e: React.ChangeEvent<HTMLInputElement>) {
@@ -1075,7 +1079,7 @@ export default function Dashboard() {
       const added = fresh.map(p => ({ id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, ...p }));
       const updated = [...customContacts, ...added];
       setCustomContacts(updated);
-      localStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
+      syncStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
     };
     reader.readAsText(file);
     e.target.value = '';
@@ -1085,14 +1089,14 @@ export default function Dashboard() {
     const lower = emails.map(e => e.toLowerCase());
     const merged = [...new Set([...blacklist, ...lower])];
     setBlacklist(merged);
-    localStorage.setItem('tp_blacklist', JSON.stringify(merged));
+    syncStorage.setItem('tp_blacklist', JSON.stringify(merged));
   }
 
   function recordFailedEmails(emails: string[]) {
     if (!emails.length) return;
     setFailedEmails(prev => {
       const merged = [...new Set([...prev, ...emails.map(e => e.toLowerCase())])];
-      localStorage.setItem('tp_failed_emails', JSON.stringify(merged));
+      syncStorage.setItem('tp_failed_emails', JSON.stringify(merged));
       return merged;
     });
   }
@@ -1100,7 +1104,7 @@ export default function Dashboard() {
   function removeFromFailedEmails(email: string) {
     setFailedEmails(prev => {
       const updated = prev.filter(e => e !== email);
-      localStorage.setItem('tp_failed_emails', JSON.stringify(updated));
+      syncStorage.setItem('tp_failed_emails', JSON.stringify(updated));
       return updated;
     });
   }
@@ -3068,7 +3072,7 @@ export default function Dashboard() {
                   <div className="flex flex-wrap gap-1.5">
                     {SEND_DELAY_OPTIONS.map(opt => (
                       <button key={opt.value}
-                        onClick={() => { setSendDelay(opt.value); localStorage.setItem('tp_send_delay', String(opt.value)); }}
+                        onClick={() => { setSendDelay(opt.value); syncStorage.setItem('tp_send_delay', String(opt.value)); }}
                         className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${sendDelay === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
                         {opt.label}
                       </button>
