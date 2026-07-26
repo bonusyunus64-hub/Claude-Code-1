@@ -42,6 +42,11 @@ I've attached the track "{{trackTitle}}" — you can listen here:
 
 I believe this would be a great fit for your playlist and listeners. Please let me know if you'd like any additional information.`;
 
+const DEFAULT_DEMOS_SUBJECT = `Music Submission: {{trackTitle}} for {{artistName}}`;
+const DEFAULT_FOLLOWUP_SUBJECT = `Following Up: {{trackTitle}} for {{artistName}}`;
+const DEFAULT_RADIO_SUBJECT = `Music Submission: {{trackTitle}} for {{stationName}}`;
+const DEFAULT_PLAYLIST_SUBJECT = `Music Submission: {{trackTitle}} for {{curatorName}}`;
+
 const DEFAULT_SIGN_OFF = `Best regards,
 {{senderName}}`;
 
@@ -242,6 +247,7 @@ interface SavedTemplate {
   id: string;
   name: string;
   body: string;
+  subject?: string;
 }
 
 function renderTemplateClient(template: string, vars: Record<string, string>): string {
@@ -387,7 +393,9 @@ export default function Dashboard() {
   const [maxInstagram, setMaxInstagram] = useState(0);
   const [showInstagram, setShowInstagram] = useState(false);
   const [demosTemplate, setDemosTemplate] = useState(DEFAULT_DEMOS_TEMPLATE);
+  const [demosSubject, setDemosSubject] = useState(DEFAULT_DEMOS_SUBJECT);
   const [demosFollowUpTemplate, setDemosFollowUpTemplate] = useState(DEFAULT_FOLLOWUP_TEMPLATE);
+  const [demosFollowUpSubject, setDemosFollowUpSubject] = useState(DEFAULT_FOLLOWUP_SUBJECT);
   const [useFollowUp, setUseFollowUp] = useState(false);
   const [previewArtists, setPreviewArtists] = useState<Artist[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -415,6 +423,7 @@ export default function Dashboard() {
   const [showRadioGenreDropdown, setShowRadioGenreDropdown] = useState(false);
   const [selectedLocations, setSelectedLocations] = useState<string[]>([]);
   const [radioTemplate, setRadioTemplate] = useState(DEFAULT_RADIO_TEMPLATE);
+  const [radioSubject, setRadioSubject] = useState(DEFAULT_RADIO_SUBJECT);
   const [radioStations, setRadioStations] = useState<RadioStation[]>([]);
   const [radioPreviewDone, setRadioPreviewDone] = useState(false);
   const [radioPreviewLoading, setRadioPreviewLoading] = useState(false);
@@ -435,6 +444,7 @@ export default function Dashboard() {
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
   const [playlistMatchMode, setPlaylistMatchMode] = useState<'any' | 'all'>('any');
   const [playlistTemplate, setPlaylistTemplate] = useState(DEFAULT_PLAYLIST_TEMPLATE);
+  const [playlistSubject, setPlaylistSubject] = useState(DEFAULT_PLAYLIST_SUBJECT);
   const [playlistCurators, setPlaylistCurators] = useState<PlaylistCurator[]>([]);
   const [playlistPreviewDone, setPlaylistPreviewDone] = useState(false);
   const [playlistPreviewLoading, setPlaylistPreviewLoading] = useState(false);
@@ -494,9 +504,13 @@ export default function Dashboard() {
 
   // Save tracking
   const [lastSavedDemosTemplate, setLastSavedDemosTemplate] = useState(DEFAULT_DEMOS_TEMPLATE);
+  const [lastSavedDemosSubject, setLastSavedDemosSubject] = useState(DEFAULT_DEMOS_SUBJECT);
   const [lastSavedFollowUpTemplate, setLastSavedFollowUpTemplate] = useState(DEFAULT_FOLLOWUP_TEMPLATE);
+  const [lastSavedFollowUpSubject, setLastSavedFollowUpSubject] = useState(DEFAULT_FOLLOWUP_SUBJECT);
   const [lastSavedRadioTemplate, setLastSavedRadioTemplate] = useState(DEFAULT_RADIO_TEMPLATE);
+  const [lastSavedRadioSubject, setLastSavedRadioSubject] = useState(DEFAULT_RADIO_SUBJECT);
   const [lastSavedPlaylistTemplate, setLastSavedPlaylistTemplate] = useState(DEFAULT_PLAYLIST_TEMPLATE);
+  const [lastSavedPlaylistSubject, setLastSavedPlaylistSubject] = useState(DEFAULT_PLAYLIST_SUBJECT);
   const [lastSavedSignOff, setLastSavedSignOff] = useState(DEFAULT_SIGN_OFF);
   const [lastSavedSignOffImage, setLastSavedSignOffImage] = useState<string | null>(null);
 
@@ -520,14 +534,26 @@ export default function Dashboard() {
       const savedDemosTemplate = localStorage.getItem('tp_email_template');
       if (savedDemosTemplate !== null) { setDemosTemplate(savedDemosTemplate); setLastSavedDemosTemplate(savedDemosTemplate); }
 
+      const savedDemosSubject = localStorage.getItem('tp_email_subject');
+      if (savedDemosSubject !== null) { setDemosSubject(savedDemosSubject); setLastSavedDemosSubject(savedDemosSubject); }
+
       const savedFollowUp = localStorage.getItem('tp_followup_template');
       if (savedFollowUp !== null) { setDemosFollowUpTemplate(savedFollowUp); setLastSavedFollowUpTemplate(savedFollowUp); }
+
+      const savedFollowUpSubject = localStorage.getItem('tp_followup_subject');
+      if (savedFollowUpSubject !== null) { setDemosFollowUpSubject(savedFollowUpSubject); setLastSavedFollowUpSubject(savedFollowUpSubject); }
 
       const savedRadioTemplate = localStorage.getItem('tp_radio_template');
       if (savedRadioTemplate !== null) { setRadioTemplate(savedRadioTemplate); setLastSavedRadioTemplate(savedRadioTemplate); }
 
+      const savedRadioSubject = localStorage.getItem('tp_radio_subject');
+      if (savedRadioSubject !== null) { setRadioSubject(savedRadioSubject); setLastSavedRadioSubject(savedRadioSubject); }
+
       const savedPlaylistTemplate = localStorage.getItem('tp_playlist_template');
       if (savedPlaylistTemplate !== null) { setPlaylistTemplate(savedPlaylistTemplate); setLastSavedPlaylistTemplate(savedPlaylistTemplate); }
+
+      const savedPlaylistSubject = localStorage.getItem('tp_playlist_subject');
+      if (savedPlaylistSubject !== null) { setPlaylistSubject(savedPlaylistSubject); setLastSavedPlaylistSubject(savedPlaylistSubject); }
 
       const savedCampaigns = localStorage.getItem('tp_campaigns');
       if (savedCampaigns) setCampaigns(JSON.parse(savedCampaigns));
@@ -680,33 +706,49 @@ export default function Dashboard() {
 
   const isDirty =
     demosTemplate !== lastSavedDemosTemplate ||
+    demosSubject !== lastSavedDemosSubject ||
     demosFollowUpTemplate !== lastSavedFollowUpTemplate ||
+    demosFollowUpSubject !== lastSavedFollowUpSubject ||
     radioTemplate !== lastSavedRadioTemplate ||
+    radioSubject !== lastSavedRadioSubject ||
     playlistTemplate !== lastSavedPlaylistTemplate ||
+    playlistSubject !== lastSavedPlaylistSubject ||
     signOff !== lastSavedSignOff ||
     signOffImage !== lastSavedSignOffImage;
 
   function saveAll() {
     localStorage.setItem('tp_email_template', demosTemplate);
+    localStorage.setItem('tp_email_subject', demosSubject);
     localStorage.setItem('tp_followup_template', demosFollowUpTemplate);
+    localStorage.setItem('tp_followup_subject', demosFollowUpSubject);
     localStorage.setItem('tp_radio_template', radioTemplate);
+    localStorage.setItem('tp_radio_subject', radioSubject);
     localStorage.setItem('tp_playlist_template', playlistTemplate);
+    localStorage.setItem('tp_playlist_subject', playlistSubject);
     localStorage.setItem('tp_sign_off', signOff);
     if (signOffImage) localStorage.setItem('tp_sign_off_image', signOffImage);
     else localStorage.removeItem('tp_sign_off_image');
     setLastSavedDemosTemplate(demosTemplate);
+    setLastSavedDemosSubject(demosSubject);
     setLastSavedFollowUpTemplate(demosFollowUpTemplate);
+    setLastSavedFollowUpSubject(demosFollowUpSubject);
     setLastSavedRadioTemplate(radioTemplate);
+    setLastSavedRadioSubject(radioSubject);
     setLastSavedPlaylistTemplate(playlistTemplate);
+    setLastSavedPlaylistSubject(playlistSubject);
     setLastSavedSignOff(signOff);
     setLastSavedSignOffImage(signOffImage);
   }
 
   function discardChanges() {
     setDemosTemplate(lastSavedDemosTemplate);
+    setDemosSubject(lastSavedDemosSubject);
     setDemosFollowUpTemplate(lastSavedFollowUpTemplate);
+    setDemosFollowUpSubject(lastSavedFollowUpSubject);
     setRadioTemplate(lastSavedRadioTemplate);
+    setRadioSubject(lastSavedRadioSubject);
     setPlaylistTemplate(lastSavedPlaylistTemplate);
+    setPlaylistSubject(lastSavedPlaylistSubject);
     setSignOff(lastSavedSignOff);
     setSignOffImage(lastSavedSignOffImage);
   }
@@ -937,7 +979,7 @@ export default function Dashboard() {
   function saveDemosTemplateToLibrary() {
     const name = newDemosTemplateName.trim();
     if (!name) return;
-    const template: SavedTemplate = { id: Date.now().toString(), name, body: demosTemplate };
+    const template: SavedTemplate = { id: Date.now().toString(), name, body: demosTemplate, subject: demosSubject };
     const updated = [...demosTemplateLibrary, template];
     setDemosTemplateLibrary(updated);
     localStorage.setItem('tp_demos_templates', JSON.stringify(updated));
@@ -946,6 +988,7 @@ export default function Dashboard() {
 
   function loadDemosTemplateFromLibrary(template: SavedTemplate) {
     setDemosTemplate(template.body);
+    if (template.subject !== undefined) setDemosSubject(template.subject);
   }
 
   function deleteDemosTemplateFromLibrary(id: string) {
@@ -957,7 +1000,7 @@ export default function Dashboard() {
   function saveFollowUpTemplateToLibrary() {
     const name = newFollowUpTemplateName.trim();
     if (!name) return;
-    const template: SavedTemplate = { id: Date.now().toString(), name, body: demosFollowUpTemplate };
+    const template: SavedTemplate = { id: Date.now().toString(), name, body: demosFollowUpTemplate, subject: demosFollowUpSubject };
     const updated = [...followUpTemplateLibrary, template];
     setFollowUpTemplateLibrary(updated);
     localStorage.setItem('tp_followup_templates', JSON.stringify(updated));
@@ -966,6 +1009,7 @@ export default function Dashboard() {
 
   function loadFollowUpTemplateFromLibrary(template: SavedTemplate) {
     setDemosFollowUpTemplate(template.body);
+    if (template.subject !== undefined) setDemosFollowUpSubject(template.subject);
   }
 
   function deleteFollowUpTemplateFromLibrary(id: string) {
@@ -977,7 +1021,7 @@ export default function Dashboard() {
   function saveRadioTemplateToLibrary() {
     const name = newRadioTemplateName.trim();
     if (!name) return;
-    const template: SavedTemplate = { id: Date.now().toString(), name, body: radioTemplate };
+    const template: SavedTemplate = { id: Date.now().toString(), name, body: radioTemplate, subject: radioSubject };
     const updated = [...radioTemplateLibrary, template];
     setRadioTemplateLibrary(updated);
     localStorage.setItem('tp_radio_templates', JSON.stringify(updated));
@@ -986,6 +1030,7 @@ export default function Dashboard() {
 
   function loadRadioTemplateFromLibrary(template: SavedTemplate) {
     setRadioTemplate(template.body);
+    if (template.subject !== undefined) setRadioSubject(template.subject);
   }
 
   function deleteRadioTemplateFromLibrary(id: string) {
@@ -997,7 +1042,7 @@ export default function Dashboard() {
   function savePlaylistTemplateToLibrary() {
     const name = newPlaylistTemplateName.trim();
     if (!name) return;
-    const template: SavedTemplate = { id: Date.now().toString(), name, body: playlistTemplate };
+    const template: SavedTemplate = { id: Date.now().toString(), name, body: playlistTemplate, subject: playlistSubject };
     const updated = [...playlistTemplateLibrary, template];
     setPlaylistTemplateLibrary(updated);
     localStorage.setItem('tp_playlist_templates', JSON.stringify(updated));
@@ -1006,6 +1051,7 @@ export default function Dashboard() {
 
   function loadPlaylistTemplateFromLibrary(template: SavedTemplate) {
     setPlaylistTemplate(template.body);
+    if (template.subject !== undefined) setPlaylistSubject(template.subject);
   }
 
   function deletePlaylistTemplateFromLibrary(id: string) {
@@ -1073,6 +1119,7 @@ export default function Dashboard() {
           to: testEmailTo,
           fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
           emailTemplate: demosTemplate,
+          subjectTemplate: demosSubject,
           signOff,
           signOffImage,
           senderName,
@@ -1180,6 +1227,7 @@ export default function Dashboard() {
       const outcome = await sendInBatches('/api/send', {
         trackTitle, driveLink, genres: selectedGenres,
         emailTemplate: useFollowUp ? demosFollowUpTemplate : demosTemplate,
+        subjectTemplate: useFollowUp ? demosFollowUpSubject : demosSubject,
         senderName, signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram,
         matchMode: demosMatchMode,
         sendDelay: sendDelay > 0 ? sendDelay : undefined,
@@ -1267,7 +1315,7 @@ export default function Dashboard() {
       const acc = emailAccounts.find(a => a.id === selectedAccountId);
       const outcome = await sendInBatches('/api/radio-send', {
         trackTitle, driveLink, genres: selectedRadioGenres, locations: selectedLocations,
-        emailTemplate: radioTemplate, senderName, signOff, signOffImage, matchMode: radioMatchMode,
+        emailTemplate: radioTemplate, subjectTemplate: radioSubject, senderName, signOff, signOffImage, matchMode: radioMatchMode,
         sendDelay: sendDelay > 0 ? sendDelay : undefined,
         blacklist: blacklist.length > 0 ? blacklist : undefined,
         fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
@@ -1334,7 +1382,7 @@ export default function Dashboard() {
       const acc = emailAccounts.find(a => a.id === selectedAccountId);
       const outcome = await sendInBatches('/api/playlist-send', {
         trackTitle, driveLink, genres: selectedPlaylistGenres, platforms: selectedPlatforms,
-        emailTemplate: playlistTemplate, senderName, signOff, signOffImage, matchMode: playlistMatchMode,
+        emailTemplate: playlistTemplate, subjectTemplate: playlistSubject, senderName, signOff, signOffImage, matchMode: playlistMatchMode,
         sendDelay: sendDelay > 0 ? sendDelay : undefined,
         blacklist: blacklist.length > 0 ? blacklist : undefined,
         fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
@@ -1369,12 +1417,13 @@ export default function Dashboard() {
         a.managerEmails.forEach((email, idx) => {
           const vars = { managerName: a.managerNames[idx] || 'there', artistName: a.name, trackTitle, driveLink, senderName, managementCompany: a.managementCompany };
           const tpl = useFollowUp ? demosFollowUpTemplate : demosTemplate;
+          const subjectTpl = useFollowUp ? demosFollowUpSubject : demosSubject;
           const bodyParts = [renderTemplateClient(tpl, vars)];
           if (signOff?.trim()) bodyParts.push(renderTemplateClient(signOff, vars));
           entries.push({
             label: `${a.name}${a.managerNames[idx] ? ` (${a.managerNames[idx]})` : ''} <${email}>`,
             to: email,
-            subject: `Music Submission: ${trackTitle} for ${a.name}`,
+            subject: renderTemplateClient(subjectTpl, vars),
             body: bodyParts.join('\n\n'),
           });
         });
@@ -1382,12 +1431,13 @@ export default function Dashboard() {
       customContacts.forEach(cc => {
         const vars = { managerName: cc.managerName || 'there', artistName: cc.artistName, trackTitle, driveLink, senderName, managementCompany: '' };
         const tpl = useFollowUp ? demosFollowUpTemplate : demosTemplate;
+        const subjectTpl = useFollowUp ? demosFollowUpSubject : demosSubject;
         const bodyParts = [renderTemplateClient(tpl, vars)];
         if (signOff?.trim()) bodyParts.push(renderTemplateClient(signOff, vars));
         entries.push({
           label: `${cc.artistName}${cc.managerName ? ` (${cc.managerName})` : ''} <${cc.managerEmail}> [Custom]`,
           to: cc.managerEmail,
-          subject: `Music Submission: ${trackTitle} for ${cc.artistName}`,
+          subject: renderTemplateClient(subjectTpl, vars),
           body: bodyParts.join('\n\n'),
         });
       });
@@ -1403,7 +1453,7 @@ export default function Dashboard() {
           entries.push({
             label: `${c.name} <${email}>`,
             to: email,
-            subject: `Music Submission: ${trackTitle} for ${c.name}`,
+            subject: renderTemplateClient(playlistSubject, vars),
             body: bodyParts.join('\n\n'),
           });
         });
@@ -1419,13 +1469,13 @@ export default function Dashboard() {
         entries.push({
           label: `${s.name} <${email}>`,
           to: email,
-          subject: `Music Submission: ${trackTitle} for ${s.name}`,
+          subject: renderTemplateClient(radioSubject, vars),
           body: bodyParts.join('\n\n'),
         });
       });
     });
     return entries;
-  }, [previewModalType, sortedArtists, radioStations, playlistCurators, demosTemplate, demosFollowUpTemplate, useFollowUp, radioTemplate, playlistTemplate, signOff, trackTitle, driveLink, senderName, customContacts]);
+  }, [previewModalType, sortedArtists, radioStations, playlistCurators, demosTemplate, demosSubject, demosFollowUpTemplate, demosFollowUpSubject, useFollowUp, radioTemplate, radioSubject, playlistTemplate, playlistSubject, signOff, trackTitle, driveLink, senderName, customContacts]);
 
   const NAV_ITEMS = [
     {
@@ -1641,10 +1691,15 @@ export default function Dashboard() {
                           ))}
                         </div>
                       </div>
+                      <div>
+                        <label className="block text-xs font-medium text-zinc-400 mb-1.5">Subject line</label>
+                        <input type="text" value={demosSubject} onChange={e => setDemosSubject(e.target.value)}
+                          className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                      </div>
                       <textarea value={demosTemplate} onChange={e => setDemosTemplate(e.target.value)} rows={14}
                         className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
                       <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <button onClick={() => setDemosTemplate(DEFAULT_DEMOS_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                        <button onClick={() => { setDemosTemplate(DEFAULT_DEMOS_TEMPLATE); setDemosSubject(DEFAULT_DEMOS_SUBJECT); }} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
                           Reset to default
                         </button>
                         <SpamScoreBadge template={demosTemplate} />
@@ -1684,10 +1739,15 @@ export default function Dashboard() {
                           <CopyChip key={v} value={v} />
                         ))}
                       </div>
+                      <div>
+                        <label className="block text-xs font-medium text-zinc-400 mb-1.5">Subject line</label>
+                        <input type="text" value={demosFollowUpSubject} onChange={e => setDemosFollowUpSubject(e.target.value)}
+                          className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                      </div>
                       <textarea value={demosFollowUpTemplate} onChange={e => setDemosFollowUpTemplate(e.target.value)} rows={12}
                         className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
                       <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <button onClick={() => setDemosFollowUpTemplate(DEFAULT_FOLLOWUP_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                        <button onClick={() => { setDemosFollowUpTemplate(DEFAULT_FOLLOWUP_TEMPLATE); setDemosFollowUpSubject(DEFAULT_FOLLOWUP_SUBJECT); }} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
                           Reset to default
                         </button>
                         <SpamScoreBadge template={demosFollowUpTemplate} />
@@ -2291,10 +2351,15 @@ export default function Dashboard() {
                         ))}
                       </div>
                     </div>
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-400 mb-1.5">Subject line</label>
+                      <input type="text" value={radioSubject} onChange={e => setRadioSubject(e.target.value)}
+                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                    </div>
                     <textarea value={radioTemplate} onChange={e => setRadioTemplate(e.target.value)} rows={16}
                       className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
                     <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <button onClick={() => setRadioTemplate(DEFAULT_RADIO_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                      <button onClick={() => { setRadioTemplate(DEFAULT_RADIO_TEMPLATE); setRadioSubject(DEFAULT_RADIO_SUBJECT); }} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
                         Reset to default
                       </button>
                       <SpamScoreBadge template={radioTemplate} />
@@ -2336,10 +2401,15 @@ export default function Dashboard() {
                         ))}
                       </div>
                     </div>
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-400 mb-1.5">Subject line</label>
+                      <input type="text" value={playlistSubject} onChange={e => setPlaylistSubject(e.target.value)}
+                        className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                    </div>
                     <textarea value={playlistTemplate} onChange={e => setPlaylistTemplate(e.target.value)} rows={16}
                       className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
                     <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <button onClick={() => setPlaylistTemplate(DEFAULT_PLAYLIST_TEMPLATE)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+                      <button onClick={() => { setPlaylistTemplate(DEFAULT_PLAYLIST_TEMPLATE); setPlaylistSubject(DEFAULT_PLAYLIST_SUBJECT); }} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
                         Reset to default
                       </button>
                       <SpamScoreBadge template={playlistTemplate} />

@@ -6,6 +6,7 @@ interface TestEmailPayload {
   to: string;
   fromAccount?: FromAccount;
   emailTemplate?: string;
+  subjectTemplate?: string;
   signOff?: string;
   signOffImage?: string;
   senderName?: string;
@@ -14,7 +15,7 @@ interface TestEmailPayload {
 }
 
 export async function POST(req: NextRequest) {
-  const { to, fromAccount, emailTemplate, signOff, signOffImage, senderName, trackTitle, driveLink } =
+  const { to, fromAccount, emailTemplate, subjectTemplate, signOff, signOffImage, senderName, trackTitle, driveLink } =
     await req.json() as TestEmailPayload;
 
   if (!to) {
@@ -53,7 +54,8 @@ export async function POST(req: NextRequest) {
     const bodyParts = [renderTemplate(emailTemplate, vars)];
     if (signOff?.trim()) bodyParts.push(renderTemplate(signOff, vars));
     text = bodyParts.join('\n\n');
-    subject = `[TEST] ${renderTemplate('Music Submission: {{trackTitle}} for {{artistName}}', vars)}`;
+    const subjectTpl = subjectTemplate?.trim() || 'Music Submission: {{trackTitle}} for {{artistName}}';
+    subject = `[TEST] ${renderTemplate(subjectTpl, vars)}`;
     html = `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#333">${textToHtml(text)}</div>`;
   }
 

@@ -8,6 +8,7 @@ interface SendPayload {
   driveLink: string;
   genres: string[];
   emailTemplate: string;
+  subjectTemplate?: string;
   senderName: string;
   signOff?: string;
   signOffImage?: string;
@@ -31,6 +32,7 @@ function buildEmailsForArtist(
   trackTitle: string,
   driveLink: string,
   emailTemplate: string,
+  subjectTemplate: string,
   signOff: string,
   senderName: string
 ): { to: string; subject: string; body: string }[] {
@@ -47,20 +49,19 @@ function buildEmailsForArtist(
     const bodyParts = [renderTemplate(emailTemplate, vars)];
     if (signOff?.trim()) bodyParts.push(renderTemplate(signOff, vars));
     const body = bodyParts.join('\n\n');
-    const subject = renderTemplate(
-      `Music Submission: {{trackTitle}} for {{artistName}}`,
-      { trackTitle, artistName: artist.name }
-    );
+    const subject = renderTemplate(subjectTemplate, vars);
     return { to: email, subject, body };
   });
 }
 
 export async function POST(req: NextRequest) {
   const {
-    trackTitle, driveLink, genres, emailTemplate, senderName,
+    trackTitle, driveLink, genres, emailTemplate, subjectTemplate, senderName,
     signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode, fromAccount,
     sendDelay, blacklist, customContacts, offset, limit,
   } = await req.json() as SendPayload;
+
+  const subjectTpl = subjectTemplate?.trim() || `Music Submission: {{trackTitle}} for {{artistName}}`;
 
   if (!trackTitle || !driveLink || !emailTemplate || (!genres?.length && !customContacts?.length)) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
@@ -82,7 +83,7 @@ export async function POST(req: NextRequest) {
     : [];
 
   const artistMessages = artists.flatMap(a =>
-    buildEmailsForArtist(a, trackTitle, driveLink, emailTemplate, signOff ?? '', senderName)
+    buildEmailsForArtist(a, trackTitle, driveLink, emailTemplate, subjectTpl, signOff ?? '', senderName)
   );
 
   const customMessages = (customContacts ?? []).map(cc => {
@@ -90,7 +91,7 @@ export async function POST(req: NextRequest) {
     const bodyParts = [renderTemplate(emailTemplate, vars)];
     if (signOff?.trim()) bodyParts.push(renderTemplate(signOff, vars));
     const body = bodyParts.join('\n\n');
-    const subject = renderTemplate(`Music Submission: {{trackTitle}} for {{artistName}}`, { trackTitle, artistName: cc.artistName });
+    const subject = renderTemplate(subjectTpl, vars);
     return { to: cc.managerEmail, subject, body };
   });
 

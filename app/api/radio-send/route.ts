@@ -9,6 +9,7 @@ interface RadioSendPayload {
   genres: string[];
   locations: string[];
   emailTemplate: string;
+  subjectTemplate?: string;
   senderName: string;
   signOff?: string;
   signOffImage?: string;
@@ -22,7 +23,7 @@ interface RadioSendPayload {
 
 export async function POST(req: NextRequest) {
   const {
-    trackTitle, driveLink, genres, locations, emailTemplate, senderName,
+    trackTitle, driveLink, genres, locations, emailTemplate, subjectTemplate, senderName,
     signOff, signOffImage, matchMode, fromAccount,
     sendDelay, blacklist, offset, limit,
   } = await req.json() as RadioSendPayload;
@@ -30,6 +31,8 @@ export async function POST(req: NextRequest) {
   if (!trackTitle || !driveLink || !emailTemplate) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
+
+  const subjectTpl = subjectTemplate?.trim() || `Music Submission: {{trackTitle}} for {{stationName}}`;
 
   const { smtpUser, smtpPass, smtpHost, smtpPort, fromName, fromEmail } = resolveSmtpConfig(fromAccount, senderName);
 
@@ -53,10 +56,7 @@ export async function POST(req: NextRequest) {
         const bodyParts = [renderTemplate(emailTemplate, vars)];
         if (signOff?.trim()) bodyParts.push(renderTemplate(signOff, vars));
         const body = bodyParts.join('\n\n');
-        const subject = renderTemplate(
-          `Music Submission: {{trackTitle}} for {{stationName}}`,
-          { trackTitle, stationName: station.name }
-        );
+        const subject = renderTemplate(subjectTpl, vars);
         return { to: email, subject, body };
       })
   );
