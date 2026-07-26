@@ -12,11 +12,17 @@ interface TestEmailPayload {
   senderName?: string;
   trackTitle?: string;
   driveLink?: string;
+  managerName?: string;
+  artistName?: string;
+  managementCompany?: string;
+  pronoun?: string;
 }
 
 export async function POST(req: NextRequest) {
-  const { to, fromAccount, emailTemplate, subjectTemplate, signOff, signOffImage, senderName, trackTitle, driveLink } =
-    await req.json() as TestEmailPayload;
+  const {
+    to, fromAccount, emailTemplate, subjectTemplate, signOff, signOffImage, senderName, trackTitle, driveLink,
+    managerName, artistName, managementCompany, pronoun,
+  } = await req.json() as TestEmailPayload;
 
   if (!to) {
     return NextResponse.json({ error: 'Recipient email is required.' }, { status: 400 });
@@ -44,12 +50,13 @@ export async function POST(req: NextRequest) {
 
   if (emailTemplate?.trim()) {
     const vars = {
-      managerName: 'there',
-      artistName: 'Sample Artist',
+      managerName: managerName?.trim() || 'there',
+      artistName: artistName?.trim() || 'Sample Artist',
       trackTitle: trackTitle?.trim() || 'Your Track Title',
       driveLink: driveLink?.trim() || 'https://drive.google.com/your-link',
       senderName: senderName?.trim() || 'Your Name',
-      managementCompany: 'Sample Management',
+      managementCompany: managementCompany?.trim() || 'Sample Management',
+      pronoun: pronoun?.trim() || 'they',
     };
     const bodyParts = [renderTemplate(emailTemplate, vars)];
     if (signOff?.trim()) bodyParts.push(renderTemplate(signOff, vars));

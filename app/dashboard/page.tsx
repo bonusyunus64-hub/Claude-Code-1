@@ -1161,19 +1161,28 @@ export default function Dashboard() {
     setTestEmailSending(true); setTestEmailResult(null); setTestEmailError('');
     try {
       const acc = emailAccounts.find(a => a.id === selectedAccountId);
+      // Use a real matched artist's data when one is available, so the test
+      // reflects exactly how {{managerName}}, {{pronoun}}, etc. will resolve
+      // for an actual recipient rather than generic placeholders.
+      const sampleArtist = sortedArtists[0];
+      const sampleContact = customContacts[0];
       const res = await fetch('/api/test-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           to: testEmailTo,
           fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
-          emailTemplate: testEmailMessage.trim() || demosTemplate,
-          subjectTemplate: testEmailSubject.trim() || demosSubject,
+          emailTemplate: testEmailMessage.trim() || (useFollowUp ? demosFollowUpTemplate : demosTemplate),
+          subjectTemplate: testEmailSubject.trim() || (useFollowUp ? demosFollowUpSubject : demosSubject),
           signOff,
           signOffImage,
           senderName,
           trackTitle,
           driveLink,
+          managerName: sampleArtist?.managerNames[0] || sampleContact?.managerName,
+          artistName: sampleArtist?.name || sampleContact?.artistName,
+          managementCompany: sampleArtist?.managementCompany,
+          pronoun: sampleArtist ? pronounForClient(sampleArtist.gender, sampleArtist.type) : undefined,
         }),
       });
       const data = await res.json();
@@ -2372,6 +2381,29 @@ export default function Dashboard() {
                         <span className="text-xs text-amber-500">No email account — <button onClick={() => setActiveSection('account')} className="underline hover:text-amber-400">add one</button></span>
                       )}
                     </div>
+                  </div>
+
+                  <div className="pt-3 mt-1 border-t border-zinc-800 space-y-2">
+                    <p className="text-xs text-zinc-500">Happy with it? Send yourself a test with the real subject, template and merge fields filled in before sending to everyone.</p>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <input
+                        type="email"
+                        value={testEmailTo}
+                        onChange={e => { setTestEmailTo(e.target.value); setTestEmailResult(null); }}
+                        placeholder="your-own-email@example.com"
+                        className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition"
+                      />
+                      <button
+                        onClick={handleTestEmail}
+                        disabled={!testEmailTo || testEmailSending || !selectedAccountId}
+                        className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2 text-sm font-semibold text-white transition sm:shrink-0"
+                      >
+                        {testEmailSending ? 'Sending…' : 'Send test email'}
+                      </button>
+                    </div>
+                    {testEmailResult === 'success' && <p className="text-xs text-green-400">Test email sent. Check your inbox.</p>}
+                    {testEmailResult === 'error' && <p className="text-xs text-red-400">{testEmailError}</p>}
+                    {!selectedAccountId && <p className="text-xs text-amber-500">Add and select an email account in the Account tab first.</p>}
                   </div>
                 </>)}
               </>
