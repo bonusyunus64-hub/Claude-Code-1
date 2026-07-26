@@ -21,6 +21,8 @@ export async function POST(req: NextRequest) {
     labels: a.labels,
     instagramHandle: a.instagramHandle,
     avatarUrl: a.avatarUrl,
+    gender: a.gender,
+    type: a.type,
   }));
 
   return NextResponse.json({ artists: result, total: result.length });

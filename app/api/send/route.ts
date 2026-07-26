@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getArtistsByGenres, Artist } from '@/lib/roster';
-import { renderTemplate } from '@/lib/emailTemplate';
+import { renderTemplate, pronounFor } from '@/lib/emailTemplate';
 import { resolveSmtpConfig, createTransport, sendMessages, paginate, DEFAULT_SEND_BATCH_SIZE, FromAccount } from '@/lib/mailSend';
 
 interface SendPayload {
@@ -45,6 +45,7 @@ function buildEmailsForArtist(
       driveLink,
       senderName,
       managementCompany: artist.managementCompany,
+      pronoun: pronounFor(artist.gender, artist.type),
     };
     const bodyParts = [renderTemplate(emailTemplate, vars)];
     if (signOff?.trim()) bodyParts.push(renderTemplate(signOff, vars));
@@ -87,7 +88,7 @@ export async function POST(req: NextRequest) {
   );
 
   const customMessages = (customContacts ?? []).map(cc => {
-    const vars = { managerName: cc.managerName || 'there', artistName: cc.artistName, trackTitle, driveLink, senderName, managementCompany: '' };
+    const vars = { managerName: cc.managerName || 'there', artistName: cc.artistName, trackTitle, driveLink, senderName, managementCompany: '', pronoun: 'they' };
     const bodyParts = [renderTemplate(emailTemplate, vars)];
     if (signOff?.trim()) bodyParts.push(renderTemplate(signOff, vars));
     const body = bodyParts.join('\n\n');

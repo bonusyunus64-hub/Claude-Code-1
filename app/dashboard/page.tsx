@@ -162,6 +162,8 @@ interface Artist {
   labels: string;
   instagramHandle: string;
   avatarUrl: string;
+  gender: string;
+  type: string;
 }
 
 interface RadioStation {
@@ -255,6 +257,13 @@ interface SavedTemplate {
 
 function renderTemplateClient(template: string, vars: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
+}
+
+function pronounForClient(gender: string, type: string): string {
+  if (type === 'Group') return 'they';
+  if (gender === 'MALE') return 'he';
+  if (gender === 'FEMALE') return 'she';
+  return 'they';
 }
 
 function CopyChip({ value }: { value: string }) {
@@ -1455,7 +1464,7 @@ export default function Dashboard() {
       const entries: PreviewEntry[] = [];
       sortedArtists.slice(0, 20).forEach(a => {
         a.managerEmails.forEach((email, idx) => {
-          const vars = { managerName: a.managerNames[idx] || 'there', artistName: a.name, trackTitle, driveLink, senderName, managementCompany: a.managementCompany };
+          const vars = { managerName: a.managerNames[idx] || 'there', artistName: a.name, trackTitle, driveLink, senderName, managementCompany: a.managementCompany, pronoun: pronounForClient(a.gender, a.type) };
           const tpl = useFollowUp ? demosFollowUpTemplate : demosTemplate;
           const subjectTpl = useFollowUp ? demosFollowUpSubject : demosSubject;
           const bodyParts = [renderTemplateClient(tpl, vars)];
@@ -1469,7 +1478,7 @@ export default function Dashboard() {
         });
       });
       customContacts.forEach(cc => {
-        const vars = { managerName: cc.managerName || 'there', artistName: cc.artistName, trackTitle, driveLink, senderName, managementCompany: '' };
+        const vars = { managerName: cc.managerName || 'there', artistName: cc.artistName, trackTitle, driveLink, senderName, managementCompany: '', pronoun: 'they' };
         const tpl = useFollowUp ? demosFollowUpTemplate : demosTemplate;
         const subjectTpl = useFollowUp ? demosFollowUpSubject : demosSubject;
         const bodyParts = [renderTemplateClient(tpl, vars)];
@@ -1726,7 +1735,7 @@ export default function Dashboard() {
                         <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Main Template</h2>
                         <p className="text-sm text-zinc-500 mb-2">Click a variable to copy it:</p>
                         <div className="flex flex-wrap gap-1.5">
-                          {['{{managerName}}', '{{artistName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}', '{{managementCompany}}'].map(v => (
+                          {['{{managerName}}', '{{artistName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}', '{{managementCompany}}', '{{pronoun}}'].map(v => (
                             <CopyChip key={v} value={v} />
                           ))}
                         </div>
@@ -1775,7 +1784,7 @@ export default function Dashboard() {
                         <p className="text-xs text-zinc-500 mb-2">Used when the follow-up toggle is enabled on the Compose tab. Click a variable to copy it:</p>
                       </div>
                       <div className="flex flex-wrap gap-1.5">
-                        {['{{managerName}}', '{{artistName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}'].map(v => (
+                        {['{{managerName}}', '{{artistName}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}', '{{pronoun}}'].map(v => (
                           <CopyChip key={v} value={v} />
                         ))}
                       </div>
