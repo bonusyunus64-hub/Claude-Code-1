@@ -1,8 +1,11 @@
 // Mirrors the app's localStorage settings (email accounts, templates, presets,
 // campaign history, etc.) to a small server-side store, so switching devices
 // doesn't mean redoing setup. localStorage stays the fast local cache; every
-// write is also pushed to the server, and hydrateFromRemote() pulls the
-// latest copy down on load so a second device catches up.
+// write is also pushed to the server, and hydrateFromRemote() reconciles on
+// load: keys the server already has win locally (so a second device catches
+// up), and keys that only exist locally (set before this device ever synced,
+// or before this feature existed) get pushed up so the *other* device can
+// pick them up next time it loads.
 
 const SYNCED_KEYS = [
   'tp_email_accounts', 'tp_selected_account',
@@ -23,8 +26,13 @@ export async function hydrateFromRemote(): Promise<void> {
     if (!res.ok) return;
     const { state } = await res.json() as { state: Record<string, string> };
     for (const key of SYNCED_KEYS) {
-      const value = state[key];
-      if (typeof value === 'string') localStorage.setItem(key, value);
+      const remoteValue = state[key];
+      if (typeof remoteValue === 'string') {
+        localStorage.setItem(key, remoteValue);
+      } else {
+        const localValue = localStorage.getItem(key);
+        if (localValue !== null) pushToRemote(key, localValue);
+      }
     }
   } catch {
     // Offline or sync store unavailable — fall back to whatever's already in localStorage.
