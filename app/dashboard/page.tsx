@@ -57,7 +57,9 @@ const PLATFORM_OPTIONS = ['Spotify', 'Apple Music', 'YouTube Music', 'Amazon Mus
 
 // open.spotify.com links are universal links, so mobile browsers hand off to the
 // Spotify app automatically when it's installed; otherwise they fall back to the web player.
-const spotifyArtistSearchUrl = (name: string) => `https://open.spotify.com/search/${encodeURIComponent(name)}/artists`;
+// Note: a trailing "/artists" category segment breaks the mobile app's universal link
+// handoff (it drops the actual query), so keep this to the bare search path.
+const spotifyArtistSearchUrl = (name: string) => `https://open.spotify.com/search/${encodeURIComponent(name)}`;
 
 const SEND_DELAY_OPTIONS = [
   { label: 'None', value: 0 },
@@ -288,6 +290,25 @@ function CopyChip({ value }: { value: string }) {
   );
 }
 
+function CopyableName({ name, className }: { name: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <p
+      onClick={e => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(name).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        });
+      }}
+      title="Click to copy name"
+      className={`cursor-pointer select-none hover:text-violet-300 transition ${className ?? ''}`}
+    >
+      {copied ? 'Copied!' : name}
+    </p>
+  );
+}
+
 function PitchedBadge({ tracks }: { tracks: string[] }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -310,7 +331,7 @@ function PitchedBadge({ tracks }: { tracks: string[] }) {
   return (
     <div className="relative" ref={ref}>
       <button
-        onClick={() => setOpen(p => !p)}
+        onClick={e => { e.stopPropagation(); setOpen(p => !p); }}
         className="text-xs bg-amber-600/20 text-amber-400 border border-amber-600/30 px-2 py-0.5 rounded-full flex items-center gap-1 whitespace-nowrap"
       >
         Pitched ({tracks.length}) <span className={`transition-transform inline-block ${open ? 'rotate-180' : ''}`}>▾</span>
@@ -2215,7 +2236,7 @@ export default function Dashboard() {
                                       </div>
                                       <div className="min-w-0">
                                         <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-                                          <p className="text-sm font-medium text-white">{a.name}</p>
+                                          <CopyableName name={a.name} className="text-sm font-medium text-white" />
                                           {uniquePitched.length > 0 && <PitchedBadge tracks={uniquePitched} />}
                                           {a.instagramHandle && (
                                             <a href={`https://instagram.com/${a.instagramHandle.replace('@', '')}`} target="_blank" rel="noopener noreferrer"
@@ -2269,9 +2290,11 @@ export default function Dashboard() {
                           const uniquePitched = [...new Set(pitchedTracks)];
                           const isExcluded = excludedArtistNames.has(a.name);
                           return (
-                            <div key={a.name} className={`px-4 md:px-6 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4 transition ${isExcluded ? 'opacity-40' : ''}`}>
+                            <div key={a.name} onClick={() => toggleArtistExclusion(a.name)}
+                              className={`cursor-pointer px-4 md:px-6 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4 transition hover:bg-zinc-800/40 ${isExcluded ? 'opacity-40' : ''}`}>
                               <div className="flex items-center gap-3 min-w-0">
                                 <input type="checkbox" checked={!isExcluded} onChange={() => toggleArtistExclusion(a.name)}
+                                  onClick={e => e.stopPropagation()}
                                   title={isExcluded ? 'Excluded from this send — click to include' : 'Click to exclude from this send'}
                                   className="shrink-0 w-4 h-4 rounded border-zinc-600 bg-zinc-800 text-violet-600 focus:ring-2 focus:ring-violet-500 focus:ring-offset-0 cursor-pointer accent-violet-600" />
                                 <div className="shrink-0 w-10 h-10 rounded-full overflow-hidden bg-zinc-700">
@@ -2283,7 +2306,7 @@ export default function Dashboard() {
                                 </div>
                                 <div className="min-w-0">
                                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                                    <p className="text-sm font-medium text-white">{a.name}</p>
+                                    <CopyableName name={a.name} className="text-sm font-medium text-white" />
                                     {uniquePitched.length > 0 && <PitchedBadge tracks={uniquePitched} />}
                                     {a.instagramHandle && (
                                       <a href={`https://instagram.com/${a.instagramHandle.replace('@', '')}`} target="_blank" rel="noopener noreferrer"
@@ -2310,7 +2333,7 @@ export default function Dashboard() {
                                         return (
                                           <button
                                             key={g}
-                                            onClick={() => toggleGenreFromPreview(g)}
+                                            onClick={e => { e.stopPropagation(); toggleGenreFromPreview(g); }}
                                             title={active ? `Remove "${g}" from genre filters and refresh` : `Add "${g}" to genre filters and refresh`}
                                             className={`text-[11px] px-2 py-0.5 rounded-full font-medium transition ${
                                               active
@@ -2357,7 +2380,7 @@ export default function Dashboard() {
                             <div key={c.id} className="px-4 md:px-6 py-3 flex items-center justify-between gap-4">
                               <div className="min-w-0">
                                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                                  <p className="text-sm font-medium text-white">{c.artistName}</p>
+                                  <CopyableName name={c.artistName} className="text-sm font-medium text-white" />
                                   <span className="text-xs bg-zinc-700 text-zinc-300 px-1.5 py-0.5 rounded">Custom</span>
                                   {pitchedTracks.length > 0 && <PitchedBadge tracks={pitchedTracks} />}
                                 </div>
