@@ -1304,7 +1304,7 @@ export default function Dashboard() {
   }, []);
 
   async function handlePreview(genresOverride?: string[]) {
-    setPreviewLoading(true); setPreviewDone(false);
+    setPreviewLoading(true);
     try {
       const res = await fetch('/api/preview', {
         method: 'POST',
@@ -2211,9 +2211,9 @@ export default function Dashboard() {
                   </div>
 
                   {previewDone && previewArtists.length > 0 && (
-                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden">
+                    <section className={`bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden transition-opacity ${previewLoading ? 'opacity-60' : ''}`}>
                       <div className="px-4 md:px-6 py-3 md:py-4 border-b border-zinc-800 flex flex-wrap items-center justify-between gap-2">
-                        <h3 className="text-sm font-semibold text-zinc-300">Recipients Preview <span className="text-zinc-500 font-normal">· {visibleArtists.length}{visibleArtists.length !== previewArtists.length ? ` of ${previewArtists.length}` : ''} artists</span></h3>
+                        <h3 className="text-sm font-semibold text-zinc-300">Recipients Preview <span className="text-zinc-500 font-normal">· {previewLoading ? 'Updating…' : `${visibleArtists.length}${visibleArtists.length !== previewArtists.length ? ` of ${previewArtists.length}` : ''} artists`}</span></h3>
                         <div className="flex items-center gap-2">
                           <button
                             onClick={() => setExcludedArtistNames(prev => {
@@ -2357,8 +2357,9 @@ export default function Dashboard() {
                                           <button
                                             key={g}
                                             onClick={e => { e.stopPropagation(); toggleGenreFromPreview(g); }}
+                                            disabled={previewLoading}
                                             title={active ? `Remove "${g}" from genre filters and refresh` : `Add "${g}" to genre filters and refresh`}
-                                            className={`text-[11px] px-2 py-0.5 rounded-full font-medium transition ${
+                                            className={`text-[11px] px-2 py-0.5 rounded-full font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${
                                               active
                                                 ? 'bg-violet-600/20 text-violet-300 border border-violet-600/30 hover:bg-violet-600/30 hover:border-violet-500'
                                                 : 'bg-zinc-800 text-zinc-400 border border-zinc-700 hover:border-violet-500 hover:text-violet-300'
