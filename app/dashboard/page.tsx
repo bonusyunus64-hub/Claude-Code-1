@@ -986,6 +986,35 @@ export default function Dashboard() {
     return new Date(ts).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   }
 
+  const [backfillingId, setBackfillingId] = useState<string | null>(null);
+  const [backfillError, setBackfillError] = useState('');
+
+  async function backfillRecipients(c: Campaign) {
+    setBackfillingId(c.id);
+    setBackfillError('');
+    try {
+      const res = await fetch('/api/campaign-recipients', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emails: c.emails }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setBackfillError(data.error || 'Could not load artist details.'); return; }
+      const recipients: CampaignRecipient[] = (data.recipients as CampaignRecipient[]).map(r => {
+        if (r.artistName) return r;
+        const contact = customContacts.find(cc => cc.managerEmail.toLowerCase() === r.email.toLowerCase());
+        return contact ? { ...r, artistName: contact.artistName, managerName: contact.managerName } : r;
+      });
+      const updated = campaigns.map(x => x.id === c.id ? { ...x, recipients } : x);
+      setCampaigns(updated);
+      syncStorage.setItem('tp_campaigns', JSON.stringify(updated));
+    } catch (err) {
+      setBackfillError(`Could not load artist details: ${String(err)}`);
+    } finally {
+      setBackfillingId(null);
+    }
+  }
+
   function clearCampaignHistory() {
     setCampaigns([]);
     syncStorage.removeItem('tp_campaigns');
@@ -3602,18 +3631,34 @@ export default function Dashboard() {
                                 })}
                               </div>
                             ) : (
-                              <div className="flex flex-wrap gap-1.5">
-                                {c.emails.map(email => {
-                                  const responded = c.responded?.includes(email);
-                                  return (
-                                    <span
-                                      key={email}
-                                      className={`text-xs px-2 py-1 rounded font-mono border ${responded ? 'bg-emerald-900/30 text-emerald-300 border-emerald-700/40' : 'bg-zinc-800 text-zinc-300 border-transparent'}`}
+                              <div className="space-y-2">
+                                {c.type === 'demos' && (
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <button
+                                      onClick={() => backfillRecipients(c)}
+                                      disabled={backfillingId === c.id}
+                                      className="rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 transition disabled:opacity-40"
                                     >
-                                      {email}{responded && ' ✓'}
-                                    </span>
-                                  );
-                                })}
+                                      {backfillingId === c.id ? 'Loading artist details…' : 'Show artists sent to'}
+                                    </button>
+                                    {backfillError && backfillingId === null && (
+                                      <span className="text-xs text-red-400">{backfillError}</span>
+                                    )}
+                                  </div>
+                                )}
+                                <div className="flex flex-wrap gap-1.5">
+                                  {c.emails.map(email => {
+                                    const responded = c.responded?.includes(email);
+                                    return (
+                                      <span
+                                        key={email}
+                                        className={`text-xs px-2 py-1 rounded font-mono border ${responded ? 'bg-emerald-900/30 text-emerald-300 border-emerald-700/40' : 'bg-zinc-800 text-zinc-300 border-transparent'}`}
+                                      >
+                                        {email}{responded && ' ✓'}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
                               </div>
                             )}
                           </div>
