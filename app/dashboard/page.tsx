@@ -193,6 +193,17 @@ interface EmailAccount {
   smtpPass: string;
 }
 
+interface CampaignRecipient {
+  email: string;
+  artistName: string;
+  managerName: string;
+  avatarUrl: string;
+  managementCompany: string;
+  genres: string[];
+  instagramHandle: string;
+  spotifyFollowers: number;
+}
+
 interface Campaign {
   id: string;
   trackTitle: string;
@@ -202,6 +213,7 @@ interface Campaign {
   accountId?: string;
   responded?: string[];
   lastChecked?: number;
+  recipients?: CampaignRecipient[];
 }
 
 interface CustomContact {
@@ -925,9 +937,9 @@ export default function Dashboard() {
     syncStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
   }
 
-  function logCampaign(type: 'demos' | 'radio' | 'playlists', title: string, emails: string[], accountId?: string) {
+  function logCampaign(type: 'demos' | 'radio' | 'playlists', title: string, emails: string[], accountId?: string, recipients?: CampaignRecipient[]) {
     if (!emails.length) return;
-    const campaign: Campaign = { id: Date.now().toString(), trackTitle: title, date: new Date().toISOString(), type, emails, accountId };
+    const campaign: Campaign = { id: Date.now().toString(), trackTitle: title, date: new Date().toISOString(), type, emails, accountId, recipients };
     const updated = [...campaigns, campaign];
     setCampaigns(updated);
     syncStorage.setItem('tp_campaigns', JSON.stringify(updated));
@@ -1380,7 +1392,29 @@ export default function Dashboard() {
         const failed = outcome.results.filter(r => !r.success).map(r => r.to);
         setSendFailedEmails(failed);
         recordFailedEmails(failed);
-        logCampaign('demos', trackTitle, sentEmails, selectedAccountId);
+        const artistByEmail = new Map<string, Omit<CampaignRecipient, 'email'>>();
+        previewArtists.filter(a => !excludedArtistNames.has(a.name)).forEach(a => {
+          a.managerEmails.forEach((email, i) => {
+            artistByEmail.set(email.toLowerCase(), {
+              artistName: a.name, managerName: a.managerNames[i] || '', avatarUrl: a.avatarUrl,
+              managementCompany: a.managementCompany, genres: a.genres,
+              instagramHandle: a.instagramHandle, spotifyFollowers: a.spotifyFollowers,
+            });
+          });
+        });
+        customContacts.forEach(c => {
+          artistByEmail.set(c.managerEmail.toLowerCase(), {
+            artistName: c.artistName, managerName: c.managerName, avatarUrl: '',
+            managementCompany: '', genres: [], instagramHandle: '', spotifyFollowers: 0,
+          });
+        });
+        const recipients: CampaignRecipient[] = sentEmails.map(email => ({
+          email,
+          ...(artistByEmail.get(email.toLowerCase()) ?? {
+            artistName: '', managerName: '', avatarUrl: '', managementCompany: '', genres: [], instagramHandle: '', spotifyFollowers: 0,
+          }),
+        }));
+        logCampaign('demos', trackTitle, sentEmails, selectedAccountId, recipients);
         if (sentEmails.length) addSendsToday(sentEmails.length, selectedAccountId);
       }
     } finally { setSending(false); }
@@ -3517,19 +3551,71 @@ export default function Dashboard() {
                             {replyCheckError && checkingRepliesId === null && (
                               <p className="text-xs text-red-400">{replyCheckError}</p>
                             )}
-                            <div className="flex flex-wrap gap-1.5">
-                              {c.emails.map(email => {
-                                const responded = c.responded?.includes(email);
-                                return (
-                                  <span
-                                    key={email}
-                                    className={`text-xs px-2 py-1 rounded font-mono border ${responded ? 'bg-emerald-900/30 text-emerald-300 border-emerald-700/40' : 'bg-zinc-800 text-zinc-300 border-transparent'}`}
-                                  >
-                                    {email}{responded && ' ✓'}
-                                  </span>
-                                );
-                              })}
-                            </div>
+                            {(c.recipients?.length ?? 0) > 0 ? (
+                              <div className="border border-zinc-800 rounded-lg divide-y divide-zinc-800 overflow-hidden">
+                                {c.recipients!.map(r => {
+                                  const responded = c.responded?.includes(r.email);
+                                  return (
+                                    <div key={r.email} className={`px-3 md:px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4 ${responded ? 'bg-emerald-900/10' : ''}`}>
+                                      <div className="flex items-center gap-3 min-w-0">
+                                        <div className="shrink-0 w-10 h-10 rounded-full overflow-hidden bg-zinc-700">
+                                          {r.avatarUrl ? (
+                                            <img src={r.avatarUrl} alt={r.artistName} width={40} height={40} className="w-full h-full object-cover" />
+                                          ) : (
+                                            <div className="w-full h-full flex items-center justify-center text-zinc-500 text-xs font-bold">{(r.artistName || r.email).charAt(0).toUpperCase()}</div>
+                                          )}
+                                        </div>
+                                        <div className="min-w-0">
+                                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                            <CopyableName name={r.artistName || r.email} className="text-sm font-medium text-white" />
+                                            {responded && (
+                                              <span className="text-[11px] px-1.5 py-0.5 rounded-full font-medium bg-emerald-600/20 text-emerald-400 border border-emerald-600/30">Replied</span>
+                                            )}
+                                            {r.instagramHandle && (
+                                              <a href={`https://instagram.com/${r.instagramHandle.replace('@', '')}`} target="_blank" rel="noopener noreferrer"
+                                                className="inline-flex items-center gap-1 text-xs bg-zinc-800 hover:bg-zinc-700 text-pink-400 px-1.5 py-0.5 rounded font-medium transition">
+                                                <svg viewBox="0 0 24 24" className="w-3 h-3 fill-pink-400 shrink-0"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.012-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.058 1.645-.07 4.849-.07zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.98-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.198-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/></svg>
+                                                {r.instagramHandle}
+                                              </a>
+                                            )}
+                                            {r.spotifyFollowers > 0 && (
+                                              <SpotifyLink name={r.artistName} followers={r.spotifyFollowers} />
+                                            )}
+                                          </div>
+                                          <p className="text-xs text-zinc-500 mt-0.5">{r.managementCompany || 'Independent'}</p>
+                                          {r.genres.length > 0 && (
+                                            <div className="flex flex-wrap gap-1 mt-1">
+                                              {r.genres.map(g => (
+                                                <span key={g} className="text-[11px] px-2 py-0.5 rounded-full font-medium bg-zinc-800 text-zinc-400 border border-zinc-700">{g}</span>
+                                              ))}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <div className="pl-[52px] sm:pl-0 sm:text-right sm:shrink-0">
+                                        <p className="text-xs text-violet-400 break-all sm:break-normal">
+                                          {r.managerName ? `${r.managerName} — ` : ''}{r.email}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div className="flex flex-wrap gap-1.5">
+                                {c.emails.map(email => {
+                                  const responded = c.responded?.includes(email);
+                                  return (
+                                    <span
+                                      key={email}
+                                      className={`text-xs px-2 py-1 rounded font-mono border ${responded ? 'bg-emerald-900/30 text-emerald-300 border-emerald-700/40' : 'bg-zinc-800 text-zinc-300 border-transparent'}`}
+                                    >
+                                      {email}{responded && ' ✓'}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
