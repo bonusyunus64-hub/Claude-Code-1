@@ -1303,13 +1303,13 @@ export default function Dashboard() {
     setPreviewDone(false); setSendResult(null);
   }, []);
 
-  async function handlePreview(genresOverride?: string[]) {
+  async function handlePreview(genresOverride?: string[], matchModeOverride?: 'any' | 'all') {
     setPreviewLoading(true);
     try {
       const res = await fetch('/api/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ genres: genresOverride ?? selectedGenres, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode: demosMatchMode }),
+        body: JSON.stringify({ genres: genresOverride ?? selectedGenres, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode: matchModeOverride ?? demosMatchMode }),
       });
       const data = await res.json();
       setPreviewArtists(data.artists || []);
@@ -1320,13 +1320,16 @@ export default function Dashboard() {
 
   // Clicking a genre chip on a preview card toggles it in the active filters
   // and immediately re-runs the preview with the updated genre list, instead
-  // of just clearing the results like toggleGenre does.
+  // of just clearing the results like toggleGenre does. Adding a genre this way
+  // also switches match mode to "all" — otherwise the artist that chip came from
+  // could drop out of an "any" match once a second genre they don't have is added.
   function toggleGenreFromPreview(genre: string) {
-    const updated = selectedGenres.includes(genre)
-      ? selectedGenres.filter(g => g !== genre)
-      : [...selectedGenres, genre];
+    const adding = !selectedGenres.includes(genre);
+    const updated = adding ? [...selectedGenres, genre] : selectedGenres.filter(g => g !== genre);
     setSelectedGenres(updated);
-    handlePreview(updated);
+    const nextMatchMode = adding ? 'all' : demosMatchMode;
+    if (adding) setDemosMatchMode('all');
+    handlePreview(updated, nextMatchMode);
   }
 
   function toggleArtistExclusion(name: string) {
