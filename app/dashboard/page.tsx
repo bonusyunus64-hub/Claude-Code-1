@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useRouter } from 'next/navigation';
 import { computeSpamScore } from '@/lib/spamScore';
 import { hydrateFromRemote, syncStorage } from '@/lib/remoteSync';
 
@@ -433,7 +432,6 @@ const BLANK_ACCOUNT: Omit<EmailAccount, 'id'> = {
 };
 
 export default function Dashboard() {
-  const router = useRouter();
   const [activeSection, setActiveSection] = useState<'overview' | 'demos' | 'promotion' | 'account' | 'history'>('demos');
   const [demosTab, setDemosTab] = useState<'compose' | 'template'>('compose');
   const [promotionTab, setPromotionTab] = useState<'compose' | 'template'>('compose');
@@ -1633,17 +1631,6 @@ export default function Dashboard() {
       ),
     },
     {
-      id: 'campaigns' as const,
-      label: 'Campaigns',
-      icon: (
-        <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="12" cy="12" r="9"/>
-          <circle cx="12" cy="12" r="5"/>
-          <circle cx="12" cy="12" r="1"/>
-        </svg>
-      ),
-    },
-    {
       id: 'demos' as const,
       label: 'Song Demos',
       icon: (
@@ -1698,10 +1685,7 @@ export default function Dashboard() {
         {NAV_ITEMS.map(item => (
           <button
             key={item.id}
-            onClick={() => {
-              if (item.id === 'campaigns') { router.push('/dashboard/campaigns'); return; }
-              setActiveSection(item.id);
-            }}
+            onClick={() => setActiveSection(item.id)}
             className={`shrink-0 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap transition ${
               activeSection === item.id ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200'
             }`}
@@ -1718,10 +1702,7 @@ export default function Dashboard() {
           {NAV_ITEMS.map(item => (
             <button
               key={item.id}
-              onClick={() => {
-                if (item.id === 'campaigns') { router.push('/dashboard/campaigns'); return; }
-                setActiveSection(item.id);
-              }}
+              onClick={() => setActiveSection(item.id)}
               className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition text-left w-full ${
                 activeSection === item.id ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
               }`}
