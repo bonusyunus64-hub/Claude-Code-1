@@ -202,6 +202,7 @@ interface Campaign {
   emails: string[];
   accountId?: string;
   responded?: string[];
+  lastChecked?: number;
 }
 
 interface CustomContact {
@@ -936,12 +937,14 @@ export default function Dashboard() {
 
   const [checkingRepliesId, setCheckingRepliesId] = useState<string | null>(null);
   const [replyCheckError, setReplyCheckError] = useState('');
+  const [replyCheckResult, setReplyCheckResult] = useState<{ campaignId: string; newCount: number; totalCount: number } | null>(null);
 
   async function checkReplies(c: Campaign) {
     const acc = emailAccounts.find(a => a.id === c.accountId);
     if (!acc) { setReplyCheckError('The account this was sent from is no longer available.'); return; }
     setCheckingRepliesId(c.id);
     setReplyCheckError('');
+    setReplyCheckResult(null);
     try {
       const res = await fetch('/api/check-replies', {
         method: 'POST',
@@ -954,15 +957,23 @@ export default function Dashboard() {
       });
       const data = await res.json();
       if (!res.ok) { setReplyCheckError(data.error || 'Could not check replies.'); return; }
-      const responded = Array.from(new Set([...(c.responded ?? []), ...(data.responded as string[])]));
-      const updated = campaigns.map(x => x.id === c.id ? { ...x, responded } : x);
+      const before = new Set(c.responded ?? []);
+      const found = data.responded as string[];
+      const newCount = found.filter(e => !before.has(e)).length;
+      const responded = Array.from(new Set([...(c.responded ?? []), ...found]));
+      const updated = campaigns.map(x => x.id === c.id ? { ...x, responded, lastChecked: Date.now() } : x);
       setCampaigns(updated);
       syncStorage.setItem('tp_campaigns', JSON.stringify(updated));
+      setReplyCheckResult({ campaignId: c.id, newCount, totalCount: responded.length });
     } catch (err) {
       setReplyCheckError(`Could not check replies: ${String(err)}`);
     } finally {
       setCheckingRepliesId(null);
     }
+  }
+
+  function formatCheckedAt(ts: number) {
+    return new Date(ts).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   }
 
   function clearCampaignHistory() {
@@ -3499,7 +3510,7 @@ export default function Dashboard() {
                         {expandedCampaignId === c.id && (
                           <div className="px-4 md:px-6 pb-4 -mt-1 space-y-3">
                             {c.accountId && (
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <button
                                   onClick={() => checkReplies(c)}
                                   disabled={checkingRepliesId === c.id}
@@ -3508,6 +3519,18 @@ export default function Dashboard() {
                                   {checkingRepliesId === c.id ? 'Checking inbox…' : 'Check for replies'}
                                 </button>
                                 {checkingRepliesId === c.id && <span className="text-xs text-zinc-500">This can take a few seconds per recipient.</span>}
+                                {checkingRepliesId !== c.id && replyCheckResult?.campaignId === c.id && (
+                                  <span className="text-xs text-emerald-400 font-medium">
+                                    {replyCheckResult.newCount > 0
+                                      ? `✓ Checked — ${replyCheckResult.newCount} new repl${replyCheckResult.newCount === 1 ? 'y' : 'ies'} (${replyCheckResult.totalCount} total)`
+                                      : '✓ Checked — no new replies'}
+                                  </span>
+                                )}
+                                {checkingRepliesId !== c.id && replyCheckResult?.campaignId !== c.id && c.lastChecked && (
+                                  <span className="text-xs text-zinc-500">
+                                    Last checked {formatCheckedAt(c.lastChecked)} · {c.responded?.length ?? 0} replied
+                                  </span>
+                                )}
                               </div>
                             )}
                             {replyCheckError && checkingRepliesId === null && (
