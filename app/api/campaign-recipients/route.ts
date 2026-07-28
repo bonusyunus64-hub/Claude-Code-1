@@ -10,14 +10,13 @@ export async function POST(req: NextRequest) {
   if (!emails || !emails.length) return NextResponse.json({ recipients: [] });
 
   const { artists } = getRoster();
-  const byEmail = new Map<string, { name: string; managerName: string; avatarUrl: string; managementCompany: string; genres: string[]; instagramHandle: string; spotifyFollowers: number }>();
+  const byEmail = new Map<string, { name: string; managerName: string; avatarUrl: string; genres: string[]; instagramHandle: string; spotifyFollowers: number }>();
   artists.forEach(a => {
     a.managerEmails.forEach((email, index) => {
       byEmail.set(email.toLowerCase(), {
         name: a.name,
         managerName: a.managerNames[index] || '',
         avatarUrl: a.avatarUrl,
-        managementCompany: a.managementCompany,
         genres: a.genres,
         instagramHandle: a.instagramHandle,
         spotifyFollowers: a.spotifyFollowers,
@@ -32,7 +31,6 @@ export async function POST(req: NextRequest) {
       artistName: match?.name ?? '',
       managerName: match?.managerName ?? '',
       avatarUrl: match?.avatarUrl ?? '',
-      managementCompany: match?.managementCompany ?? '',
       genres: match?.genres ?? [],
       instagramHandle: match?.instagramHandle ?? '',
       spotifyFollowers: match?.spotifyFollowers ?? 0,

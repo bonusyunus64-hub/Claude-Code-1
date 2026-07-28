@@ -198,7 +198,6 @@ interface CampaignRecipient {
   artistName: string;
   managerName: string;
   avatarUrl: string;
-  managementCompany: string;
   genres: string[];
   instagramHandle: string;
   spotifyFollowers: number;
@@ -772,6 +771,21 @@ export default function Dashboard() {
       return true;
     });
   }, [campaigns, historySearch, historyTypeFilter, historyDateFrom, historyDateTo]);
+
+  // Groups Demos campaigns by song (case-insensitive title match) in send order,
+  // so each one can be labeled "Sendout 1", "Sendout 2", etc.
+  const demosSendoutGroups = useMemo(() => {
+    const groups = new Map<string, Campaign[]>();
+    campaigns
+      .filter(c => c.type === 'demos')
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .forEach(c => {
+        const key = c.trackTitle.trim().toLowerCase();
+        const group = groups.get(key);
+        if (group) group.push(c); else groups.set(key, [c]);
+      });
+    return groups;
+  }, [campaigns]);
 
   function findDuplicateRecipients(emails: string[]): string[] {
     const title = trackTitle.trim().toLowerCase();
@@ -1426,21 +1440,20 @@ export default function Dashboard() {
           a.managerEmails.forEach((email, i) => {
             artistByEmail.set(email.toLowerCase(), {
               artistName: a.name, managerName: a.managerNames[i] || '', avatarUrl: a.avatarUrl,
-              managementCompany: a.managementCompany, genres: a.genres,
-              instagramHandle: a.instagramHandle, spotifyFollowers: a.spotifyFollowers,
+              genres: a.genres, instagramHandle: a.instagramHandle, spotifyFollowers: a.spotifyFollowers,
             });
           });
         });
         customContacts.forEach(c => {
           artistByEmail.set(c.managerEmail.toLowerCase(), {
             artistName: c.artistName, managerName: c.managerName, avatarUrl: '',
-            managementCompany: '', genres: [], instagramHandle: '', spotifyFollowers: 0,
+            genres: [], instagramHandle: '', spotifyFollowers: 0,
           });
         });
         const recipients: CampaignRecipient[] = sentEmails.map(email => ({
           email,
           ...(artistByEmail.get(email.toLowerCase()) ?? {
-            artistName: '', managerName: '', avatarUrl: '', managementCompany: '', genres: [], instagramHandle: '', spotifyFollowers: 0,
+            artistName: '', managerName: '', avatarUrl: '', genres: [], instagramHandle: '', spotifyFollowers: 0,
           }),
         }));
         logCampaign('demos', trackTitle, sentEmails, selectedAccountId, recipients);
@@ -3529,11 +3542,14 @@ export default function Dashboard() {
                   </section>
                 ) : (
                   <section className="bg-zinc-900 rounded-xl border border-zinc-800 divide-y divide-zinc-800 overflow-hidden">
-                    {filteredCampaigns.slice().sort((a, b) => b.date.localeCompare(a.date)).map(c => (
-                      <div key={c.id}>
+                    {filteredCampaigns.slice().sort((a, b) => b.date.localeCompare(a.date)).map(c => {
+                      const sendoutGroup = c.type === 'demos' ? demosSendoutGroups.get(c.trackTitle.trim().toLowerCase()) : undefined;
+                      return (
+                      <div key={c.id} id={`campaign-${c.id}`}>
+                        <div className="w-full flex items-center gap-2 px-4 md:px-6 py-3.5 hover:bg-zinc-800/50 transition">
                         <button
                           onClick={() => setExpandedCampaignId(p => p === c.id ? null : c.id)}
-                          className="w-full flex items-center justify-between gap-3 px-4 md:px-6 py-3.5 text-left hover:bg-zinc-800/50 transition"
+                          className="flex-1 min-w-0 flex items-center justify-between gap-3 text-left"
                         >
                           <div className="min-w-0 flex items-center gap-3">
                             <span className={`text-xs px-2 py-0.5 rounded-full font-medium shrink-0 ${c.type === 'demos' ? 'bg-violet-600/20 text-violet-400 border border-violet-600/30' : c.type === 'radio' ? 'bg-sky-600/20 text-sky-400 border border-sky-600/30' : 'bg-emerald-600/20 text-emerald-400 border border-emerald-600/30'}`}>
@@ -3551,6 +3567,24 @@ export default function Dashboard() {
                             <polyline points="6 9 12 15 18 9"/>
                           </svg>
                         </button>
+                        {sendoutGroup && (
+                          <select
+                            value={c.id}
+                            onClick={e => e.stopPropagation()}
+                            onChange={e => {
+                              const id = e.target.value;
+                              setExpandedCampaignId(id);
+                              document.getElementById(`campaign-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }}
+                            title="Switch between sendouts of this song"
+                            className="shrink-0 text-xs bg-zinc-800 border border-zinc-700 text-zinc-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                          >
+                            {sendoutGroup.map((s, i) => (
+                              <option key={s.id} value={s.id}>Sendout {i + 1}</option>
+                            ))}
+                          </select>
+                        )}
+                        </div>
                         {expandedCampaignId === c.id && (
                           <div className="px-4 md:px-6 pb-4 -mt-1 space-y-3">
                             {c.accountId && (
@@ -3611,7 +3645,6 @@ export default function Dashboard() {
                                               <SpotifyLink name={r.artistName} followers={r.spotifyFollowers} />
                                             )}
                                           </div>
-                                          <p className="text-xs text-zinc-500 mt-0.5">{r.managementCompany || 'Independent'}</p>
                                           {r.genres.length > 0 && (
                                             <div className="flex flex-wrap gap-1 mt-1">
                                               {r.genres.map(g => (
@@ -3664,7 +3697,8 @@ export default function Dashboard() {
                           </div>
                         )}
                       </div>
-                    ))}
+                      );
+                    })}
                   </section>
                 )}
               </div>
