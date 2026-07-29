@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { paginate, resolveSmtpConfig, sendMessages, dedupeByRecipient, type OutboundMessage } from './mailSend';
 
 describe('dedupeByRecipient', () => {
@@ -162,5 +162,28 @@ describe('sendMessages', () => {
     vi.useRealTimers();
     expect(results[0].success).toBe(false);
     expect(sendMail).toHaveBeenCalledTimes(3); // 1 initial + 2 retries
+  });
+
+  describe('unsubscribe link and headers', () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it('appends an unsubscribe footer and List-Unsubscribe headers when a secret is configured', async () => {
+      vi.stubEnv('ACCOUNTS_SECRET', 'test-secret');
+      const sendMail = vi.fn().mockResolvedValue(undefined);
+      await sendMessages(fakeTransport(sendMail), messages, { fromName: 'F', fromEmail: 'f@example.com' });
+      const sentOptions = sendMail.mock.calls[0][0];
+      expect(sentOptions.text).toContain('Unsubscribe:');
+      expect(sentOptions.text).toContain('/unsubscribe?email=a%40example.com&token=');
+      expect(sentOptions.headers['List-Unsubscribe']).toContain('/api/unsubscribe?email=a%40example.com&token=');
+      expect(sentOptions.headers['List-Unsubscribe-Post']).toBe('List-Unsubscribe=One-Click');
+    });
+
+    it('sends without an unsubscribe link or headers when no secret is configured', async () => {
+      const sendMail = vi.fn().mockResolvedValue(undefined);
+      await sendMessages(fakeTransport(sendMail), messages, { fromName: 'F', fromEmail: 'f@example.com' });
+      const sentOptions = sendMail.mock.calls[0][0];
+      expect(sentOptions.text).toBe('Body');
+      expect(sentOptions.headers).toBeUndefined();
+    });
   });
 });

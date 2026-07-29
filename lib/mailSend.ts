@@ -1,5 +1,10 @@
 import nodemailer from 'nodemailer';
 import { textToHtml } from '@/lib/emailTemplate';
+import { buildUnsubscribeUrl, buildUnsubscribeApiUrl } from '@/lib/unsubscribe';
+
+// Same fallback used by /api/test-email — the real deployed URL when NEXT_PUBLIC_BASE_URL
+// isn't set, so unsubscribe links in outbound mail are never accidentally localhost.
+const SITE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://music-distribution-website.vercel.app';
 
 export interface FromAccount {
   name: string;
@@ -89,12 +94,28 @@ export async function sendMessages(
     const msg = messages[i];
     if (i > 0 && opts.sendDelay && opts.sendDelay > 0) await new Promise<void>(r => setTimeout(r, opts.sendDelay));
     try {
+      // Both null together when ACCOUNTS_SECRET/SITE_PASSWORD isn't set — degrades
+      // to sending without an unsubscribe link rather than failing the send.
+      const unsubUrl = buildUnsubscribeUrl(SITE_URL, msg.to);
+      const apiUnsubUrl = buildUnsubscribeApiUrl(SITE_URL, msg.to);
+      const textBody = unsubUrl ? `${msg.body}\n\n---\nDon't want to hear from us? Unsubscribe: ${unsubUrl}` : msg.body;
+
       const mailOptions: Parameters<typeof transporter.sendMail>[0] = {
         from: `"${opts.fromName}" <${opts.fromEmail}>`,
         to: msg.to,
         subject: msg.subject,
-        text: msg.body,
+        text: textBody,
       };
+      if (apiUnsubUrl) {
+        // RFC 8058: this pair is what lets Gmail/Outlook/Yahoo show their own
+        // built-in "Unsubscribe" button next to the sender instead of relying on
+        // the recipient to find the footer link — a real deliverability signal for
+        // bulk senders, not just a courtesy.
+        mailOptions.headers = {
+          'List-Unsubscribe': `<${apiUnsubUrl}>`,
+          'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+        };
+      }
       // Threading a follow-up onto the original pitch takes both headers: In-Reply-To
       // is what most clients read, References is what keeps the whole chain grouped.
       if (msg.inReplyTo) {
@@ -103,7 +124,10 @@ export async function sendMessages(
       }
       if (opts.signOffImage) {
         const imageData = opts.signOffImage.replace(/^data:image\/\w+;base64,/, '');
-        mailOptions.html = `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#333">${textToHtml(msg.body)}<img src="cid:signature@trackpitch" alt="Signature" style="max-width:600px;display:block;margin-top:8px"></div>`;
+        const unsubHtml = unsubUrl
+          ? `<p style="font-size:12px;color:#999;margin-top:24px">Don't want to hear from us? <a href="${unsubUrl}" style="color:#999">Unsubscribe</a></p>`
+          : '';
+        mailOptions.html = `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#333">${textToHtml(msg.body)}<img src="cid:signature@trackpitch" alt="Signature" style="max-width:600px;display:block;margin-top:8px">${unsubHtml}</div>`;
         mailOptions.attachments = [{ filename: 'signature.png', content: Buffer.from(imageData, 'base64'), cid: 'signature@trackpitch' }];
       }
       const messageId = await sendWithRetry(transporter, mailOptions);

@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isAuthed } from '@/lib/auth';
 
 // /api/auth and /api/logout must stay reachable while logged out.
-const PUBLIC_API_PATHS = new Set(['/api/auth', '/api/logout']);
+// /api/unsubscribe must stay reachable by anyone who received a pitch email —
+// they have no dashboard session, and its own token (not a login) is what
+// authorizes the request. See lib/unsubscribe.ts.
+const PUBLIC_API_PATHS = new Set(['/api/auth', '/api/logout', '/api/unsubscribe']);
 
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
