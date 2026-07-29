@@ -1,4 +1,39 @@
-import type { AnalyticsStats } from '../types';
+import type { AnalyticsStats, RateBreakdown } from '../types';
+
+function pct(rate: number): string {
+  return `${Math.round(rate * 100)}%`;
+}
+
+/** Horizontal bar list for a reply-rate breakdown (by type / genre / follower tier). */
+function RateBreakdownList({ title, rows, emptyHint }: { title: string; rows: RateBreakdown[]; emptyHint?: string }) {
+  if (!rows.length) {
+    return emptyHint ? (
+      <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-1">
+        <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">{title}</h3>
+        <p className="text-xs text-zinc-600">{emptyHint}</p>
+      </section>
+    ) : null;
+  }
+  const maxRate = Math.max(...rows.map(r => r.replyRate), 0.01);
+  return (
+    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-3">
+      <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">{title}</h3>
+      <div className="space-y-2.5">
+        {rows.map(row => (
+          <div key={row.label} className="space-y-1">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-zinc-300 truncate">{row.label}</span>
+              <span className="text-zinc-500 font-mono shrink-0 ml-3">{pct(row.replyRate)} · {row.responded}/{row.sent}</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+              <div className="h-full rounded-full bg-violet-600" style={{ width: `${Math.max(2, (row.replyRate / maxRate) * 100)}%` }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 export function OverviewSection({ analyticsStats }: { analyticsStats: AnalyticsStats }) {
   return (
@@ -38,6 +73,25 @@ export function OverviewSection({ analyticsStats }: { analyticsStats: AnalyticsS
         </section>
       ) : (
         <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
+              <p className="text-2xl font-bold text-emerald-400">{pct(analyticsStats.replyRate)}</p>
+              <p className="text-xs text-zinc-500 mt-1">Reply rate ({analyticsStats.totalResponded} of {analyticsStats.totalEmailsSent})</p>
+            </div>
+            <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
+              <p className="text-2xl font-bold text-red-400">{pct(analyticsStats.bounceRate)}</p>
+              <p className="text-xs text-zinc-500 mt-1">Bounce rate ({analyticsStats.totalBounced} of {analyticsStats.totalEmailsSent})</p>
+            </div>
+            <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
+              <p className="text-2xl font-bold text-white">{analyticsStats.classificationCounts.interested}</p>
+              <p className="text-xs text-zinc-500 mt-1">Replies marked interested</p>
+            </div>
+            <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
+              <p className="text-2xl font-bold text-zinc-400">{analyticsStats.classificationCounts.autoReply}</p>
+              <p className="text-xs text-zinc-500 mt-1">Auto-replies (out of office, etc.)</p>
+            </div>
+          </div>
+
           <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-3">
             <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Sends, last 14 days</h3>
             <div className="flex items-end gap-1.5 h-24">
@@ -66,6 +120,18 @@ export function OverviewSection({ analyticsStats }: { analyticsStats: AnalyticsS
               </div>
             ))}
           </section>
+
+          <RateBreakdownList title="Reply rate by campaign type" rows={analyticsStats.byType} />
+          <RateBreakdownList
+            title="Reply rate by genre (Song Demos)"
+            rows={analyticsStats.byGenre}
+            emptyHint="No genre data yet — genres are recorded per recipient when a Song Demos campaign is sent, or via &ldquo;Show artists sent to&rdquo; in History for older campaigns."
+          />
+          <RateBreakdownList
+            title="Reply rate by artist size (Song Demos)"
+            rows={analyticsStats.byFollowerTier}
+            emptyHint="No follower data yet — recorded per recipient the same way genre data is."
+          />
 
           {analyticsStats.lastCampaignDate && (
             <p className="text-xs text-zinc-600">Last campaign: {new Date(analyticsStats.lastCampaignDate).toLocaleString()}</p>

@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { hydrateFromRemote, syncStorage } from '@/lib/remoteSync';
 import type {
   Artist, RadioStation, PlaylistCurator, EmailAccount, NewAccountForm,
-  CampaignRecipient, Campaign, CustomContact, DeliverabilityResult, ReplyClassification,
+  CampaignRecipient, Campaign, CustomContact, DeliverabilityResult, ReplyClassification, RateBreakdown,
   DemosFilterPreset, RadioFilterPreset, PlaylistFilterPreset, SavedTemplate, SendResultEntry,
 } from './types';
 import {
@@ -347,12 +347,79 @@ export default function Dashboard() {
     });
     const maxDayCount = Math.max(1, ...last14Days.map(d => d.count));
 
+    const totalResponded = campaigns.reduce((s, c) => s + (c.responded?.length ?? 0), 0);
+    const totalBounced = campaigns.reduce((s, c) => s + (c.bounced?.length ?? 0), 0);
+    const replyRate = totalEmailsSent > 0 ? totalResponded / totalEmailsSent : 0;
+    const bounceRate = totalEmailsSent > 0 ? totalBounced / totalEmailsSent : 0;
+
+    const classificationCounts = { interested: 0, pass: 0, autoReply: 0, unclassified: 0 };
+    campaigns.forEach(c => {
+      Object.values(c.classifications ?? {}).forEach(cls => {
+        if (cls === 'interested') classificationCounts.interested++;
+        else if (cls === 'pass') classificationCounts.pass++;
+        else if (cls === 'auto-reply') classificationCounts.autoReply++;
+        else classificationCounts.unclassified++;
+      });
+    });
+
+    const rate = (sent: number, responded: number): number => (sent > 0 ? responded / sent : 0);
+
+    const byType: RateBreakdown[] = ([
+      ['Song Demos', demosCampaigns], ['Track Promotion (Radio)', radioCampaigns], ['Playlist Curators', playlistCampaigns],
+    ] as const).map(([label, list]) => {
+      const sent = list.reduce((s, c) => s + c.emails.length, 0);
+      const responded = list.reduce((s, c) => s + (c.responded?.length ?? 0), 0);
+      return { label, sent, responded, replyRate: rate(sent, responded) };
+    }).filter(b => b.sent > 0);
+
+    // Genre and follower-tier breakdowns only make sense against recipient metadata
+    // (genres, spotifyFollowers), which currently only Demos sends record.
+    const genreTotals = new Map<string, { sent: number; responded: number }>();
+    const FOLLOWER_TIERS: [string, (n: number) => boolean][] = [
+      ['Under 10K', n => n < 10_000],
+      ['10K–100K', n => n >= 10_000 && n < 100_000],
+      ['100K–1M', n => n >= 100_000 && n < 1_000_000],
+      ['1M+', n => n >= 1_000_000],
+    ];
+    const tierTotals = new Map<string, { sent: number; responded: number }>(FOLLOWER_TIERS.map(([label]) => [label, { sent: 0, responded: 0 }]));
+
+    demosCampaigns.forEach(c => {
+      const respondedSet = new Set((c.responded ?? []).map(e => e.toLowerCase()));
+      (c.recipients ?? []).forEach(r => {
+        const didRespond = respondedSet.has(r.email.toLowerCase());
+        r.genres.forEach(genre => {
+          const entry = genreTotals.get(genre) ?? { sent: 0, responded: 0 };
+          entry.sent++;
+          if (didRespond) entry.responded++;
+          genreTotals.set(genre, entry);
+        });
+        const tierLabel = FOLLOWER_TIERS.find(([, test]) => test(r.spotifyFollowers))?.[0];
+        if (tierLabel) {
+          const entry = tierTotals.get(tierLabel)!;
+          entry.sent++;
+          if (didRespond) entry.responded++;
+        }
+      });
+    });
+
+    const byGenre: RateBreakdown[] = Array.from(genreTotals.entries())
+      .map(([label, { sent, responded }]) => ({ label, sent, responded, replyRate: rate(sent, responded) }))
+      .sort((a, b) => b.sent - a.sent)
+      .slice(0, 10);
+
+    const byFollowerTier: RateBreakdown[] = FOLLOWER_TIERS
+      .map(([label]) => ({ label, ...tierTotals.get(label)! }))
+      .filter(b => b.sent > 0)
+      .map(b => ({ ...b, replyRate: rate(b.sent, b.responded) }));
+
     return {
       totalCampaigns, totalEmailsSent,
       demosCampaignCount: demosCampaigns.length, radioCampaignCount: radioCampaigns.length, playlistCampaignCount: playlistCampaigns.length,
       demosEmailsSent, radioEmailsSent, playlistEmailsSent,
       topTracks, last14Days, maxDayCount,
       lastCampaignDate: campaigns.length ? campaigns.slice().sort((a, b) => b.date.localeCompare(a.date))[0].date : null,
+      totalResponded, totalBounced, replyRate, bounceRate, classificationCounts,
+      byType, byGenre, byFollowerTier,
     };
   }, [campaigns]);
 

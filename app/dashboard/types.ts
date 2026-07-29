@@ -146,6 +146,13 @@ export interface SavedTemplate {
   subject?: string;
 }
 
+export interface RateBreakdown {
+  label: string;
+  sent: number;
+  responded: number;
+  replyRate: number;
+}
+
 export interface AnalyticsStats {
   totalCampaigns: number;
   totalEmailsSent: number;
@@ -159,4 +166,18 @@ export interface AnalyticsStats {
   last14Days: { date: string; count: number }[];
   maxDayCount: number;
   lastCampaignDate: string | null;
+
+  totalResponded: number;
+  totalBounced: number;
+  replyRate: number;
+  bounceRate: number;
+  classificationCounts: { interested: number; pass: number; autoReply: number; unclassified: number };
+  /** Reply rate per campaign type — always available (doesn't need recipient metadata). */
+  byType: RateBreakdown[];
+  /** Reply rate per genre, Demos campaigns only, ranked by volume — needs recipient metadata
+   *  (present after a send, or "Show artists sent to" backfill in History), so campaigns sent
+   *  before that data was tracked simply don't contribute here. */
+  byGenre: RateBreakdown[];
+  /** Reply rate per Spotify follower-count bracket, same data dependency as byGenre. */
+  byFollowerTier: RateBreakdown[];
 }
