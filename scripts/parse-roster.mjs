@@ -1,11 +1,19 @@
 import XLSX from 'xlsx';
-import { writeFileSync, mkdirSync } from 'fs';
+import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const filePath = '/home/user/Claude-Code-1/data/roster_new.xlsx'; // updated spreadsheet with avatarUrl
+// Pass the spreadsheet path as an argument: `node scripts/parse-roster.mjs path/to/roster.xlsx`.
+// Defaults to data/roster_new.xlsx (repo-relative) so a spreadsheet dropped there
+// "just works" without typing the path.
+const filePath = process.argv[2] || join(__dirname, '..', 'data', 'roster_new.xlsx');
+if (!existsSync(filePath)) {
+  console.error(`Roster spreadsheet not found: ${filePath}`);
+  console.error('Usage: node scripts/parse-roster.mjs <path-to-spreadsheet.xlsx>');
+  process.exit(1);
+}
 const wb = XLSX.readFile(filePath);
 const ws = wb.Sheets[wb.SheetNames[0]];
 const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });

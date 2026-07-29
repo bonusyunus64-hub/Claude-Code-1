@@ -99,15 +99,44 @@ export async function listAccounts(): Promise<PublicAccount[]> {
   return records.map(({ encryptedPass: _encryptedPass, ...rest }) => rest);
 }
 
+/** Thrown by getAccount when the record exists but its password can't be decrypted
+ *  with the current ACCOUNTS_SECRET/SITE_PASSWORD — distinct from "no such account"
+ *  so callers can tell the user to re-enter the password instead of re-add the account. */
+export class AccountUndecryptableError extends Error {
+  constructor(public readonly accountId: string) {
+    super(`Account ${accountId} exists but its password could not be decrypted with the current encryption key.`);
+    this.name = 'AccountUndecryptableError';
+  }
+}
+
 /** Full account including the decrypted password. Server-side only — never serialise this to a response. */
 export async function getAccount(id: string): Promise<StoredAccount | null> {
   const records = await readAll();
   const record = records.find(r => r.id === id);
   if (!record) return null;
   const smtpPass = decrypt(record.encryptedPass);
-  if (smtpPass === null) return null;
+  if (smtpPass === null) throw new AccountUndecryptableError(id);
   const { encryptedPass: _encryptedPass, ...rest } = record;
   return { ...rest, smtpPass };
+}
+
+/**
+ * Route-friendly wrapper around getAccount: turns "not found" and "can't decrypt"
+ * into distinct, user-actionable error strings instead of making every API route
+ * catch AccountUndecryptableError itself.
+ */
+export async function resolveAccount(id: string | undefined): Promise<{ account: StoredAccount | null; error: string | null }> {
+  if (!id) return { account: null, error: null };
+  try {
+    const account = await getAccount(id);
+    if (!account) return { account: null, error: 'That email account is no longer available. Re-add it in Account settings.' };
+    return { account, error: null };
+  } catch (err) {
+    if (err instanceof AccountUndecryptableError) {
+      return { account: null, error: "This account's saved password can't be decrypted (the server's encryption key changed). Re-enter its password in Account settings." };
+    }
+    throw err;
+  }
 }
 
 export async function saveAccount(account: StoredAccount): Promise<PublicAccount> {

@@ -1,6 +1,21 @@
 import type { SendResultEntry, BatchProgress } from './types';
 export { renderTemplate as renderTemplateClient, pronounFor as pronounForClient } from '@/lib/emailTemplate';
 
+/**
+ * How many distinct messages a send with these email lists will actually produce.
+ * The server dedupes by lowercased address (dedupeByRecipient in lib/mailSend.ts) —
+ * one address that shows up under several recipients (a manager covering many
+ * artists, a station listing the same inbox on two shows) becomes a single send.
+ * Counting raw list lengths client-side overstates the total against the daily cap.
+ */
+export function countUniqueRecipients(...emailLists: string[][]): number {
+  const seen = new Set<string>();
+  for (const list of emailLists) {
+    for (const email of list) seen.add(email.trim().toLowerCase());
+  }
+  return seen.size;
+}
+
 export function getTodayDateStr(): string {
   return new Date().toISOString().slice(0, 10);
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { csvEscape, parseContactsCsv, shuffle } from './utils';
+import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients } from './utils';
 
 describe('shuffle', () => {
   it('preserves every element (no drops or duplicates)', () => {
@@ -37,6 +37,26 @@ describe('csvEscape', () => {
 
   it('leaves plain values untouched', () => {
     expect(csvEscape('plain')).toBe('plain');
+  });
+});
+
+describe('countUniqueRecipients', () => {
+  it('counts each distinct address once across lists', () => {
+    expect(countUniqueRecipients(['a@example.com', 'b@example.com'], ['b@example.com'])).toBe(2);
+  });
+
+  it('is case-insensitive and trims whitespace', () => {
+    expect(countUniqueRecipients(['Manager@Example.com', ' manager@example.com '])).toBe(1);
+  });
+
+  it('matches the server dedupe scenario: one manager address covering many artists', () => {
+    const managerEmails = Array.from({ length: 40 }, () => 'manager@label.com');
+    expect(countUniqueRecipients(managerEmails, ['other@label.com'])).toBe(2);
+  });
+
+  it('returns 0 for no lists or empty lists', () => {
+    expect(countUniqueRecipients()).toBe(0);
+    expect(countUniqueRecipients([], [])).toBe(0);
   });
 });
 

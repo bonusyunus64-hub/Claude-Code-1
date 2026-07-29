@@ -13,7 +13,7 @@ import {
   DEFAULT_SIGN_OFF, LOCATION_OPTIONS, PLATFORM_OPTIONS, BLANK_ACCOUNT,
 } from './constants';
 import {
-  sendInBatches, downloadCsv, parseContactsCsv, shuffle,
+  sendInBatches, downloadCsv, parseContactsCsv, shuffle, countUniqueRecipients,
   renderTemplateClient, pronounForClient,
 } from './utils';
 import { CopyChip } from './components/CopyChip';
@@ -1118,7 +1118,10 @@ export default function Dashboard() {
     [previewArtists, excludedArtistNames]
   );
 
-  const totalEmails = includedArtists.reduce((acc, a) => acc + a.managerEmails.length, 0) + customContacts.length;
+  const totalEmails = countUniqueRecipients(
+    includedArtists.flatMap(a => a.managerEmails),
+    customContacts.map(c => c.managerEmail)
+  );
   const canSend = !!trackTitle && !!driveLink && (selectedGenres.length > 0 || customContacts.length > 0) &&
     (previewDone || selectedGenres.length === 0) && totalEmails > 0;
 
@@ -1191,7 +1194,7 @@ export default function Dashboard() {
     } finally { setRadioSending(false); }
   }
 
-  const radioTotalEmails = radioStations.reduce((acc, s) => acc + s.emails.length, 0);
+  const radioTotalEmails = countUniqueRecipients(radioStations.flatMap(s => s.emails));
   const canSendRadio = !!trackTitle && !!driveLink && radioPreviewDone;
 
   const radioDuplicateRecipients = useMemo(
@@ -1265,7 +1268,7 @@ export default function Dashboard() {
     } finally { setPlaylistSending(false); }
   }
 
-  const playlistTotalEmails = playlistCurators.reduce((acc, c) => acc + c.emails.length, 0);
+  const playlistTotalEmails = countUniqueRecipients(playlistCurators.flatMap(c => c.emails));
   const canSendPlaylist = !!trackTitle && !!driveLink && playlistPreviewDone;
 
   const playlistDuplicateRecipients = useMemo(
@@ -2272,6 +2275,14 @@ export default function Dashboard() {
 
                   {/* Playlists section */}
                   {promotionSection === 'playlists' && (<>
+                    {playlistAllGenres.length === 0 && (
+                      <div className="rounded-lg bg-amber-900/20 border border-amber-700/40 px-5 py-3">
+                        <p className="text-amber-400 text-sm">
+                          The playlist curator database (<code className="text-amber-300">data/playlists.json</code>) is empty, so this tab has no one to send to yet.
+                          Add curator records there matching the <code className="text-amber-300">PlaylistCurator</code> shape in <code className="text-amber-300">lib/playlists.ts</code> to enable it.
+                        </p>
+                      </div>
+                    )}
                     {/* Track Info */}
                     <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
                       <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Track Details</h2>

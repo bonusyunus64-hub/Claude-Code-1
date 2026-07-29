@@ -5,7 +5,7 @@ import {
   resolveSmtpConfig, createTransport, sendMessages, paginate, dedupeByRecipient,
   DEFAULT_SEND_BATCH_SIZE, OutboundMessage,
 } from '@/lib/mailSend';
-import { getAccount } from '@/lib/accounts';
+import { resolveAccount } from '@/lib/accounts';
 import { checkCapAllows, recordSends } from '@/lib/sendQuota';
 
 interface RadioSendPayload {
@@ -40,13 +40,8 @@ export async function POST(req: NextRequest) {
 
   const subjectTpl = subjectTemplate?.trim() || `Music Submission: {{trackTitle}} for {{stationName}}`;
 
-  const account = accountId ? await getAccount(accountId) : null;
-  if (accountId && !account) {
-    return NextResponse.json(
-      { error: 'That email account is no longer available. Re-add it in Account settings.' },
-      { status: 400 }
-    );
-  }
+  const { account, error: accountError } = await resolveAccount(accountId);
+  if (accountError) return NextResponse.json({ error: accountError }, { status: 400 });
 
   const { smtpUser, smtpPass, smtpHost, smtpPort, fromName, fromEmail } = resolveSmtpConfig(account ?? undefined, senderName);
 

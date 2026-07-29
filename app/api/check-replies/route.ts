@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { resolveSmtpConfig } from '@/lib/mailSend';
 import { resolveImapConfig, findResponders } from '@/lib/checkReplies';
-import { getAccount } from '@/lib/accounts';
+import { resolveAccount } from '@/lib/accounts';
 
 interface CheckRepliesPayload {
   emails: string[];
@@ -17,13 +17,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Missing emails or since' }, { status: 400 });
   }
 
-  const account = accountId ? await getAccount(accountId) : null;
-  if (accountId && !account) {
-    return NextResponse.json(
-      { error: 'The account this was sent from is no longer available.' },
-      { status: 400 }
-    );
-  }
+  const { account, error: accountError } = await resolveAccount(accountId);
+  if (accountError) return NextResponse.json({ error: accountError }, { status: 400 });
 
   const { smtpUser, smtpPass, smtpHost } = resolveSmtpConfig(account ?? undefined, senderName);
   if (!smtpUser || !smtpPass) {

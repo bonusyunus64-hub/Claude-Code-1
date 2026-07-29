@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { renderTemplate, textToHtml } from '@/lib/emailTemplate';
 import { resolveSmtpConfig, createTransport } from '@/lib/mailSend';
-import { getAccount } from '@/lib/accounts';
+import { resolveAccount } from '@/lib/accounts';
 
 interface TestEmailPayload {
   to: string;
@@ -29,13 +29,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Recipient email is required.' }, { status: 400 });
   }
 
-  const account = accountId ? await getAccount(accountId) : null;
-  if (accountId && !account) {
-    return NextResponse.json(
-      { error: 'That email account is no longer available. Re-add it in Account settings.' },
-      { status: 400 }
-    );
-  }
+  const { account, error: accountError } = await resolveAccount(accountId);
+  if (accountError) return NextResponse.json({ error: accountError }, { status: 400 });
 
   const { smtpUser, smtpPass, smtpHost, smtpPort, fromName, fromEmail } = resolveSmtpConfig(account ?? undefined, undefined);
 
