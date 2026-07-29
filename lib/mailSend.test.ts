@@ -1,5 +1,53 @@
 import { describe, it, expect, vi } from 'vitest';
-import { paginate, resolveSmtpConfig, sendMessages, type OutboundMessage } from './mailSend';
+import { paginate, resolveSmtpConfig, sendMessages, dedupeByRecipient, type OutboundMessage } from './mailSend';
+
+describe('dedupeByRecipient', () => {
+  it('collapses multiple messages to the same address down to one', () => {
+    const messages: OutboundMessage[] = [
+      { to: 'manager@example.com', subject: 'A', body: 'Artist A pitch' },
+      { to: 'manager@example.com', subject: 'B', body: 'Artist B pitch' },
+      { to: 'other@example.com', subject: 'C', body: 'Artist C pitch' },
+    ];
+    const result = dedupeByRecipient(messages);
+    expect(result).toHaveLength(2);
+    expect(result.map(m => m.to)).toEqual(['manager@example.com', 'other@example.com']);
+  });
+
+  it('matches addresses case-insensitively', () => {
+    const messages: OutboundMessage[] = [
+      { to: 'Manager@Example.com', subject: 'A', body: 'x' },
+      { to: 'manager@example.com', subject: 'B', body: 'y' },
+    ];
+    expect(dedupeByRecipient(messages)).toHaveLength(1);
+  });
+
+  it('keeps the highest-rank message for a shared address', () => {
+    const messages: OutboundMessage[] = [
+      { to: 'manager@example.com', subject: 'Small act', body: 'x', rank: 100 },
+      { to: 'manager@example.com', subject: 'Big act', body: 'y', rank: 90000 },
+    ];
+    const [result] = dedupeByRecipient(messages);
+    expect(result.subject).toBe('Big act');
+  });
+
+  it('keeps the first message when ranks tie', () => {
+    const messages: OutboundMessage[] = [
+      { to: 'manager@example.com', subject: 'First', body: 'x', rank: 5 },
+      { to: 'manager@example.com', subject: 'Second', body: 'y', rank: 5 },
+    ];
+    const [result] = dedupeByRecipient(messages);
+    expect(result.subject).toBe('First');
+  });
+
+  it('preserves first-seen order of the surviving addresses', () => {
+    const messages: OutboundMessage[] = [
+      { to: 'z@example.com', subject: '1', body: 'x' },
+      { to: 'a@example.com', subject: '2', body: 'y' },
+      { to: 'z@example.com', subject: '3', body: 'z', rank: 1 },
+    ];
+    expect(dedupeByRecipient(messages).map(m => m.to)).toEqual(['z@example.com', 'a@example.com']);
+  });
+});
 
 describe('paginate', () => {
   const items = Array.from({ length: 10 }, (_, i) => i);
@@ -86,6 +134,23 @@ describe('sendMessages', () => {
     const results = await sendMessages(fakeTransport(sendMail), messages, { fromName: 'F', fromEmail: 'f@example.com' });
     expect(results[0].success).toBe(false);
     expect(sendMail).toHaveBeenCalledTimes(1);
+  });
+
+  it('captures the returned Message-ID on success', async () => {
+    const sendMail = vi.fn().mockResolvedValue({ messageId: '<abc123@example.com>' });
+    const results = await sendMessages(fakeTransport(sendMail), messages, { fromName: 'F', fromEmail: 'f@example.com' });
+    expect(results).toEqual([{ to: 'a@example.com', success: true, messageId: '<abc123@example.com>' }]);
+  });
+
+  it('sets In-Reply-To/References when a message threads onto a prior one', async () => {
+    const sendMail = vi.fn().mockResolvedValue({ messageId: '<followup@example.com>' });
+    const threaded: OutboundMessage[] = [
+      { to: 'a@example.com', subject: 'Following up', body: 'Body', inReplyTo: '<original@example.com>' },
+    ];
+    await sendMessages(fakeTransport(sendMail), threaded, { fromName: 'F', fromEmail: 'f@example.com' });
+    const sentOptions = sendMail.mock.calls[0][0];
+    expect(sentOptions.inReplyTo).toBe('<original@example.com>');
+    expect(sentOptions.references).toBe('<original@example.com>');
   });
 
   it('gives up after exhausting retries on persistent transient failures', async () => {

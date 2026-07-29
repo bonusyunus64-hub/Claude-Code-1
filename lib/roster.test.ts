@@ -62,6 +62,25 @@ describe('getArtistsByGenres', () => {
   it('returns nothing when no genres are selected', () => {
     expect(getArtistsByGenres([])).toEqual([]);
   });
+
+  it('does not duplicate an artist matching more than one selected genre in "any" mode', () => {
+    // Rock Band has both Rock and Pop; selecting both should still return it once.
+    const result = getArtistsByGenres(['Rock', 'Pop'], 0, 0, '', '', 0, 0, 'any');
+    expect(result.filter(a => a.name === 'Rock Band')).toHaveLength(1);
+  });
+
+  it('preserves original roster order regardless of genre selection order', () => {
+    const result = getArtistsByGenres(['Rock', 'Pop']);
+    expect(result.map(a => a.name)).toEqual(['Solo Pop Artist', 'Rock Band']);
+  });
+
+  it('matches genres case-insensitively', () => {
+    expect(getArtistsByGenres(['rock']).map(a => a.name)).toEqual(['Rock Band']);
+  });
+
+  it('returns nothing in "all" mode when one of the genres has no matches at all', () => {
+    expect(getArtistsByGenres(['Pop', 'Jazz'], 0, 0, '', '', 0, 0, 'all')).toEqual([]);
+  });
 });
 
 describe('getTopGenres', () => {

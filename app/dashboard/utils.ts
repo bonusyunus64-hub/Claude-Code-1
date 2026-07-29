@@ -1,4 +1,5 @@
 import type { SendResultEntry, BatchProgress } from './types';
+export { renderTemplate as renderTemplateClient, pronounFor as pronounForClient } from '@/lib/emailTemplate';
 
 export function getTodayDateStr(): string {
   return new Date().toISOString().slice(0, 10);
@@ -7,10 +8,15 @@ export function getTodayDateStr(): string {
 // Send routes page through recipients (offset/limit) instead of one long request, so a
 // large batch can't hit a serverless function timeout. This loops until the server
 // reports no more pages, reporting live progress as each page comes back.
+//
+// onProgress also receives the cumulative results-so-far (not just counts) so a
+// caller can persist campaign history as each batch lands, rather than only after
+// the whole send finishes — closing the tab mid-send then loses at most the
+// in-flight batch instead of the entire campaign record.
 export async function sendInBatches(
   endpoint: string,
   payload: Record<string, unknown>,
-  onProgress: (progress: BatchProgress) => void
+  onProgress: (progress: BatchProgress, resultsSoFar: SendResultEntry[]) => void
 ): Promise<{ ok: true; results: SendResultEntry[]; total: number } | { ok: false; error: string }> {
   let offset = 0;
   const allResults: SendResultEntry[] = [];
@@ -35,7 +41,7 @@ export async function sendInBatches(
       sent: allResults.filter(r => r.success).length,
       failed: allResults.filter(r => !r.success).length,
       total,
-    });
+    }, allResults);
     if (data.nextOffset == null) break;
     offset = data.nextOffset;
   }
@@ -74,13 +80,12 @@ export function parseContactsCsv(text: string): { artistName: string; managerNam
   return out;
 }
 
-export function renderTemplateClient(template: string, vars: Record<string, string>): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
-}
-
-export function pronounForClient(gender: string, type: string): string {
-  if (type === 'Group') return 'they';
-  if (gender === 'MALE') return 'he';
-  if (gender === 'FEMALE') return 'she';
-  return 'they';
+/** Uniform shuffle (Fisher-Yates) — Math.random()-based comparator sorts are a well-known non-fix that biases the result. */
+export function shuffle<T>(arr: T[]): T[] {
+  const out = [...arr];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
 }

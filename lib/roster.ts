@@ -25,14 +25,37 @@ interface RosterData {
   genres: string[];
 }
 
-let cached: RosterData | null = null;
+interface IndexedRoster extends RosterData {
+  /** Lowercased genre -> ascending artist indices, built once so a genre filter
+   *  is a lookup instead of a full scan over every artist on every request. */
+  genreIndex: Map<string, number[]>;
+}
 
-export function getRoster(): RosterData {
+let cached: IndexedRoster | null = null;
+
+function buildGenreIndex(artists: Artist[]): Map<string, number[]> {
+  const index = new Map<string, number[]>();
+  artists.forEach((artist, i) => {
+    artist.genres.forEach(genre => {
+      const key = genre.toLowerCase();
+      const indices = index.get(key);
+      if (indices) indices.push(i); else index.set(key, [i]);
+    });
+  });
+  return index;
+}
+
+function getIndexedRoster(): IndexedRoster {
   if (cached) return cached;
   const filePath = join(process.cwd(), 'data', 'roster.json');
   const raw = readFileSync(filePath, 'utf-8');
-  cached = JSON.parse(raw) as RosterData;
+  const data = JSON.parse(raw) as RosterData;
+  cached = { ...data, genreIndex: buildGenreIndex(data.artists) };
   return cached;
+}
+
+export function getRoster(): RosterData {
+  return getIndexedRoster();
 }
 
 export function getTopGenres(limit = 20): string[] {
@@ -45,6 +68,25 @@ export function getTopGenres(limit = 20): string[] {
     .map(([genre]) => genre);
 }
 
+/** Candidate artist indices for the selected genres, in ascending (original roster) order. */
+function candidateIndices(genreIndex: Map<string, number[]>, lowerGenres: string[], matchMode: 'any' | 'all'): number[] {
+  if (matchMode === 'all') {
+    const lists = lowerGenres.map(g => genreIndex.get(g) ?? []);
+    if (lists.some(list => list.length === 0)) return [];
+    let common = new Set(lists[0]);
+    for (let i = 1; i < lists.length; i++) {
+      const next = lists[i];
+      const nextSet = new Set(next);
+      common = new Set([...common].filter(idx => nextSet.has(idx)));
+      if (common.size === 0) break;
+    }
+    return Array.from(common).sort((a, b) => a - b);
+  }
+  const union = new Set<number>();
+  lowerGenres.forEach(g => (genreIndex.get(g) ?? []).forEach(idx => union.add(idx)));
+  return Array.from(union).sort((a, b) => a - b);
+}
+
 export function getArtistsByGenres(
   selectedGenres: string[],
   minFollowers = 0,
@@ -55,26 +97,27 @@ export function getArtistsByGenres(
   maxInstagram = 0,
   matchMode: 'any' | 'all' = 'any'
 ): Artist[] {
-  const { artists } = getRoster();
+  const { artists, genreIndex } = getIndexedRoster();
   if (!selectedGenres.length) return [];
 
   const lower = selectedGenres.map(g => g.toLowerCase());
-  return artists.filter(a => {
-    if (!a.managerEmails.length) return false;
-    const check = matchMode === 'all'
-      ? lower.every(g => a.genres.some(ag => ag.toLowerCase() === g))
-      : a.genres.some(g => lower.includes(g.toLowerCase()));
-    if (!check) return false;
+  const indices = candidateIndices(genreIndex, lower, matchMode);
+
+  const result: Artist[] = [];
+  for (const idx of indices) {
+    const a = artists[idx];
+    if (!a.managerEmails.length) continue;
     const spotify = a.spotifyFollowers ?? 0;
-    if (minFollowers > 0 && spotify < minFollowers) return false;
-    if (maxFollowers > 0 && spotify > maxFollowers) return false;
-    if (gender && a.gender !== gender) return false;
-    if (artistType && a.type !== artistType) return false;
+    if (minFollowers > 0 && spotify < minFollowers) continue;
+    if (maxFollowers > 0 && spotify > maxFollowers) continue;
+    if (gender && a.gender !== gender) continue;
+    if (artistType && a.type !== artistType) continue;
     const instagram = a.instagramFollowers ?? 0;
-    if (minInstagram > 0 && instagram < minInstagram) return false;
-    if (maxInstagram > 0 && instagram > maxInstagram) return false;
-    return true;
-  });
+    if (minInstagram > 0 && instagram < minInstagram) continue;
+    if (maxInstagram > 0 && instagram > maxInstagram) continue;
+    result.push(a);
+  }
+  return result;
 }
 
 export function searchArtistsByName(query: string, limit = 20): Artist[] {

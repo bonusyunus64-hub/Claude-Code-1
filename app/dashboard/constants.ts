@@ -1,4 +1,4 @@
-import type { EmailAccount } from './types';
+import type { NewAccountForm } from './types';
 
 export const DEFAULT_DEMOS_TEMPLATE = `Hi {{managerName}},
 
@@ -72,6 +72,6 @@ export const DAILY_CAP_OPTIONS = [
   { label: '500', value: 500 },
 ];
 
-export const BLANK_ACCOUNT: Omit<EmailAccount, 'id'> = {
+export const BLANK_ACCOUNT: NewAccountForm = {
   name: '', email: '', smtpHost: 'smtp.zoho.com', smtpPort: '465', smtpUser: '', smtpPass: '',
 };

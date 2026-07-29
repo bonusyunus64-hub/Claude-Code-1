@@ -52,19 +52,21 @@ const artists = rows
     };
   });
 
-// Extract unique genres
+// Artists with no manager email can never be pitched to, so they're dropped here
+// rather than carried into roster.json just to be filtered out on every request —
+// that both shrinks the file the app parses on every cold start and keeps the
+// genre list free of genres with zero actually-reachable artists behind them.
+const withEmails = artists.filter(a => a.managerEmails.length > 0);
+
 const genreSet = new Set();
-artists.forEach(a => a.genres.forEach(g => genreSet.add(g)));
+withEmails.forEach(a => a.genres.forEach(g => genreSet.add(g)));
 const allGenres = Array.from(genreSet).sort();
 
-const output = { artists, genres: allGenres };
+const output = { artists: withEmails, genres: allGenres };
 
 const outDir = join(__dirname, '..', 'data');
 mkdirSync(outDir, { recursive: true });
 writeFileSync(join(outDir, 'roster.json'), JSON.stringify(output, null, 2));
 
-console.log(`Parsed ${artists.length} artists, ${allGenres.length} unique genres`);
+console.log(`Parsed ${artists.length} artists (${withEmails.length} with a manager email — kept), ${allGenres.length} unique genres`);
 console.log('Sample genres:', allGenres.slice(0, 20).join(', '));
-
-const withEmails = artists.filter(a => a.managerEmails.length > 0);
-console.log(`Artists with manager emails: ${withEmails.length}`);

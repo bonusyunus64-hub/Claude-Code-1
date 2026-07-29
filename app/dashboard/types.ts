@@ -1,4 +1,4 @@
-export interface SendResultEntry { to: string; success: boolean; error?: string }
+export interface SendResultEntry { to: string; success: boolean; error?: string; messageId?: string }
 export type BatchProgress = { sent: number; failed: number; total: number };
 
 export interface Artist {
@@ -31,6 +31,11 @@ export interface PlaylistCurator {
   followers?: number;
 }
 
+/**
+ * What the browser knows about a saved account. The SMTP password deliberately
+ * isn't here: it lives encrypted on the server and never comes back down, so a
+ * send just names the account by id.
+ */
 export interface EmailAccount {
   id: string;
   name: string;
@@ -38,8 +43,10 @@ export interface EmailAccount {
   smtpHost: string;
   smtpPort: string;
   smtpUser: string;
-  smtpPass: string;
 }
+
+/** The add-account form is the only place a password exists client-side, and only until it's submitted. */
+export type NewAccountForm = Omit<EmailAccount, 'id'> & { smtpPass: string };
 
 export interface CampaignRecipient {
   email: string;
@@ -61,6 +68,8 @@ export interface Campaign {
   responded?: string[];
   lastChecked?: number;
   recipients?: CampaignRecipient[];
+  /** Lowercased recipient -> Message-ID of the email they were sent, so a follow-up can reply into that thread. */
+  messageIds?: Record<string, string>;
 }
 
 export interface CustomContact {
@@ -114,4 +123,19 @@ export interface SavedTemplate {
   name: string;
   body: string;
   subject?: string;
+}
+
+export interface AnalyticsStats {
+  totalCampaigns: number;
+  totalEmailsSent: number;
+  demosCampaignCount: number;
+  radioCampaignCount: number;
+  playlistCampaignCount: number;
+  demosEmailsSent: number;
+  radioEmailsSent: number;
+  playlistEmailsSent: number;
+  topTracks: [string, number][];
+  last14Days: { date: string; count: number }[];
+  maxDayCount: number;
+  lastCampaignDate: string | null;
 }

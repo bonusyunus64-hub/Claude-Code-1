@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { filterRadioStations } from '@/lib/radio';
 import { renderTemplate } from '@/lib/emailTemplate';
-import { resolveSmtpConfig, createTransport, sendMessages, paginate, DEFAULT_SEND_BATCH_SIZE, FromAccount } from '@/lib/mailSend';
+import {
+  resolveSmtpConfig, createTransport, sendMessages, paginate, dedupeByRecipient,
+  DEFAULT_SEND_BATCH_SIZE, OutboundMessage,
+} from '@/lib/mailSend';
+import { getAccount } from '@/lib/accounts';
+import { checkCapAllows, recordSends } from '@/lib/sendQuota';
 
 interface RadioSendPayload {
   trackTitle: string;
@@ -14,9 +19,10 @@ interface RadioSendPayload {
   signOff?: string;
   signOffImage?: string;
   matchMode?: 'any' | 'all';
-  fromAccount?: FromAccount;
+  accountId?: string;
   sendDelay?: number;
   blacklist?: string[];
+  threadIds?: Record<string, string>;
   offset?: number;
   limit?: number;
 }
@@ -24,8 +30,8 @@ interface RadioSendPayload {
 export async function POST(req: NextRequest) {
   const {
     trackTitle, driveLink, genres, locations, emailTemplate, subjectTemplate, senderName,
-    signOff, signOffImage, matchMode, fromAccount,
-    sendDelay, blacklist, offset, limit,
+    signOff, signOffImage, matchMode, accountId,
+    sendDelay, blacklist, threadIds, offset, limit,
   } = await req.json() as RadioSendPayload;
 
   if (!trackTitle || !driveLink || !emailTemplate) {
@@ -34,7 +40,15 @@ export async function POST(req: NextRequest) {
 
   const subjectTpl = subjectTemplate?.trim() || `Music Submission: {{trackTitle}} for {{stationName}}`;
 
-  const { smtpUser, smtpPass, smtpHost, smtpPort, fromName, fromEmail } = resolveSmtpConfig(fromAccount, senderName);
+  const account = accountId ? await getAccount(accountId) : null;
+  if (accountId && !account) {
+    return NextResponse.json(
+      { error: 'That email account is no longer available. Re-add it in Account settings.' },
+      { status: 400 }
+    );
+  }
+
+  const { smtpUser, smtpPass, smtpHost, smtpPort, fromName, fromEmail } = resolveSmtpConfig(account ?? undefined, senderName);
 
   if (!smtpUser || !smtpPass) {
     return NextResponse.json(
@@ -43,12 +57,10 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const transporter = createTransport({ smtpHost, smtpPort, smtpUser, smtpPass });
-
   const stations = filterRadioStations(genres ?? [], locations ?? [], matchMode ?? 'any');
   const bl = (blacklist ?? []).map(e => e.toLowerCase());
 
-  const allMessages = stations.flatMap(station =>
+  const builtMessages: OutboundMessage[] = stations.flatMap(station =>
     station.emails
       .filter(email => !bl.includes(email.toLowerCase()))
       .map(email => {
@@ -61,11 +73,23 @@ export async function POST(req: NextRequest) {
       })
   );
 
+  // Stations frequently list the same shared inbox across several shows — one email each.
+  const allMessages = dedupeByRecipient(builtMessages).map(msg => {
+    const threadId = threadIds?.[msg.to.toLowerCase()];
+    return threadId ? { ...msg, inReplyTo: threadId } : msg;
+  });
+
   const { batch, total, nextOffset } = paginate(allMessages, offset ?? 0, limit ?? DEFAULT_SEND_BATCH_SIZE);
+
+  const capCheck = await checkCapAllows(batch.length);
+  if (!capCheck.ok) return NextResponse.json({ error: capCheck.error }, { status: 429 });
+
+  const transporter = createTransport({ smtpHost, smtpPort, smtpUser, smtpPass });
   const results = await sendMessages(transporter, batch, { fromName, fromEmail: fromEmail as string, signOffImage, sendDelay });
 
   const sent = results.filter(r => r.success).length;
   const failed = results.filter(r => !r.success).length;
+  await recordSends(sent, accountId);
 
   return NextResponse.json({ sent, failed, total, batchTotal: batch.length, nextOffset, results });
 }

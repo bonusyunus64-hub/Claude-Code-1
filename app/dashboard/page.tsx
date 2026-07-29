@@ -3,17 +3,17 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { hydrateFromRemote, syncStorage } from '@/lib/remoteSync';
 import type {
-  Artist, RadioStation, PlaylistCurator, EmailAccount,
+  Artist, RadioStation, PlaylistCurator, EmailAccount, NewAccountForm,
   CampaignRecipient, Campaign, CustomContact, DeliverabilityResult,
-  DemosFilterPreset, RadioFilterPreset, PlaylistFilterPreset, SavedTemplate,
+  DemosFilterPreset, RadioFilterPreset, PlaylistFilterPreset, SavedTemplate, SendResultEntry,
 } from './types';
 import {
   DEFAULT_DEMOS_TEMPLATE, DEFAULT_FOLLOWUP_TEMPLATE, DEFAULT_RADIO_TEMPLATE, DEFAULT_PLAYLIST_TEMPLATE,
   DEFAULT_DEMOS_SUBJECT, DEFAULT_FOLLOWUP_SUBJECT, DEFAULT_RADIO_SUBJECT, DEFAULT_PLAYLIST_SUBJECT,
-  DEFAULT_SIGN_OFF, LOCATION_OPTIONS, PLATFORM_OPTIONS, SEND_DELAY_OPTIONS, DAILY_CAP_OPTIONS, BLANK_ACCOUNT,
+  DEFAULT_SIGN_OFF, LOCATION_OPTIONS, PLATFORM_OPTIONS, BLANK_ACCOUNT,
 } from './constants';
 import {
-  getTodayDateStr, sendInBatches, downloadCsv, parseContactsCsv,
+  sendInBatches, downloadCsv, parseContactsCsv, shuffle,
   renderTemplateClient, pronounForClient,
 } from './utils';
 import { CopyChip } from './components/CopyChip';
@@ -21,6 +21,9 @@ import { CopyableName } from './components/CopyableName';
 import { SpotifyLink } from './components/SpotifyLink';
 import { PitchedBadge } from './components/PitchedBadge';
 import { SpamScoreBadge } from './components/SpamScoreBadge';
+import { OverviewSection } from './sections/OverviewSection';
+import { AccountSection } from './sections/AccountSection';
+import { HistorySection } from './sections/HistorySection';
 
 export default function Dashboard() {
   const [activeSection, setActiveSection] = useState<'overview' | 'demos' | 'promotion' | 'account' | 'history'>('demos');
@@ -114,11 +117,14 @@ export default function Dashboard() {
   const [playlistTemplateLibrary, setPlaylistTemplateLibrary] = useState<SavedTemplate[]>([]);
   const [newPlaylistTemplateName, setNewPlaylistTemplateName] = useState('');
 
-  // Account state
+  // Account state — accounts (and their SMTP passwords) live server-side behind
+  // /api/accounts; the client only ever holds the password transiently in the add-account form.
   const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const [showAddAccount, setShowAddAccount] = useState(false);
-  const [newAccount, setNewAccount] = useState({ ...BLANK_ACCOUNT });
+  const [newAccount, setNewAccount] = useState<NewAccountForm>({ ...BLANK_ACCOUNT });
+  const [savingAccount, setSavingAccount] = useState(false);
+  const [accountError, setAccountError] = useState('');
   const [signOff, setSignOff] = useState(DEFAULT_SIGN_OFF);
   const [signOffImage, setSignOffImage] = useState<string | null>(null);
   const [testEmailTo, setTestEmailTo] = useState('');
@@ -174,14 +180,30 @@ export default function Dashboard() {
   const [lastSavedSignOff, setLastSavedSignOff] = useState(DEFAULT_SIGN_OFF);
   const [lastSavedSignOffImage, setLastSavedSignOffImage] = useState<string | null>(null);
 
+  // The cap is enforced server-side (see checkCapAllows in the send routes) against a
+  // Redis counter, so after any send this just re-reads that counter rather than
+  // keeping its own running total — one source of truth, no drift across tabs/devices.
+  async function refreshSendsToday() {
+    try {
+      const res = await fetch('/api/send-quota');
+      const data = await res.json();
+      setSendsToday(data.count ?? 0);
+      setSendsTodayByAccount(data.byAccount ?? {});
+    } catch {}
+  }
+
   useEffect(() => {
     fetch('/api/genres').then(r => r.json()).then(d => { setAllGenres(d.genres || []); setTopGenres(d.topGenres || []); });
     fetch('/api/radio-genres').then(r => r.json()).then(d => setRadioAllGenres(d.genres || []));
     fetch('/api/playlist-genres').then(r => r.json()).then(d => setPlaylistAllGenres(d.genres || []));
+    fetch('/api/send-quota').then(r => r.json()).then(d => { setSendsToday(d.count ?? 0); setSendsTodayByAccount(d.byAccount ?? {}); }).catch(() => {});
+    fetch('/api/campaigns').then(r => r.json()).then(d => setCampaigns(d.campaigns || [])).catch(() => {});
     (async () => {
     await hydrateFromRemote(); // pull latest settings from the server so a second device picks up what was saved elsewhere
     try {
-      const accounts = JSON.parse(localStorage.getItem('tp_email_accounts') || '[]') as EmailAccount[];
+      const accountsRes = await fetch('/api/accounts');
+      const accountsData = await accountsRes.json();
+      const accounts = (accountsData.accounts ?? []) as EmailAccount[];
       setEmailAccounts(accounts);
       const savedId = localStorage.getItem('tp_selected_account');
       if (savedId && accounts.find(a => a.id === savedId)) setSelectedAccountId(savedId);
@@ -216,9 +238,6 @@ export default function Dashboard() {
 
       const savedPlaylistSubject = localStorage.getItem('tp_playlist_subject');
       if (savedPlaylistSubject !== null) { setPlaylistSubject(savedPlaylistSubject); setLastSavedPlaylistSubject(savedPlaylistSubject); }
-
-      const savedCampaigns = localStorage.getItem('tp_campaigns');
-      if (savedCampaigns) setCampaigns(JSON.parse(savedCampaigns));
 
       const savedBlacklist = localStorage.getItem('tp_blacklist');
       if (savedBlacklist) setBlacklist(JSON.parse(savedBlacklist));
@@ -255,12 +274,6 @@ export default function Dashboard() {
 
       const savedDailyCap = localStorage.getItem('tp_daily_cap');
       if (savedDailyCap !== null) setDailySendCap(Number(savedDailyCap));
-
-      const savedSendsToday = JSON.parse(localStorage.getItem('tp_sends_today') || '{}');
-      if (savedSendsToday.date === getTodayDateStr()) {
-        setSendsToday(savedSendsToday.count || 0);
-        setSendsTodayByAccount(savedSendsToday.byAccount || {});
-      }
     } catch {}
     })();
   }, []);
@@ -439,30 +452,40 @@ export default function Dashboard() {
     reader.readAsDataURL(file);
   }
 
-  function persistAccounts(accounts: EmailAccount[]) {
-    setEmailAccounts(accounts);
-    syncStorage.setItem('tp_email_accounts', JSON.stringify(accounts));
-  }
-
-  function addAccount() {
+  async function addAccount() {
     if (!newAccount.name || !newAccount.smtpUser || !newAccount.smtpPass) return;
-    const account: EmailAccount = { id: Date.now().toString(), ...newAccount };
-    const updated = [...emailAccounts, account];
-    persistAccounts(updated);
-    setSelectedAccountId(account.id);
-    syncStorage.setItem('tp_selected_account', account.id);
-    setShowAddAccount(false);
-    setNewAccount({ ...BLANK_ACCOUNT });
+    setSavingAccount(true);
+    setAccountError('');
+    try {
+      const res = await fetch('/api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newAccount),
+      });
+      const data = await res.json();
+      if (!res.ok) { setAccountError(data.error || 'Could not save account.'); return; }
+      const account = data.account as EmailAccount;
+      setEmailAccounts(prev => [...prev, account]);
+      setSelectedAccountId(account.id);
+      syncStorage.setItem('tp_selected_account', account.id);
+      setShowAddAccount(false);
+      setNewAccount({ ...BLANK_ACCOUNT });
+    } catch {
+      setAccountError('Network error. Please try again.');
+    } finally {
+      setSavingAccount(false);
+    }
   }
 
-  function removeAccount(id: string) {
+  async function removeAccount(id: string) {
     const updated = emailAccounts.filter(a => a.id !== id);
-    persistAccounts(updated);
+    setEmailAccounts(updated);
     if (selectedAccountId === id) {
       const next = updated[0]?.id ?? '';
       setSelectedAccountId(next);
       syncStorage.setItem('tp_selected_account', next);
     }
+    await fetch(`/api/accounts?id=${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
   }
 
   function selectAccount(id: string) {
@@ -531,12 +554,40 @@ export default function Dashboard() {
     syncStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
   }
 
-  function logCampaign(type: 'demos' | 'radio' | 'playlists', title: string, emails: string[], accountId?: string, recipients?: CampaignRecipient[]) {
-    if (!emails.length) return;
-    const campaign: Campaign = { id: Date.now().toString(), trackTitle: title, date: new Date().toISOString(), type, emails, accountId, recipients };
-    const updated = [...campaigns, campaign];
-    setCampaigns(updated);
-    syncStorage.setItem('tp_campaigns', JSON.stringify(updated));
+  /**
+   * Creates or updates a single campaign record. Campaign history lives server-side
+   * as one record per campaign (see lib/campaigns.ts), so this only ever writes the
+   * one record that changed — cheap enough to call after every batch of a long send,
+   * which is what makes mid-send persistence (see handleSend et al.) practical.
+   */
+  function upsertCampaign(campaign: Campaign) {
+    setCampaigns(prev => {
+      const idx = prev.findIndex(c => c.id === campaign.id);
+      if (idx >= 0) { const copy = [...prev]; copy[idx] = campaign; return copy; }
+      return [...prev, campaign];
+    });
+    fetch('/api/campaigns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(campaign),
+    }).catch(() => {});
+  }
+
+  /** Looks up the Message-ID each address was originally pitched under, for the same track,
+   *  so a follow-up threads onto it instead of landing as an unrelated new email. */
+  function threadIdsFor(type: Campaign['type'], title: string): Record<string, string> {
+    const key = title.trim().toLowerCase();
+    const ids: Record<string, string> = {};
+    campaigns
+      .filter(c => c.type === type && c.trackTitle.trim().toLowerCase() === key)
+      .forEach(c => Object.entries(c.messageIds ?? {}).forEach(([email, id]) => { ids[email] = id; }));
+    return ids;
+  }
+
+  function messageIdsFromResults(results: SendResultEntry[]): Record<string, string> {
+    const ids: Record<string, string> = {};
+    results.forEach(r => { if (r.success && r.messageId) ids[r.to.toLowerCase()] = r.messageId; });
+    return ids;
   }
 
   const [checkingRepliesId, setCheckingRepliesId] = useState<string | null>(null);
@@ -544,8 +595,10 @@ export default function Dashboard() {
   const [replyCheckResult, setReplyCheckResult] = useState<{ campaignId: string; newCount: number; totalCount: number } | null>(null);
 
   async function checkReplies(c: Campaign) {
-    const acc = emailAccounts.find(a => a.id === c.accountId);
-    if (!acc) { setReplyCheckError('The account this was sent from is no longer available.'); return; }
+    if (!c.accountId || !emailAccounts.some(a => a.id === c.accountId)) {
+      setReplyCheckError('The account this was sent from is no longer available.');
+      return;
+    }
     setCheckingRepliesId(c.id);
     setReplyCheckError('');
     setReplyCheckResult(null);
@@ -556,7 +609,7 @@ export default function Dashboard() {
         body: JSON.stringify({
           emails: c.emails,
           since: new Date(c.date).getTime(),
-          fromAccount: { ...acc, smtpPort: Number(acc.smtpPort) },
+          accountId: c.accountId,
         }),
       });
       const data = await res.json();
@@ -565,9 +618,7 @@ export default function Dashboard() {
       const found = data.responded as string[];
       const newCount = found.filter(e => !before.has(e)).length;
       const responded = Array.from(new Set([...(c.responded ?? []), ...found]));
-      const updated = campaigns.map(x => x.id === c.id ? { ...x, responded, lastChecked: Date.now() } : x);
-      setCampaigns(updated);
-      syncStorage.setItem('tp_campaigns', JSON.stringify(updated));
+      upsertCampaign({ ...c, responded, lastChecked: Date.now() });
       setReplyCheckResult({ campaignId: c.id, newCount, totalCount: responded.length });
     } catch (err) {
       setReplyCheckError(`Could not check replies: ${String(err)}`);
@@ -599,9 +650,7 @@ export default function Dashboard() {
         const contact = customContacts.find(cc => cc.managerEmail.toLowerCase() === r.email.toLowerCase());
         return contact ? { ...r, artistName: contact.artistName, managerName: contact.managerName } : r;
       });
-      const updated = campaigns.map(x => x.id === c.id ? { ...x, recipients } : x);
-      setCampaigns(updated);
-      syncStorage.setItem('tp_campaigns', JSON.stringify(updated));
+      upsertCampaign({ ...c, recipients });
     } catch (err) {
       setBackfillError(`Could not load artist details: ${String(err)}`);
     } finally {
@@ -611,7 +660,7 @@ export default function Dashboard() {
 
   function clearCampaignHistory() {
     setCampaigns([]);
-    syncStorage.removeItem('tp_campaigns');
+    fetch('/api/campaigns?all=true', { method: 'DELETE' }).catch(() => {});
   }
 
   function exportCampaignsCsv(list: Campaign[] = campaigns) {
@@ -623,16 +672,6 @@ export default function Dashboard() {
         .map(c => [new Date(c.date).toLocaleString(), c.type, c.trackTitle, String(c.emails.length), c.emails.join('; ')]),
     ];
     downloadCsv('campaign-history.csv', rows);
-  }
-
-  function addSendsToday(n: number, accountId?: string) {
-    const today = getTodayDateStr();
-    const updatedTotal = sendsToday + n;
-    const updatedByAccount = { ...sendsTodayByAccount };
-    if (accountId) updatedByAccount[accountId] = (updatedByAccount[accountId] ?? 0) + n;
-    setSendsToday(updatedTotal);
-    setSendsTodayByAccount(updatedByAccount);
-    syncStorage.setItem('tp_sends_today', JSON.stringify({ date: today, count: updatedTotal, byAccount: updatedByAccount }));
   }
 
   function setDailyCap(value: number) {
@@ -859,7 +898,6 @@ export default function Dashboard() {
     if (!testEmailTo) return;
     setTestEmailSending(true); setTestEmailResult(null); setTestEmailError('');
     try {
-      const acc = emailAccounts.find(a => a.id === selectedAccountId);
       // Use a real matched artist's data when one is available, so the test
       // reflects exactly how {{managerName}}, {{pronoun}}, etc. will resolve
       // for an actual recipient rather than generic placeholders.
@@ -870,7 +908,7 @@ export default function Dashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           to: testEmailTo,
-          fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
+          accountId: selectedAccountId || undefined,
           emailTemplate: testEmailMessage.trim() || (useFollowUp ? demosFollowUpTemplate : demosTemplate),
           subjectTemplate: testEmailSubject.trim() || (useFollowUp ? demosFollowUpSubject : demosSubject),
           signOff,
@@ -992,7 +1030,28 @@ export default function Dashboard() {
     }
     setSending(true); setSendError(''); setSendResult(null); setSendFailedEmails([]);
     try {
-      const acc = emailAccounts.find(a => a.id === selectedAccountId);
+      // Built once up front — it depends only on the current preview/contacts, not on
+      // anything the send returns — so every progress tick below can reuse it to
+      // attach recipient details to whatever's been sent so far.
+      const artistByEmail = new Map<string, Omit<CampaignRecipient, 'email'>>();
+      previewArtists.filter(a => !excludedArtistNames.has(a.name)).forEach(a => {
+        a.managerEmails.forEach((email, i) => {
+          artistByEmail.set(email.toLowerCase(), {
+            artistName: a.name, managerName: a.managerNames[i] || '', avatarUrl: a.avatarUrl,
+            genres: a.genres, instagramHandle: a.instagramHandle, spotifyFollowers: a.spotifyFollowers,
+          });
+        });
+      });
+      customContacts.forEach(c => {
+        artistByEmail.set(c.managerEmail.toLowerCase(), {
+          artistName: c.artistName, managerName: c.managerName, avatarUrl: '',
+          genres: [], instagramHandle: '', spotifyFollowers: 0,
+        });
+      });
+
+      const campaignId = Date.now().toString();
+      const campaignDate = new Date().toISOString();
+
       const outcome = await sendInBatches('/api/send', {
         trackTitle, driveLink, genres: selectedGenres,
         emailTemplate: useFollowUp ? demosFollowUpTemplate : demosTemplate,
@@ -1007,37 +1066,32 @@ export default function Dashboard() {
         customContacts: customContacts.length > 0
           ? customContacts.map(c => ({ artistName: c.artistName, managerName: c.managerName, managerEmail: c.managerEmail }))
           : undefined,
-        fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
-      }, progress => setSendResult(progress));
-      if (!outcome.ok) { setSendError(outcome.error); }
-      else {
-        const sentEmails = outcome.results.filter(r => r.success).map(r => r.to);
-        const failed = outcome.results.filter(r => !r.success).map(r => r.to);
-        setSendFailedEmails(failed);
-        recordFailedEmails(failed);
-        const artistByEmail = new Map<string, Omit<CampaignRecipient, 'email'>>();
-        previewArtists.filter(a => !excludedArtistNames.has(a.name)).forEach(a => {
-          a.managerEmails.forEach((email, i) => {
-            artistByEmail.set(email.toLowerCase(), {
-              artistName: a.name, managerName: a.managerNames[i] || '', avatarUrl: a.avatarUrl,
-              genres: a.genres, instagramHandle: a.instagramHandle, spotifyFollowers: a.spotifyFollowers,
-            });
-          });
-        });
-        customContacts.forEach(c => {
-          artistByEmail.set(c.managerEmail.toLowerCase(), {
-            artistName: c.artistName, managerName: c.managerName, avatarUrl: '',
-            genres: [], instagramHandle: '', spotifyFollowers: 0,
-          });
-        });
+        accountId: selectedAccountId || undefined,
+        threadIds: useFollowUp ? threadIdsFor('demos', trackTitle) : undefined,
+      }, (progress, resultsSoFar) => {
+        setSendResult(progress);
+        // Persisted as each batch lands: closing the tab mid-send loses at most the
+        // in-flight batch, not the whole campaign record.
+        const sentEmails = resultsSoFar.filter(r => r.success).map(r => r.to);
+        if (!sentEmails.length) return;
         const recipients: CampaignRecipient[] = sentEmails.map(email => ({
           email,
           ...(artistByEmail.get(email.toLowerCase()) ?? {
             artistName: '', managerName: '', avatarUrl: '', genres: [], instagramHandle: '', spotifyFollowers: 0,
           }),
         }));
-        logCampaign('demos', trackTitle, sentEmails, selectedAccountId, recipients);
-        if (sentEmails.length) addSendsToday(sentEmails.length, selectedAccountId);
+        upsertCampaign({
+          id: campaignId, trackTitle, date: campaignDate, type: 'demos',
+          emails: sentEmails, accountId: selectedAccountId, recipients,
+          messageIds: messageIdsFromResults(resultsSoFar),
+        });
+      });
+      if (!outcome.ok) { setSendError(outcome.error); }
+      else {
+        const failed = outcome.results.filter(r => !r.success).map(r => r.to);
+        setSendFailedEmails(failed);
+        recordFailedEmails(failed);
+        if (outcome.results.some(r => r.success)) refreshSendsToday();
       }
     } finally { setSending(false); }
   }
@@ -1049,7 +1103,7 @@ export default function Dashboard() {
       case 'followers-asc':  return arr.sort((a, b) => a.spotifyFollowers - b.spotifyFollowers);
       case 'alpha-asc':      return arr.sort((a, b) => a.name.localeCompare(b.name));
       case 'alpha-desc':     return arr.sort((a, b) => b.name.localeCompare(a.name));
-      case 'random':         return arr.sort(() => Math.random() - 0.5);
+      case 'random':         return shuffle(arr);
     }
   }, [previewArtists, sortOrder]);
 
@@ -1110,22 +1164,29 @@ export default function Dashboard() {
     }
     setRadioSending(true); setRadioSendError(''); setRadioSendResult(null); setRadioSendFailedEmails([]);
     try {
-      const acc = emailAccounts.find(a => a.id === selectedAccountId);
+      const campaignId = Date.now().toString();
+      const campaignDate = new Date().toISOString();
       const outcome = await sendInBatches('/api/radio-send', {
         trackTitle, driveLink, genres: selectedRadioGenres, locations: selectedLocations,
         emailTemplate: radioTemplate, subjectTemplate: radioSubject, senderName, signOff, signOffImage, matchMode: radioMatchMode,
         sendDelay: sendDelay > 0 ? sendDelay : undefined,
         blacklist: blacklist.length > 0 ? blacklist : undefined,
-        fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
-      }, progress => setRadioSendResult(progress));
+        accountId: selectedAccountId || undefined,
+      }, (progress, resultsSoFar) => {
+        setRadioSendResult(progress);
+        const sentEmails = resultsSoFar.filter(r => r.success).map(r => r.to);
+        if (!sentEmails.length) return;
+        upsertCampaign({
+          id: campaignId, trackTitle, date: campaignDate, type: 'radio',
+          emails: sentEmails, accountId: selectedAccountId, messageIds: messageIdsFromResults(resultsSoFar),
+        });
+      });
       if (!outcome.ok) { setRadioSendError(outcome.error); }
       else {
-        const sentEmails = outcome.results.filter(r => r.success).map(r => r.to);
         const failed = outcome.results.filter(r => !r.success).map(r => r.to);
         setRadioSendFailedEmails(failed);
         recordFailedEmails(failed);
-        logCampaign('radio', trackTitle, sentEmails, selectedAccountId);
-        if (sentEmails.length) addSendsToday(sentEmails.length, selectedAccountId);
+        if (outcome.results.some(r => r.success)) refreshSendsToday();
       }
     } finally { setRadioSending(false); }
   }
@@ -1177,22 +1238,29 @@ export default function Dashboard() {
     }
     setPlaylistSending(true); setPlaylistSendError(''); setPlaylistSendResult(null); setPlaylistSendFailedEmails([]);
     try {
-      const acc = emailAccounts.find(a => a.id === selectedAccountId);
+      const campaignId = Date.now().toString();
+      const campaignDate = new Date().toISOString();
       const outcome = await sendInBatches('/api/playlist-send', {
         trackTitle, driveLink, genres: selectedPlaylistGenres, platforms: selectedPlatforms,
         emailTemplate: playlistTemplate, subjectTemplate: playlistSubject, senderName, signOff, signOffImage, matchMode: playlistMatchMode,
         sendDelay: sendDelay > 0 ? sendDelay : undefined,
         blacklist: blacklist.length > 0 ? blacklist : undefined,
-        fromAccount: acc ? { ...acc, smtpPort: Number(acc.smtpPort) } : undefined,
-      }, progress => setPlaylistSendResult(progress));
+        accountId: selectedAccountId || undefined,
+      }, (progress, resultsSoFar) => {
+        setPlaylistSendResult(progress);
+        const sentEmails = resultsSoFar.filter(r => r.success).map(r => r.to);
+        if (!sentEmails.length) return;
+        upsertCampaign({
+          id: campaignId, trackTitle, date: campaignDate, type: 'playlists',
+          emails: sentEmails, accountId: selectedAccountId, messageIds: messageIdsFromResults(resultsSoFar),
+        });
+      });
       if (!outcome.ok) { setPlaylistSendError(outcome.error); }
       else {
-        const sentEmails = outcome.results.filter(r => r.success).map(r => r.to);
         const failed = outcome.results.filter(r => !r.success).map(r => r.to);
         setPlaylistSendFailedEmails(failed);
         recordFailedEmails(failed);
-        logCampaign('playlists', trackTitle, sentEmails, selectedAccountId);
-        if (sentEmails.length) addSendsToday(sentEmails.length, selectedAccountId);
+        if (outcome.results.some(r => r.success)) refreshSendsToday();
       }
     } finally { setPlaylistSending(false); }
   }
@@ -1374,79 +1442,7 @@ export default function Dashboard() {
           <div className="max-w-4xl mx-auto px-4 py-5 md:px-8 md:py-10 space-y-5 md:space-y-6">
 
             {/* ── Overview ── */}
-            {activeSection === 'overview' && (
-              <div className="space-y-5 pb-6">
-                <div>
-                  <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Overview</h2>
-                  <p className="text-xs text-zinc-500">All-time stats derived from your campaign history on this device.</p>
-                </div>
-
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                  <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
-                    <p className="text-2xl font-bold text-white">{analyticsStats.totalEmailsSent}</p>
-                    <p className="text-xs text-zinc-500 mt-1">Emails sent</p>
-                  </div>
-                  <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
-                    <p className="text-2xl font-bold text-white">{analyticsStats.totalCampaigns}</p>
-                    <p className="text-xs text-zinc-500 mt-1">Campaigns</p>
-                  </div>
-                  <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
-                    <p className="text-2xl font-bold text-violet-400">{analyticsStats.demosEmailsSent}</p>
-                    <p className="text-xs text-zinc-500 mt-1">Via Song Demos ({analyticsStats.demosCampaignCount})</p>
-                  </div>
-                  <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
-                    <p className="text-2xl font-bold text-sky-400">{analyticsStats.radioEmailsSent}</p>
-                    <p className="text-xs text-zinc-500 mt-1">Via Track Promotion ({analyticsStats.radioCampaignCount})</p>
-                  </div>
-                  <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
-                    <p className="text-2xl font-bold text-emerald-400">{analyticsStats.playlistEmailsSent}</p>
-                    <p className="text-xs text-zinc-500 mt-1">Via Playlist Curators ({analyticsStats.playlistCampaignCount})</p>
-                  </div>
-                </div>
-
-                {analyticsStats.totalCampaigns === 0 ? (
-                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-8 flex flex-col items-center justify-center gap-2 text-center">
-                    <p className="text-sm font-semibold text-zinc-300">No activity yet</p>
-                    <p className="text-xs text-zinc-500">Send your first campaign to see stats here.</p>
-                  </section>
-                ) : (
-                  <>
-                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-3">
-                      <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Sends, last 14 days</h3>
-                      <div className="flex items-end gap-1.5 h-24">
-                        {analyticsStats.last14Days.map(d => (
-                          <div key={d.date} className="flex-1 flex flex-col items-center justify-end gap-1 group relative">
-                            <div
-                              className={`w-full rounded-t transition-colors ${d.count > 0 ? 'bg-violet-600 group-hover:bg-violet-500' : 'bg-zinc-800'}`}
-                              style={{ height: `${Math.max(2, (d.count / analyticsStats.maxDayCount) * 100)}%` }}
-                              title={`${new Date(d.date).toLocaleDateString()}: ${d.count} sent`}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                      <div className="flex justify-between text-[10px] text-zinc-600">
-                        <span>{new Date(analyticsStats.last14Days[0].date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
-                        <span>{new Date(analyticsStats.last14Days[13].date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
-                      </div>
-                    </section>
-
-                    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-2">
-                      <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1">Top pitched tracks</h3>
-                      {analyticsStats.topTracks.map(([title, count]) => (
-                        <div key={title} className="flex items-center justify-between text-sm">
-                          <span className="text-zinc-300 truncate">{title}</span>
-                          <span className="text-zinc-500 font-mono text-xs shrink-0 ml-3">{count} recipient{count !== 1 ? 's' : ''}</span>
-                        </div>
-                      ))}
-                    </section>
-
-                    {analyticsStats.lastCampaignDate && (
-                      <p className="text-xs text-zinc-600">Last campaign: {new Date(analyticsStats.lastCampaignDate).toLocaleString()}</p>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
+            {activeSection === 'overview' && <OverviewSection analyticsStats={analyticsStats} />}
 
             {/* ── Song Demos ── */}
             {activeSection === 'demos' && (
@@ -2725,563 +2721,39 @@ export default function Dashboard() {
 
             {/* ── Account ── */}
             {activeSection === 'account' && (
-              <div className="space-y-6 pb-6">
-                {/* Email Accounts */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Email Accounts</h2>
-                  {emailAccounts.length > 0 && (
-                    <div className="space-y-2">
-                      {emailAccounts.map(acc => (
-                        <div key={acc.id} onClick={() => selectAccount(acc.id)}
-                          className={`flex items-center justify-between gap-3 px-4 py-3 rounded-lg border cursor-pointer transition ${
-                            selectedAccountId === acc.id ? 'border-violet-500 bg-violet-600/10' : 'border-zinc-700 bg-zinc-800 hover:border-zinc-600'
-                          }`}>
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium text-white">{acc.name}</p>
-                            <p className="text-xs text-zinc-400 truncate">{acc.email || acc.smtpUser} · {acc.smtpHost}:{acc.smtpPort}</p>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            {selectedAccountId === acc.id && <span className="text-xs text-violet-400 font-medium">Active</span>}
-                            <button onClick={e => { e.stopPropagation(); removeAccount(acc.id); }}
-                              className="text-zinc-600 hover:text-red-400 transition text-lg leading-none">×</button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {emailAccounts.length === 0 && !showAddAccount && (
-                    <p className="text-sm text-zinc-500">No accounts added yet.</p>
-                  )}
-                  {!showAddAccount ? (
-                    <button onClick={() => setShowAddAccount(true)} className="text-sm text-violet-400 hover:text-violet-300 transition">
-                      + Add email account
-                    </button>
-                  ) : (
-                    <div className="border border-zinc-700 rounded-xl p-4 space-y-3">
-                      <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">New Account</p>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        {[
-                          { label: 'Display Name', key: 'name', placeholder: 'e.g. Work Email', type: 'text' },
-                          { label: 'From Address', key: 'email', placeholder: 'you@example.com', type: 'email' },
-                          { label: 'SMTP Host', key: 'smtpHost', placeholder: 'smtp.zoho.com', type: 'text' },
-                          { label: 'Port', key: 'smtpPort', placeholder: '465', type: 'text' },
-                          { label: 'SMTP Username', key: 'smtpUser', placeholder: 'your@email.com', type: 'text' },
-                          { label: 'Password / App Password', key: 'smtpPass', placeholder: '••••••••', type: 'password' },
-                        ].map(({ label, key, placeholder, type }) => (
-                          <div key={key}>
-                            <label className="block text-xs text-zinc-400 mb-1">{label}</label>
-                            <input
-                              type={type}
-                              value={newAccount[key as keyof typeof newAccount]}
-                              onChange={e => setNewAccount(p => ({ ...p, [key]: e.target.value }))}
-                              placeholder={placeholder}
-                              className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
-                          </div>
-                        ))}
-                      </div>
-                      <p className="text-xs text-zinc-500">For Gmail use an App Password. For Zoho use your account password or an app-specific password.</p>
-                      <div className="flex gap-2 pt-1">
-                        <button onClick={addAccount} disabled={!newAccount.name || !newAccount.smtpUser || !newAccount.smtpPass}
-                          className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-4 py-2 text-sm font-semibold text-white transition">
-                          Save Account
-                        </button>
-                        <button onClick={() => { setShowAddAccount(false); setNewAccount({ ...BLANK_ACCOUNT }); }}
-                          className="rounded-lg bg-zinc-800 hover:bg-zinc-700 px-4 py-2 text-sm text-zinc-300 transition">
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </section>
-
-                {/* Sign-off */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-3">
-                  <div>
-                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Sign-off</h2>
-                    <p className="text-xs text-zinc-500">Appended after every email body. Used for both Song Demos and Track Promotion.</p>
-                  </div>
-                  <textarea value={signOff} onChange={e => setSignOff(e.target.value)} rows={3}
-                    className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
-                  {signOffImage ? (
-                    <div className="flex items-start gap-3 pt-1">
-                      <img src={signOffImage} alt="Signature" className="max-h-20 max-w-xs rounded border border-zinc-700 object-contain bg-zinc-800" />
-                      <button onClick={() => setSignOffImage(null)} className="text-xs text-red-400 hover:text-red-300 transition mt-1">Remove image</button>
-                    </div>
-                  ) : (
-                    <label className="inline-flex items-center gap-2 cursor-pointer px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 hover:border-zinc-500 text-xs text-zinc-300 transition w-fit">
-                      <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-                        <polyline points="17 8 12 3 7 8"/>
-                        <line x1="12" y1="3" x2="12" y2="15"/>
-                      </svg>
-                      Upload signature image
-                      <input type="file" accept="image/*" className="hidden" onChange={handleSignOffImageUpload} />
-                    </label>
-                  )}
-                  <button onClick={() => setSignOff(DEFAULT_SIGN_OFF)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">Reset to default</button>
-                </section>
-
-                {/* Blacklist */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <div>
-                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Do Not Contact</h2>
-                    <p className="text-xs text-zinc-500">Emails on this list are skipped from all sends.</p>
-                  </div>
-                  <div className="flex gap-2">
-                    <input
-                      type="email"
-                      value={newBlacklistEmail}
-                      onChange={e => setNewBlacklistEmail(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') addToBlacklist(); }}
-                      placeholder="email@example.com"
-                      className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition text-sm"
-                    />
-                    <button onClick={addToBlacklist} disabled={!newBlacklistEmail}
-                      className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2.5 text-sm font-semibold text-white transition shrink-0">
-                      Add
-                    </button>
-                  </div>
-                  {blacklist.length > 0 ? (
-                    <div className="space-y-1 max-h-48 overflow-y-auto">
-                      {blacklist.map(email => (
-                        <div key={email} className="flex items-center justify-between px-3 py-2 bg-zinc-800 rounded-lg">
-                          <span className="text-xs text-zinc-300 font-mono">{email}</span>
-                          <button onClick={() => removeFromBlacklist(email)} className="text-zinc-600 hover:text-red-400 transition text-lg leading-none ml-3">×</button>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-zinc-600">No blocked emails.</p>
-                  )}
-                </section>
-
-                {/* Potential False Emails */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <div>
-                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Potential False Emails</h2>
-                    <p className="text-xs text-zinc-500">Addresses that bounced or failed on a send land here automatically — review them, then move to Do Not Contact or dismiss if it was a fluke.</p>
-                  </div>
-                  {failedEmails.length > 0 ? (
-                    <div className="space-y-1 max-h-48 overflow-y-auto">
-                      {failedEmails.map(email => (
-                        <div key={email} className="flex items-center justify-between px-3 py-2 bg-zinc-800 rounded-lg gap-3">
-                          <span className="text-xs text-zinc-300 font-mono truncate">{email}</span>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <button onClick={() => moveFailedToDoNotContact(email)}
-                              className="text-xs text-amber-400 hover:text-amber-300 transition whitespace-nowrap">Do Not Contact</button>
-                            <button onClick={() => removeFromFailedEmails(email)} className="text-zinc-600 hover:text-red-400 transition text-lg leading-none">×</button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-zinc-600">No failed sends recorded.</p>
-                  )}
-                </section>
-
-                {/* Send Rate Limiter */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <div>
-                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Send Rate</h2>
-                    <p className="text-xs text-zinc-500">Delay between each email to avoid triggering spam filters.</p>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {SEND_DELAY_OPTIONS.map(opt => (
-                      <button key={opt.value}
-                        onClick={() => { setSendDelay(opt.value); syncStorage.setItem('tp_send_delay', String(opt.value)); }}
-                        className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${sendDelay === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-                  {sendDelay > 0 && (
-                    <p className="text-xs text-zinc-500">{sendDelay / 1000}s delay between each email.</p>
-                  )}
-                </section>
-
-                {/* Daily Send Limit */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <div>
-                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Daily Send Limit</h2>
-                    <p className="text-xs text-zinc-500">Cap how many emails can be sent per day across all campaigns.</p>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {DAILY_CAP_OPTIONS.map(opt => (
-                      <button key={opt.value}
-                        onClick={() => setDailyCap(opt.value)}
-                        className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${dailySendCap === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="text-xs text-zinc-500">
-                    {dailySendCap > 0 ? `${sendsToday} of ${dailySendCap} sent today.` : `${sendsToday} sent today. No limit set.`}
-                  </p>
-                  {emailAccounts.length > 1 && sendsToday > 0 && (
-                    <div className="space-y-1 pt-1 border-t border-zinc-800">
-                      <p className="text-xs text-zinc-600 uppercase tracking-wider pt-2">By account</p>
-                      {emailAccounts.map(acc => (
-                        <div key={acc.id} className="flex items-center justify-between text-xs text-zinc-400">
-                          <span>{acc.name || acc.email}</span>
-                          <span className="font-mono text-zinc-300">{sendsTodayByAccount[acc.id] ?? 0}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </section>
-
-                {/* Test Email */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <div>
-                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Send Test Email</h2>
-                    <p className="text-xs text-zinc-500">Confirm your email account is connected and working.</p>
-                  </div>
-                  <div className="flex flex-col sm:flex-row gap-3">
-                    <input
-                      type="email"
-                      value={testEmailTo}
-                      onChange={e => { setTestEmailTo(e.target.value); setTestEmailResult(null); }}
-                      placeholder="recipient@example.com"
-                      className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition text-sm"
-                    />
-                    <button
-                      onClick={handleTestEmail}
-                      disabled={!testEmailTo || testEmailSending || !selectedAccountId}
-                      className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2.5 text-sm font-semibold text-white transition sm:shrink-0"
-                    >
-                      {testEmailSending ? 'Sending...' : 'Send'}
-                    </button>
-                  </div>
-
-                  <div>
-                    <button
-                      onClick={() => setShowTestEmailOptions(p => !p)}
-                      className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition"
-                    >
-                      Optional: customize subject &amp; message
-                      <span className={`transition-transform inline-block ${showTestEmailOptions ? 'rotate-180' : ''}`}>▾</span>
-                    </button>
-                    {showTestEmailOptions && (
-                      <div className="mt-3 space-y-3 rounded-lg bg-zinc-800/50 border border-zinc-800 p-3">
-                        <div>
-                          <label className="block text-xs font-medium text-zinc-400 mb-1.5">Subject</label>
-                          <input
-                            type="text"
-                            value={testEmailSubject}
-                            onChange={e => setTestEmailSubject(e.target.value)}
-                            placeholder={demosSubject}
-                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-medium text-zinc-400 mb-1.5">Message</label>
-                          <textarea
-                            value={testEmailMessage}
-                            onChange={e => setTestEmailMessage(e.target.value)}
-                            placeholder={demosTemplate}
-                            rows={6}
-                            className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-600 font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y"
-                          />
-                        </div>
-                        <p className="text-xs text-zinc-600">Leave blank to send your Song Demos template as-is. Both support the same {'{{variables}}'}.</p>
-                      </div>
-                    )}
-                  </div>
-
-                  {testEmailResult === 'success' && <p className="text-sm text-green-400">Test email sent successfully. Check your inbox.</p>}
-                  {testEmailResult === 'error' && <p className="text-sm text-red-400">{testEmailError}</p>}
-                  {!selectedAccountId && <p className="text-xs text-amber-500">Add and select an email account above first.</p>}
-                </section>
-
-                {/* Deliverability Checker */}
-                <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
-                  <div>
-                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Deliverability Check</h2>
-                    <p className="text-xs text-zinc-500">Checks SPF, DKIM, and MX DNS records for your sending domain.</p>
-                  </div>
-                  {selectedAccount ? (
-                    <div className="space-y-4">
-                      <p className="text-xs text-zinc-400">
-                        Domain: <span className="text-zinc-200 font-mono">{(selectedAccount.email || selectedAccount.smtpUser).split('@')[1]}</span>
-                      </p>
-                      <button
-                        onClick={handleDeliverabilityCheck}
-                        disabled={deliverabilityLoading}
-                        className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2.5 text-sm font-semibold text-white transition"
-                      >
-                        {deliverabilityLoading ? 'Checking...' : 'Run Check'}
-                      </button>
-                      {deliverabilityResult && (
-                        <div className="space-y-2">
-                          {[
-                            {
-                              label: 'SPF',
-                              pass: deliverabilityResult.spf,
-                              detail: deliverabilityResult.spf ? deliverabilityResult.spfRecord : 'No SPF record found',
-                            },
-                            {
-                              label: 'DKIM',
-                              pass: deliverabilityResult.dkim,
-                              detail: deliverabilityResult.dkim ? `Selector: ${deliverabilityResult.dkimSelector}` : 'No DKIM record found',
-                            },
-                            {
-                              label: 'MX',
-                              pass: deliverabilityResult.mx,
-                              detail: deliverabilityResult.mx ? deliverabilityResult.mxRecords.join(', ') : 'No MX records found',
-                            },
-                          ].map(item => (
-                            <div key={item.label} className={`flex items-start gap-3 px-4 py-3 rounded-lg border ${item.pass ? 'border-green-700/50 bg-green-900/10' : 'border-red-700/50 bg-red-900/10'}`}>
-                              <span className={`text-lg leading-none mt-0.5 ${item.pass ? 'text-green-400' : 'text-red-400'}`}>
-                                {item.pass ? '✓' : '✗'}
-                              </span>
-                              <div className="min-w-0">
-                                <p className={`text-sm font-semibold ${item.pass ? 'text-green-400' : 'text-red-400'}`}>{item.label}</p>
-                                <p className="text-xs text-zinc-400 mt-0.5 break-all">{item.detail}</p>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-amber-500">Select an email account above to check its domain.</p>
-                  )}
-                </section>
-              </div>
+              <AccountSection
+                emailAccounts={emailAccounts} selectedAccountId={selectedAccountId} selectAccount={selectAccount} removeAccount={removeAccount}
+                showAddAccount={showAddAccount} setShowAddAccount={setShowAddAccount} newAccount={newAccount} setNewAccount={setNewAccount}
+                addAccount={addAccount} savingAccount={savingAccount} accountError={accountError} setAccountError={setAccountError}
+                signOff={signOff} setSignOff={setSignOff} signOffImage={signOffImage} setSignOffImage={setSignOffImage}
+                handleSignOffImageUpload={handleSignOffImageUpload}
+                blacklist={blacklist} newBlacklistEmail={newBlacklistEmail} setNewBlacklistEmail={setNewBlacklistEmail}
+                addToBlacklist={addToBlacklist} removeFromBlacklist={removeFromBlacklist}
+                failedEmails={failedEmails} moveFailedToDoNotContact={moveFailedToDoNotContact} removeFromFailedEmails={removeFromFailedEmails}
+                sendDelay={sendDelay} setSendDelay={setSendDelay}
+                dailySendCap={dailySendCap} setDailyCap={setDailyCap} sendsToday={sendsToday} sendsTodayByAccount={sendsTodayByAccount}
+                testEmailTo={testEmailTo} setTestEmailTo={setTestEmailTo} testEmailSending={testEmailSending} handleTestEmail={handleTestEmail}
+                showTestEmailOptions={showTestEmailOptions} setShowTestEmailOptions={setShowTestEmailOptions}
+                testEmailSubject={testEmailSubject} setTestEmailSubject={setTestEmailSubject}
+                testEmailMessage={testEmailMessage} setTestEmailMessage={setTestEmailMessage}
+                demosSubject={demosSubject} demosTemplate={demosTemplate}
+                testEmailResult={testEmailResult} setTestEmailResult={setTestEmailResult} testEmailError={testEmailError}
+                selectedAccount={selectedAccount} deliverabilityLoading={deliverabilityLoading}
+                handleDeliverabilityCheck={handleDeliverabilityCheck} deliverabilityResult={deliverabilityResult}
+              />
             )}
 
             {/* ── History ── */}
             {activeSection === 'history' && (
-              <div className="space-y-4 pb-6">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Campaign History</h2>
-                    <p className="text-xs text-zinc-500">{campaigns.length} campaign{campaigns.length !== 1 ? 's' : ''} logged on this device.</p>
-                  </div>
-                  {campaigns.length > 0 && (
-                    <div className="flex gap-2">
-                      <button onClick={() => exportCampaignsCsv(filteredCampaigns)}
-                        className="rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-2 text-xs font-medium text-zinc-300 transition">
-                        Export CSV
-                      </button>
-                      <button onClick={() => { if (confirm('Clear all campaign history? This cannot be undone.')) clearCampaignHistory(); }}
-                        className="rounded-lg bg-zinc-800 hover:bg-red-900/40 border border-zinc-700 hover:border-red-700 px-3 py-2 text-xs font-medium text-zinc-300 hover:text-red-400 transition">
-                        Clear History
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {campaigns.length > 0 && (
-                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 space-y-3">
-                    <input
-                      type="text"
-                      value={historySearch}
-                      onChange={e => setHistorySearch(e.target.value)}
-                      placeholder="Search by track title..."
-                      className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition"
-                    />
-                    <div className="flex flex-wrap items-center gap-3">
-                      <div className="flex gap-1.5">
-                        {(['all', 'demos', 'radio', 'playlists'] as const).map(t => (
-                          <button key={t} onClick={() => setHistoryTypeFilter(t)}
-                            className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${historyTypeFilter === t ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
-                            {t === 'all' ? 'All' : t === 'demos' ? 'Demos' : t === 'radio' ? 'Radio' : 'Playlists'}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="flex items-center gap-2 text-xs text-zinc-500">
-                        <input type="date" value={historyDateFrom} onChange={e => setHistoryDateFrom(e.target.value)}
-                          className="rounded-lg bg-zinc-800 border border-zinc-700 px-2 py-1.5 text-zinc-300 focus:outline-none focus:ring-2 focus:ring-violet-500" />
-                        <span>to</span>
-                        <input type="date" value={historyDateTo} onChange={e => setHistoryDateTo(e.target.value)}
-                          className="rounded-lg bg-zinc-800 border border-zinc-700 px-2 py-1.5 text-zinc-300 focus:outline-none focus:ring-2 focus:ring-violet-500" />
-                      </div>
-                      {(historySearch || historyTypeFilter !== 'all' || historyDateFrom || historyDateTo) && (
-                        <button onClick={() => { setHistorySearch(''); setHistoryTypeFilter('all'); setHistoryDateFrom(''); setHistoryDateTo(''); }}
-                          className="text-xs text-zinc-500 hover:text-zinc-300 transition underline">
-                          Clear filters
-                        </button>
-                      )}
-                    </div>
-                  </section>
-                )}
-
-                {campaigns.length === 0 ? (
-                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-8 flex flex-col items-center justify-center gap-2 text-center">
-                    <p className="text-sm font-semibold text-zinc-300">No campaigns yet</p>
-                    <p className="text-xs text-zinc-500">Sent pitches will show up here.</p>
-                  </section>
-                ) : filteredCampaigns.length === 0 ? (
-                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-8 flex flex-col items-center justify-center gap-2 text-center">
-                    <p className="text-sm font-semibold text-zinc-300">No campaigns match your filters</p>
-                    <button onClick={() => { setHistorySearch(''); setHistoryTypeFilter('all'); setHistoryDateFrom(''); setHistoryDateTo(''); }}
-                      className="text-xs text-violet-400 hover:text-violet-300 transition underline">
-                      Clear filters
-                    </button>
-                  </section>
-                ) : (
-                  <section className="bg-zinc-900 rounded-xl border border-zinc-800 divide-y divide-zinc-800 overflow-hidden">
-                    {filteredCampaigns.slice().sort((a, b) => b.date.localeCompare(a.date)).map(c => {
-                      const sendoutGroup = c.type === 'demos' ? demosSendoutGroups.get(c.trackTitle.trim().toLowerCase()) : undefined;
-                      return (
-                      <div key={c.id} id={`campaign-${c.id}`}>
-                        <div className="w-full flex items-center gap-2 px-4 md:px-6 py-3.5 hover:bg-zinc-800/50 transition">
-                        <button
-                          onClick={() => setExpandedCampaignId(p => p === c.id ? null : c.id)}
-                          className="flex-1 min-w-0 flex items-center justify-between gap-3 text-left"
-                        >
-                          <div className="min-w-0 flex items-center gap-3">
-                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium shrink-0 ${c.type === 'demos' ? 'bg-violet-600/20 text-violet-400 border border-violet-600/30' : c.type === 'radio' ? 'bg-sky-600/20 text-sky-400 border border-sky-600/30' : 'bg-emerald-600/20 text-emerald-400 border border-emerald-600/30'}`}>
-                              {c.type === 'demos' ? 'Demos' : c.type === 'radio' ? 'Radio' : 'Playlists'}
-                            </span>
-                            <div className="min-w-0">
-                              <p className="text-sm font-medium text-white truncate">{c.trackTitle}</p>
-                              <p className="text-xs text-zinc-500">
-                                {new Date(c.date).toLocaleString()} · {c.emails.length} recipient{c.emails.length !== 1 ? 's' : ''}
-                                {(c.responded?.length ?? 0) > 0 && <> · {c.responded!.length} responded</>}
-                              </p>
-                            </div>
-                          </div>
-                          <svg viewBox="0 0 24 24" className={`w-4 h-4 shrink-0 text-zinc-500 transition-transform ${expandedCampaignId === c.id ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="6 9 12 15 18 9"/>
-                          </svg>
-                        </button>
-                        {sendoutGroup && (
-                          <select
-                            value={c.id}
-                            onClick={e => e.stopPropagation()}
-                            onChange={e => {
-                              const id = e.target.value;
-                              setExpandedCampaignId(id);
-                              document.getElementById(`campaign-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            }}
-                            title="Switch between sendouts of this song"
-                            className="shrink-0 text-xs bg-zinc-800 border border-zinc-700 text-zinc-300 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-500"
-                          >
-                            {sendoutGroup.map((s, i) => (
-                              <option key={s.id} value={s.id}>Sendout {i + 1}</option>
-                            ))}
-                          </select>
-                        )}
-                        </div>
-                        {expandedCampaignId === c.id && (
-                          <div className="px-4 md:px-6 pb-4 -mt-1 space-y-3">
-                            {c.accountId && (
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <button
-                                  onClick={() => checkReplies(c)}
-                                  disabled={checkingRepliesId === c.id}
-                                  className="rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 transition disabled:opacity-40"
-                                >
-                                  {checkingRepliesId === c.id ? 'Checking inbox…' : 'Check for replies'}
-                                </button>
-                                {checkingRepliesId === c.id && <span className="text-xs text-zinc-500">This can take a few seconds per recipient.</span>}
-                                {checkingRepliesId !== c.id && replyCheckResult?.campaignId === c.id && (
-                                  <span className="text-xs text-emerald-400 font-medium">
-                                    {replyCheckResult.newCount > 0
-                                      ? `✓ Checked — ${replyCheckResult.newCount} new repl${replyCheckResult.newCount === 1 ? 'y' : 'ies'} (${replyCheckResult.totalCount} total)`
-                                      : '✓ Checked — no new replies'}
-                                  </span>
-                                )}
-                                {checkingRepliesId !== c.id && replyCheckResult?.campaignId !== c.id && c.lastChecked && (
-                                  <span className="text-xs text-zinc-500">
-                                    Last checked {formatCheckedAt(c.lastChecked)} · {c.responded?.length ?? 0} replied
-                                  </span>
-                                )}
-                              </div>
-                            )}
-                            {replyCheckError && checkingRepliesId === null && (
-                              <p className="text-xs text-red-400">{replyCheckError}</p>
-                            )}
-                            {(c.recipients?.length ?? 0) > 0 ? (
-                              <div className="border border-zinc-800 rounded-lg divide-y divide-zinc-800 overflow-hidden">
-                                {c.recipients!.map(r => {
-                                  const responded = c.responded?.includes(r.email);
-                                  return (
-                                    <div key={r.email} className={`px-3 md:px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4 ${responded ? 'bg-emerald-900/10' : ''}`}>
-                                      <div className="flex items-center gap-3 min-w-0">
-                                        <div className="shrink-0 w-10 h-10 rounded-full overflow-hidden bg-zinc-700">
-                                          {r.avatarUrl ? (
-                                            <img src={r.avatarUrl} alt={r.artistName} width={40} height={40} className="w-full h-full object-cover" />
-                                          ) : (
-                                            <div className="w-full h-full flex items-center justify-center text-zinc-500 text-xs font-bold">{(r.artistName || r.email).charAt(0).toUpperCase()}</div>
-                                          )}
-                                        </div>
-                                        <div className="min-w-0">
-                                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                                            <CopyableName name={r.artistName || r.email} className="text-sm font-medium text-white" />
-                                            {responded && (
-                                              <span className="text-[11px] px-1.5 py-0.5 rounded-full font-medium bg-emerald-600/20 text-emerald-400 border border-emerald-600/30">Replied</span>
-                                            )}
-                                            {r.instagramHandle && (
-                                              <a href={`https://instagram.com/${r.instagramHandle.replace('@', '')}`} target="_blank" rel="noopener noreferrer"
-                                                className="inline-flex items-center gap-1 text-xs bg-zinc-800 hover:bg-zinc-700 text-pink-400 px-1.5 py-0.5 rounded font-medium transition">
-                                                <svg viewBox="0 0 24 24" className="w-3 h-3 fill-pink-400 shrink-0"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.012-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.058 1.645-.07 4.849-.07zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.98-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.198-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/></svg>
-                                                {r.instagramHandle}
-                                              </a>
-                                            )}
-                                            {r.spotifyFollowers > 0 && (
-                                              <SpotifyLink name={r.artistName} followers={r.spotifyFollowers} />
-                                            )}
-                                          </div>
-                                          {r.genres.length > 0 && (
-                                            <div className="flex flex-wrap gap-1 mt-1">
-                                              {r.genres.map(g => (
-                                                <span key={g} className="text-[11px] px-2 py-0.5 rounded-full font-medium bg-zinc-800 text-zinc-400 border border-zinc-700">{g}</span>
-                                              ))}
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-                                      <div className="pl-[52px] sm:pl-0 sm:text-right sm:shrink-0">
-                                        <p className="text-xs text-violet-400 break-all sm:break-normal">
-                                          {r.managerName ? `${r.managerName} — ` : ''}{r.email}
-                                        </p>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            ) : (
-                              <div className="space-y-2">
-                                {c.type === 'demos' && (
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <button
-                                      onClick={() => backfillRecipients(c)}
-                                      disabled={backfillingId === c.id}
-                                      className="rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 transition disabled:opacity-40"
-                                    >
-                                      {backfillingId === c.id ? 'Loading artist details…' : 'Show artists sent to'}
-                                    </button>
-                                    {backfillError && backfillingId === null && (
-                                      <span className="text-xs text-red-400">{backfillError}</span>
-                                    )}
-                                  </div>
-                                )}
-                                <div className="flex flex-wrap gap-1.5">
-                                  {c.emails.map(email => {
-                                    const responded = c.responded?.includes(email);
-                                    return (
-                                      <span
-                                        key={email}
-                                        className={`text-xs px-2 py-1 rounded font-mono border ${responded ? 'bg-emerald-900/30 text-emerald-300 border-emerald-700/40' : 'bg-zinc-800 text-zinc-300 border-transparent'}`}
-                                      >
-                                        {email}{responded && ' ✓'}
-                                      </span>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                      );
-                    })}
-                  </section>
-                )}
-              </div>
+              <HistorySection
+                campaigns={campaigns} filteredCampaigns={filteredCampaigns} exportCampaignsCsv={exportCampaignsCsv} clearCampaignHistory={clearCampaignHistory}
+                historySearch={historySearch} setHistorySearch={setHistorySearch} historyTypeFilter={historyTypeFilter} setHistoryTypeFilter={setHistoryTypeFilter}
+                historyDateFrom={historyDateFrom} setHistoryDateFrom={setHistoryDateFrom} historyDateTo={historyDateTo} setHistoryDateTo={setHistoryDateTo}
+                demosSendoutGroups={demosSendoutGroups} expandedCampaignId={expandedCampaignId} setExpandedCampaignId={setExpandedCampaignId}
+                checkingRepliesId={checkingRepliesId} checkReplies={checkReplies} replyCheckResult={replyCheckResult} replyCheckError={replyCheckError}
+                formatCheckedAt={formatCheckedAt}
+                backfillingId={backfillingId} backfillRecipients={backfillRecipients} backfillError={backfillError}
+              />
             )}
 
           </div>

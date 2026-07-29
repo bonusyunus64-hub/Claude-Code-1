@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { renderTemplate, textToHtml } from '@/lib/emailTemplate';
-import { resolveSmtpConfig, createTransport, FromAccount } from '@/lib/mailSend';
+import { resolveSmtpConfig, createTransport } from '@/lib/mailSend';
+import { getAccount } from '@/lib/accounts';
 
 interface TestEmailPayload {
   to: string;
-  fromAccount?: FromAccount;
+  accountId?: string;
   emailTemplate?: string;
   subjectTemplate?: string;
   signOff?: string;
@@ -20,7 +21,7 @@ interface TestEmailPayload {
 
 export async function POST(req: NextRequest) {
   const {
-    to, fromAccount, emailTemplate, subjectTemplate, signOff, signOffImage, senderName, trackTitle, driveLink,
+    to, accountId, emailTemplate, subjectTemplate, signOff, signOffImage, senderName, trackTitle, driveLink,
     managerName, artistName, managementCompany, pronoun,
   } = await req.json() as TestEmailPayload;
 
@@ -28,7 +29,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Recipient email is required.' }, { status: 400 });
   }
 
-  const { smtpUser, smtpPass, smtpHost, smtpPort, fromName, fromEmail } = resolveSmtpConfig(fromAccount, undefined);
+  const account = accountId ? await getAccount(accountId) : null;
+  if (accountId && !account) {
+    return NextResponse.json(
+      { error: 'That email account is no longer available. Re-add it in Account settings.' },
+      { status: 400 }
+    );
+  }
+
+  const { smtpUser, smtpPass, smtpHost, smtpPort, fromName, fromEmail } = resolveSmtpConfig(account ?? undefined, undefined);
 
   if (!smtpUser || !smtpPass) {
     return NextResponse.json(

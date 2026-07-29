@@ -7,8 +7,13 @@
 // or before this feature existed) get pushed up so the *other* device can
 // pick them up next time it loads.
 
+// tp_email_accounts, tp_sends_today and tp_campaigns intentionally aren't here any
+// more: accounts (including passwords) live behind /api/accounts, the send counter
+// behind /api/send-quota, and campaign history behind /api/campaigns — all three
+// are sources of truth the client reads directly rather than mirroring into this
+// generic settings blob.
 const SYNCED_KEYS = [
-  'tp_email_accounts', 'tp_selected_account',
+  'tp_selected_account',
   'tp_sign_off', 'tp_sign_off_image',
   'tp_email_template', 'tp_email_subject',
   'tp_followup_template', 'tp_followup_subject',
@@ -16,8 +21,8 @@ const SYNCED_KEYS = [
   'tp_playlist_template', 'tp_playlist_subject',
   'tp_demos_templates', 'tp_followup_templates', 'tp_radio_templates', 'tp_playlist_templates',
   'tp_demos_presets', 'tp_radio_presets', 'tp_playlist_presets',
-  'tp_campaigns', 'tp_blacklist', 'tp_failed_emails', 'tp_custom_contacts',
-  'tp_send_delay', 'tp_daily_cap', 'tp_sends_today',
+  'tp_blacklist', 'tp_failed_emails', 'tp_custom_contacts',
+  'tp_send_delay', 'tp_daily_cap',
 ];
 
 export async function hydrateFromRemote(): Promise<void> {

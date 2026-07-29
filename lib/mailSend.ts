@@ -14,12 +14,18 @@ export interface OutboundMessage {
   to: string;
   subject: string;
   body: string;
+  /** Higher wins when two messages target the same address. See dedupeByRecipient. */
+  rank?: number;
+  /** Message-ID of the pitch this one follows up on, so it threads instead of arriving cold. */
+  inReplyTo?: string;
 }
 
 export interface SendResult {
   to: string;
   success: boolean;
   error?: string;
+  /** The Message-ID the server assigned, stored so a later follow-up can thread onto it. */
+  messageId?: string;
 }
 
 export function resolveSmtpConfig(fromAccount: FromAccount | undefined, senderName: string | undefined) {
@@ -58,12 +64,12 @@ function isPermanentSendError(err: unknown): boolean {
 async function sendWithRetry(
   transporter: nodemailer.Transporter,
   mailOptions: Parameters<typeof transporter.sendMail>[0]
-): Promise<void> {
+): Promise<string | undefined> {
   let lastErr: unknown;
   for (let attempt = 0; attempt <= MAX_SEND_RETRIES; attempt++) {
     try {
-      await transporter.sendMail(mailOptions);
-      return;
+      const info = await transporter.sendMail(mailOptions);
+      return (info as { messageId?: string } | undefined)?.messageId;
     } catch (err) {
       lastErr = err;
       if (isPermanentSendError(err) || attempt === MAX_SEND_RETRIES) throw err;
@@ -89,18 +95,46 @@ export async function sendMessages(
         subject: msg.subject,
         text: msg.body,
       };
+      // Threading a follow-up onto the original pitch takes both headers: In-Reply-To
+      // is what most clients read, References is what keeps the whole chain grouped.
+      if (msg.inReplyTo) {
+        mailOptions.inReplyTo = msg.inReplyTo;
+        mailOptions.references = msg.inReplyTo;
+      }
       if (opts.signOffImage) {
         const imageData = opts.signOffImage.replace(/^data:image\/\w+;base64,/, '');
         mailOptions.html = `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#333">${textToHtml(msg.body)}<img src="cid:signature@trackpitch" alt="Signature" style="max-width:600px;display:block;margin-top:8px"></div>`;
         mailOptions.attachments = [{ filename: 'signature.png', content: Buffer.from(imageData, 'base64'), cid: 'signature@trackpitch' }];
       }
-      await sendWithRetry(transporter, mailOptions);
-      results.push({ to: msg.to, success: true });
+      const messageId = await sendWithRetry(transporter, mailOptions);
+      results.push({ to: msg.to, success: true, messageId });
     } catch (err) {
       results.push({ to: msg.to, success: false, error: String(err) });
     }
   }
   return results;
+}
+
+/**
+ * One address, one email per send.
+ *
+ * The roster maps its artists onto far fewer manager addresses than there are
+ * artists — a single address can represent 40+ of them — so building one message
+ * per artist drops dozens of near-identical pitches into the same inbox within
+ * seconds. That reads as spam to both the human and the receiving server.
+ *
+ * Keeps the highest-`rank` message per address (ties keep the first seen), so
+ * callers control which artist gets to front the pitch. Insertion order is
+ * preserved: replacing a Map value leaves its original position alone.
+ */
+export function dedupeByRecipient<T extends OutboundMessage>(messages: T[]): T[] {
+  const best = new Map<string, T>();
+  for (const msg of messages) {
+    const key = msg.to.trim().toLowerCase();
+    const current = best.get(key);
+    if (!current || (msg.rank ?? 0) > (current.rank ?? 0)) best.set(key, msg);
+  }
+  return Array.from(best.values());
 }
 
 /**

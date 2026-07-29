@@ -1,22 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { resolveSmtpConfig, FromAccount } from '@/lib/mailSend';
+import { resolveSmtpConfig } from '@/lib/mailSend';
 import { resolveImapConfig, findResponders } from '@/lib/checkReplies';
+import { getAccount } from '@/lib/accounts';
 
 interface CheckRepliesPayload {
   emails: string[];
   since: number;
-  fromAccount?: FromAccount;
+  accountId?: string;
   senderName?: string;
 }
 
 export async function POST(req: NextRequest) {
-  const { emails, since, fromAccount, senderName } = await req.json() as CheckRepliesPayload;
+  const { emails, since, accountId, senderName } = await req.json() as CheckRepliesPayload;
 
   if (!emails?.length || !since) {
     return NextResponse.json({ error: 'Missing emails or since' }, { status: 400 });
   }
 
-  const { smtpUser, smtpPass, smtpHost } = resolveSmtpConfig(fromAccount, senderName);
+  const account = accountId ? await getAccount(accountId) : null;
+  if (accountId && !account) {
+    return NextResponse.json(
+      { error: 'The account this was sent from is no longer available.' },
+      { status: 400 }
+    );
+  }
+
+  const { smtpUser, smtpPass, smtpHost } = resolveSmtpConfig(account ?? undefined, senderName);
   if (!smtpUser || !smtpPass) {
     return NextResponse.json({ error: 'No email account configured.' }, { status: 500 });
   }

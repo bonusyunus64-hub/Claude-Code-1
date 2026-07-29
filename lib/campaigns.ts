@@ -1,0 +1,99 @@
+import { getRedis, isKvConfigured, STATE_KEY } from '@/lib/kv';
+
+export const CAMPAIGNS_KEY = 'trackpitch:campaigns';
+
+/** The old single-blob settings field this data used to live in, as one big JSON array. */
+const LEGACY_STATE_FIELD = 'tp_campaigns';
+
+export interface CampaignRecipient {
+  email: string;
+  artistName: string;
+  managerName: string;
+  avatarUrl: string;
+  genres: string[];
+  instagramHandle: string;
+  spotifyFollowers: number;
+}
+
+export interface CampaignRecord {
+  id: string;
+  trackTitle: string;
+  date: string;
+  type: 'demos' | 'radio' | 'playlists';
+  emails: string[];
+  accountId?: string;
+  responded?: string[];
+  lastChecked?: number;
+  recipients?: CampaignRecipient[];
+  messageIds?: Record<string, string>;
+}
+
+// Campaign history used to live as one JSON array under a single settings field,
+// rewritten in full on every send and every reply-check. That gets slower and
+// heavier the longer a user's history grows, and risks the whole history if one
+// write is interrupted. Storing one Redis hash field per campaign means a single
+// send or reply-check only ever touches the one record it changed.
+
+function safeParse(raw: string): unknown {
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+function parseRecord(raw: unknown): CampaignRecord | null {
+  const value = typeof raw === 'string' ? safeParse(raw) : raw;
+  if (!value || typeof value !== 'object') return null;
+  const rec = value as Partial<CampaignRecord>;
+  if (!rec.id || !rec.trackTitle || !rec.type || !Array.isArray(rec.emails)) return null;
+  return rec as CampaignRecord;
+}
+
+let migrationDone = false;
+
+// One-time move of campaign history out of the settings blob. Runs server-side so
+// it happens once no matter which device's browser hits the API first.
+async function migrateLegacyCampaigns(): Promise<void> {
+  if (migrationDone) return;
+  migrationDone = true;
+  try {
+    const redis = getRedis();
+    const legacy = await redis.hget<unknown>(STATE_KEY, LEGACY_STATE_FIELD);
+    if (legacy == null) return;
+
+    const parsed = typeof legacy === 'string' ? safeParse(legacy) : legacy;
+    if (Array.isArray(parsed)) {
+      const entries: Record<string, string> = {};
+      for (const entry of parsed) {
+        const record = parseRecord(entry);
+        if (record) entries[record.id] = JSON.stringify(record);
+      }
+      if (Object.keys(entries).length) await redis.hset(CAMPAIGNS_KEY, entries);
+    }
+    await redis.hdel(STATE_KEY, LEGACY_STATE_FIELD);
+  } catch {
+    migrationDone = false; // transient Redis failure: let the next request retry
+  }
+}
+
+export async function listCampaigns(): Promise<CampaignRecord[]> {
+  if (!isKvConfigured()) return [];
+  await migrateLegacyCampaigns();
+  const raw = (await getRedis().hgetall<Record<string, unknown>>(CAMPAIGNS_KEY)) ?? {};
+  return Object.values(raw).map(parseRecord).filter((r): r is CampaignRecord => r !== null);
+}
+
+export async function saveCampaign(campaign: CampaignRecord): Promise<void> {
+  if (!isKvConfigured()) throw new Error('Campaign history storage is not configured on the server.');
+  await getRedis().hset(CAMPAIGNS_KEY, { [campaign.id]: JSON.stringify(campaign) });
+}
+
+export async function deleteCampaign(id: string): Promise<void> {
+  if (!isKvConfigured()) return;
+  await getRedis().hdel(CAMPAIGNS_KEY, id);
+}
+
+export async function clearCampaigns(): Promise<void> {
+  if (!isKvConfigured()) return;
+  const redis = getRedis();
+  const raw = (await redis.hgetall<Record<string, unknown>>(CAMPAIGNS_KEY)) ?? {};
+  const fields = Object.keys(raw);
+  if (fields.length) await redis.hdel(CAMPAIGNS_KEY, ...fields);
+}
