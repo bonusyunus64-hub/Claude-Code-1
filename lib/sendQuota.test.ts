@@ -37,6 +37,10 @@ vi.mock('@/lib/kv', () => ({
 
 import { checkCapAllows, getSendsToday, recordSends, getDailyCap, todayKey } from './sendQuota';
 
+function storeAccount(id: string, dailyCap?: number) {
+  return hset('trackpitch:accounts', { [id]: JSON.stringify({ id, encryptedPass: 'irrelevant-for-cap-checks', smtpUser: `${id}@example.com`, dailyCap }) });
+}
+
 describe('sendQuota', () => {
   beforeEach(() => {
     store.clear();
@@ -81,5 +85,44 @@ describe('sendQuota', () => {
 
   it('keys the counter to the current UTC day', () => {
     expect(todayKey()).toBe(new Date().toISOString().slice(0, 10));
+  });
+
+  describe('per-account caps', () => {
+    it('blocks a batch that would push one account past its own cap, even with no global cap set', async () => {
+      await storeAccount('acct-1', 20);
+      await recordSends(18, 'acct-1');
+      const result = await checkCapAllows(5, 'acct-1');
+      expect(result).toEqual({ ok: false, error: expect.stringContaining('18/20') });
+    });
+
+    it('does not block a different account sharing the same day', async () => {
+      await storeAccount('acct-1', 20);
+      await storeAccount('acct-2', 20);
+      await recordSends(18, 'acct-1');
+      const result = await checkCapAllows(5, 'acct-2');
+      expect(result.ok).toBe(true);
+    });
+
+    it('imposes no per-account limit when the account has none set', async () => {
+      await storeAccount('acct-1', undefined);
+      await recordSends(1000, 'acct-1');
+      const result = await checkCapAllows(1000, 'acct-1');
+      expect(result.ok).toBe(true);
+    });
+
+    it('still enforces the global cap even when the per-account cap has room', async () => {
+      await hset('trackpitch:settings', { tp_daily_cap: '50' });
+      await storeAccount('acct-1', 1000);
+      await recordSends(45, 'acct-1');
+      const result = await checkCapAllows(10, 'acct-1');
+      expect(result).toEqual({ ok: false, error: expect.stringContaining('45/50') });
+    });
+
+    it('is a no-op when no accountId is passed', async () => {
+      await storeAccount('acct-1', 5);
+      await recordSends(5, 'acct-1');
+      const result = await checkCapAllows(1000);
+      expect(result.ok).toBe(true);
+    });
   });
 });

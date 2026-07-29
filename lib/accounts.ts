@@ -14,6 +14,8 @@ export interface StoredAccount {
   smtpPort: number;
   smtpUser: string;
   smtpPass: string;
+  /** Max sends per UTC day through this specific account. 0/undefined = no per-account limit (only the global cap in lib/sendQuota.ts applies). */
+  dailyCap?: number;
 }
 
 /** What the browser is allowed to see: everything except the password. */
@@ -80,6 +82,7 @@ function parseRecord(raw: unknown): AccountRecord | null {
     smtpPort: Number(rec.smtpPort) || 465,
     smtpUser: rec.smtpUser ?? '',
     encryptedPass: rec.encryptedPass,
+    dailyCap: Number(rec.dailyCap) > 0 ? Number(rec.dailyCap) : undefined,
   };
 }
 
@@ -97,6 +100,13 @@ async function readAll(): Promise<AccountRecord[]> {
 export async function listAccounts(): Promise<PublicAccount[]> {
   const records = await readAll();
   return records.map(({ encryptedPass: _encryptedPass, ...rest }) => rest);
+}
+
+/** Just the configured per-account cap (0 = none) — doesn't touch the encrypted
+ *  password, so an undecryptable account still enforces its cap correctly. */
+export async function getAccountDailyCap(id: string): Promise<number> {
+  const records = await readAll();
+  return records.find(r => r.id === id)?.dailyCap ?? 0;
 }
 
 /** Thrown by getAccount when the record exists but its password can't be decrypted
@@ -148,6 +158,7 @@ export async function saveAccount(account: StoredAccount): Promise<PublicAccount
     smtpPort: Number(account.smtpPort) || 465,
     smtpUser: account.smtpUser,
     encryptedPass: encrypt(account.smtpPass),
+    dailyCap: Number(account.dailyCap) > 0 ? Number(account.dailyCap) : undefined,
   };
   await getRedis().hset(ACCOUNTS_KEY, { [record.id]: JSON.stringify(record) });
   const { encryptedPass: _encryptedPass, ...rest } = record;

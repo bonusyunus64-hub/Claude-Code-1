@@ -1,4 +1,5 @@
 import { getRedis, isKvConfigured, STATE_KEY } from '@/lib/kv';
+import { getAccountDailyCap } from '@/lib/accounts';
 
 // The daily cap used to be a localStorage counter, which meant a page reload or a
 // second device could quietly send past it. The count now lives in Redis and is
@@ -60,17 +61,35 @@ export async function getDailyCap(): Promise<number> {
 /**
  * Checked once per batch, before that batch goes out, so a long send stops at the
  * cap instead of blowing past it partway through.
+ *
+ * Two independent caps can apply: the global daily cap (all accounts combined),
+ * and a per-account cap set on the account itself (Account settings) — the
+ * warmup-style limit for spreading volume so no single mailbox takes the full
+ * load. Either one being hit stops the batch.
  */
-export async function checkCapAllows(batchSize: number): Promise<{ ok: true } | { ok: false; error: string }> {
-  const cap = await getDailyCap();
-  if (cap <= 0) return { ok: true };
+export async function checkCapAllows(batchSize: number, accountId?: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const [cap, accountCap, sendsToday] = await Promise.all([
+    getDailyCap(),
+    accountId ? getAccountDailyCap(accountId) : Promise.resolve(0),
+    getSendsToday(),
+  ]);
 
-  const { count } = await getSendsToday();
-  if (count + batchSize > cap) {
+  if (cap > 0 && sendsToday.count + batchSize > cap) {
     return {
       ok: false,
-      error: `Daily send limit reached (${count}/${cap} sent today). Wait until tomorrow or raise the limit in Account settings.`,
+      error: `Daily send limit reached (${sendsToday.count}/${cap} sent today). Wait until tomorrow or raise the limit in Account settings.`,
     };
   }
+
+  if (accountId && accountCap > 0) {
+    const accountCount = sendsToday.byAccount[accountId] ?? 0;
+    if (accountCount + batchSize > accountCap) {
+      return {
+        ok: false,
+        error: `This account has reached its daily limit (${accountCount}/${accountCap} sent today). Switch accounts, wait until tomorrow, or raise its limit in Account settings.`,
+      };
+    }
+  }
+
   return { ok: true };
 }

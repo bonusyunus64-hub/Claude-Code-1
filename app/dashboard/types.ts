@@ -43,6 +43,8 @@ export interface EmailAccount {
   smtpHost: string;
   smtpPort: string;
   smtpUser: string;
+  /** Max sends per UTC day through this account specifically — a warmup-style limit independent of the global daily cap. 0/undefined = none. */
+  dailyCap?: number;
 }
 
 /** The add-account form is the only place a password exists client-side, and only until it's submitted. */

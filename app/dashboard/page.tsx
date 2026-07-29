@@ -974,6 +974,21 @@ export default function Dashboard() {
     }
   }
 
+  /**
+   * Client-side mirror of the per-account check in lib/sendQuota.ts's
+   * checkCapAllows — lets a send be blocked before any network request instead of
+   * only after the server rejects the first batch. The server still enforces this
+   * independently, since sendsTodayByAccount here can be stale.
+   */
+  function accountCapError(accountId: string, additionalSends: number): string | null {
+    const account = emailAccounts.find(a => a.id === accountId);
+    const cap = account?.dailyCap ?? 0;
+    if (cap <= 0) return null;
+    const sentSoFar = sendsTodayByAccount[accountId] ?? 0;
+    if (sentSoFar + additionalSends <= cap) return null;
+    return `This account has reached its daily limit (${sentSoFar}/${cap} sent today). Switch accounts, wait until tomorrow, or raise its limit in Account settings.`;
+  }
+
   function recordFailedEmails(emails: string[]) {
     if (!emails.length) return;
     setFailedEmails(prev => {
@@ -1133,6 +1148,8 @@ export default function Dashboard() {
       setSendError(`Daily send limit reached (${sendsToday}/${dailySendCap} sent today). Wait until tomorrow or raise the limit in Account settings.`);
       return;
     }
+    const accountCapErr = selectedAccountId && accountCapError(selectedAccountId, totalEmails);
+    if (accountCapErr) { setSendError(accountCapErr); return; }
     setSending(true); setSendError(''); setSendResult(null); setSendFailedEmails([]);
     try {
       // Built once up front — it depends only on the current preview/contacts, not on
@@ -1275,6 +1292,8 @@ export default function Dashboard() {
       setRadioSendError(`Daily send limit reached (${sendsToday}/${dailySendCap} sent today). Wait until tomorrow or raise the limit in Account settings.`);
       return;
     }
+    const radioAccountCapErr = selectedAccountId && accountCapError(selectedAccountId, radioTotalEmails);
+    if (radioAccountCapErr) { setRadioSendError(radioAccountCapErr); return; }
     setRadioSending(true); setRadioSendError(''); setRadioSendResult(null); setRadioSendFailedEmails([]);
     try {
       const campaignId = Date.now().toString();
@@ -1353,6 +1372,8 @@ export default function Dashboard() {
       setPlaylistSendError(`Daily send limit reached (${sendsToday}/${dailySendCap} sent today). Wait until tomorrow or raise the limit in Account settings.`);
       return;
     }
+    const playlistAccountCapErr = selectedAccountId && accountCapError(selectedAccountId, playlistTotalEmails);
+    if (playlistAccountCapErr) { setPlaylistSendError(playlistAccountCapErr); return; }
     setPlaylistSending(true); setPlaylistSendError(''); setPlaylistSendResult(null); setPlaylistSendFailedEmails([]);
     try {
       const campaignId = Date.now().toString();

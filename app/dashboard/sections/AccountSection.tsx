@@ -91,7 +91,10 @@ export function AccountSection(props: AccountSectionProps) {
                 }`}>
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-white">{acc.name}</p>
-                  <p className="text-xs text-zinc-400 truncate">{acc.email || acc.smtpUser} · {acc.smtpHost}:{acc.smtpPort}</p>
+                  <p className="text-xs text-zinc-400 truncate">
+                    {acc.email || acc.smtpUser} · {acc.smtpHost}:{acc.smtpPort}
+                    {(acc.dailyCap ?? 0) > 0 && <> · cap {acc.dailyCap}/day</>}
+                  </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {selectedAccountId === acc.id && <span className="text-xs text-violet-400 font-medium">Active</span>}
@@ -131,6 +134,19 @@ export function AccountSection(props: AccountSectionProps) {
                     className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
                 </div>
               ))}
+            </div>
+            <div>
+              <label className="block text-xs text-zinc-400 mb-1.5">Daily send limit for this account</label>
+              <div className="flex flex-wrap gap-1.5">
+                {DAILY_CAP_OPTIONS.map(opt => (
+                  <button key={opt.value} type="button"
+                    onClick={() => setNewAccount(p => ({ ...p, dailyCap: opt.value }))}
+                    className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${(newAccount.dailyCap ?? 0) === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-zinc-600 mt-1.5">A warmup-style limit independent of the global daily limit below — useful for spreading volume across accounts instead of running one mailbox hot.</p>
             </div>
             <p className="text-xs text-zinc-500">For Gmail use an App Password. For Zoho use your account password or an app-specific password.</p>
             {accountError && <p className="text-xs text-red-400">{accountError}</p>}
@@ -277,7 +293,9 @@ export function AccountSection(props: AccountSectionProps) {
             {emailAccounts.map(acc => (
               <div key={acc.id} className="flex items-center justify-between text-xs text-zinc-400">
                 <span>{acc.name || acc.email}</span>
-                <span className="font-mono text-zinc-300">{sendsTodayByAccount[acc.id] ?? 0}</span>
+                <span className="font-mono text-zinc-300">
+                  {sendsTodayByAccount[acc.id] ?? 0}{(acc.dailyCap ?? 0) > 0 && ` / ${acc.dailyCap}`}
+                </span>
               </div>
             ))}
           </div>

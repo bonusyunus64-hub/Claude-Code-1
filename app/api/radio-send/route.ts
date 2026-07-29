@@ -76,7 +76,7 @@ export async function POST(req: NextRequest) {
 
   const { batch, total, nextOffset } = paginate(allMessages, offset ?? 0, limit ?? DEFAULT_SEND_BATCH_SIZE);
 
-  const capCheck = await checkCapAllows(batch.length);
+  const capCheck = await checkCapAllows(batch.length, accountId);
   if (!capCheck.ok) return NextResponse.json({ error: capCheck.error }, { status: 429 });
 
   const transporter = createTransport({ smtpHost, smtpPort, smtpUser, smtpPass });

@@ -73,5 +73,5 @@ export const DAILY_CAP_OPTIONS = [
 ];
 
 export const BLANK_ACCOUNT: NewAccountForm = {
-  name: '', email: '', smtpHost: 'smtp.zoho.com', smtpPort: '465', smtpUser: '', smtpPass: '',
+  name: '', email: '', smtpHost: 'smtp.zoho.com', smtpPort: '465', smtpUser: '', smtpPass: '', dailyCap: 0,
 };

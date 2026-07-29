@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json() as Partial<StoredAccount>;
-  const { id, name, email, smtpHost, smtpPort, smtpUser, smtpPass } = body;
+  const { id, name, email, smtpHost, smtpPort, smtpUser, smtpPass, dailyCap } = body;
 
   if (!name || !smtpUser || !smtpPass) {
     return NextResponse.json({ error: 'Name, SMTP user and password are required.' }, { status: 400 });
@@ -32,6 +32,7 @@ export async function POST(req: NextRequest) {
       smtpPort: Number(smtpPort) || 465,
       smtpUser,
       smtpPass,
+      dailyCap: Number(dailyCap) > 0 ? Number(dailyCap) : undefined,
     });
     return NextResponse.json({ account });
   } catch (err) {
