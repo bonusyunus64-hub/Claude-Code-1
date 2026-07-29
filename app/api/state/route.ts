@@ -1,11 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRedis, isKvConfigured, STATE_KEY } from '@/lib/kv';
-
-function isAuthed(req: NextRequest): boolean {
-  const auth = req.cookies.get('auth')?.value;
-  const correct = process.env.SITE_PASSWORD;
-  return !!auth && !!correct && auth === correct;
-}
+import { isAuthed } from '@/lib/auth';
 
 export async function GET(req: NextRequest) {
   if (!isAuthed(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

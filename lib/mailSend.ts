@@ -41,6 +41,38 @@ export function createTransport(config: { smtpHost: string; smtpPort: number; sm
   });
 }
 
+const MAX_SEND_RETRIES = 2;
+const RETRY_DELAY_MS = 1000;
+
+// SMTP replies in the 5xx range (and nodemailer's envelope/auth error codes)
+// are permanent failures — retrying a rejected recipient just wastes time.
+// Connection-level errors (timeouts, dropped sockets, 4xx "try again") are
+// worth a couple of retries since they're often transient.
+function isPermanentSendError(err: unknown): boolean {
+  const code = (err as { code?: string })?.code;
+  const responseCode = (err as { responseCode?: number })?.responseCode;
+  if (typeof responseCode === 'number') return responseCode >= 500;
+  return code === 'EENVELOPE' || code === 'EAUTH';
+}
+
+async function sendWithRetry(
+  transporter: nodemailer.Transporter,
+  mailOptions: Parameters<typeof transporter.sendMail>[0]
+): Promise<void> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAX_SEND_RETRIES; attempt++) {
+    try {
+      await transporter.sendMail(mailOptions);
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (isPermanentSendError(err) || attempt === MAX_SEND_RETRIES) throw err;
+      await new Promise<void>(r => setTimeout(r, RETRY_DELAY_MS * (attempt + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 export async function sendMessages(
   transporter: nodemailer.Transporter,
   messages: OutboundMessage[],
@@ -62,7 +94,7 @@ export async function sendMessages(
         mailOptions.html = `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#333">${textToHtml(msg.body)}<img src="cid:signature@trackpitch" alt="Signature" style="max-width:600px;display:block;margin-top:8px"></div>`;
         mailOptions.attachments = [{ filename: 'signature.png', content: Buffer.from(imageData, 'base64'), cid: 'signature@trackpitch' }];
       }
-      await transporter.sendMail(mailOptions);
+      await sendWithRetry(transporter, mailOptions);
       results.push({ to: msg.to, success: true });
     } catch (err) {
       results.push({ to: msg.to, success: false, error: String(err) });

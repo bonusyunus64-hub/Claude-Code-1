@@ -1,15 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isAuthed } from '@/lib/auth';
+
+// /api/auth and /api/logout must stay reachable while logged out.
+const PUBLIC_API_PATHS = new Set(['/api/auth', '/api/logout']);
 
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // Only protect dashboard routes
-  if (!pathname.startsWith('/dashboard')) return NextResponse.next();
+  const isDashboard = pathname.startsWith('/dashboard');
+  const isProtectedApi = pathname.startsWith('/api/') && !PUBLIC_API_PATHS.has(pathname);
 
-  const auth = req.cookies.get('auth')?.value;
-  const correct = process.env.SITE_PASSWORD;
+  if (!isDashboard && !isProtectedApi) return NextResponse.next();
 
-  if (!correct || auth !== correct) {
+  if (!isAuthed(req)) {
+    if (isProtectedApi) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
     return NextResponse.redirect(new URL('/', req.url));
   }
 
@@ -17,5 +23,5 @@ export function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*'],
+  matcher: ['/dashboard/:path*', '/api/:path*'],
 };

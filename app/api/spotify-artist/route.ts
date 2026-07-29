@@ -1,18 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { findArtistUrl, isSpotifyConfigured } from '@/lib/spotify';
 import { getRedis, isKvConfigured } from '@/lib/kv';
+import { isAuthed } from '@/lib/auth';
 
 const CACHE_KEY_PREFIX = 'trackpitch:spotifyUrl:';
 
 // Per-instance fallback so repeated clicks don't re-hit Spotify even when KV
 // isn't configured; when KV is configured this doubles as a warm first layer.
 const memCache = new Map<string, string | null>();
-
-function isAuthed(req: NextRequest): boolean {
-  const auth = req.cookies.get('auth')?.value;
-  const correct = process.env.SITE_PASSWORD;
-  return !!auth && !!correct && auth === correct;
-}
 
 export async function POST(req: NextRequest) {
   if (!isAuthed(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
