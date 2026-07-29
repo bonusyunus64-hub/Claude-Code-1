@@ -55,14 +55,59 @@ export function matchResponders(emails: string[], inboxSenders: string[]): strin
   return responded;
 }
 
+/** Local-parts mail servers conventionally use for bounce/DSN notifications (RFC 3464 senders vary a lot in practice). */
+const BOUNCE_LOCAL_PARTS = ['mailer-daemon', 'mailer_daemon', 'postmaster', 'mail-daemon', 'mailerdaemon'];
+
+/** Whether an inbox sender address looks like an automated bounce notification rather than a human reply. */
+export function isBounceSender(address: string): boolean {
+  const local = address.split('@')[0]?.trim().toLowerCase() ?? '';
+  return BOUNCE_LOCAL_PARTS.some(p => local === p || local.startsWith(`${p}+`));
+}
+
 /**
- * Checks which of `emails` have written to this mailbox since `since`.
+ * Pulls the address(es) a bounce (DSN) message says failed, scoped to `candidates`
+ * so unrelated addresses elsewhere in the message body can't be misread as a
+ * failed recipient. Tries the standard RFC 3464 headers first (Final-Recipient /
+ * Original-Recipient / X-Failed-Recipients), then falls back to a plain substring
+ * search over the raw source — mail providers vary a lot in how closely they
+ * follow the DSN format, but nearly all of them quote the failed address
+ * somewhere in the body ("The following address(es) failed: ...").
+ */
+export function extractFailedRecipients(source: string, candidates: string[]): string[] {
+  const lowerSource = source.toLowerCase();
+  const headerAddresses = new Set(
+    [...source.matchAll(/(?:Final-Recipient|Original-Recipient|X-Failed-Recipients)\s*:\s*(?:rfc822;)?\s*<?([^\s>]+@[^\s>]+)>?/gi)]
+      .map(m => m[1].toLowerCase())
+  );
+
+  return candidates.filter(email => {
+    const lower = email.trim().toLowerCase();
+    return headerAddresses.has(lower) || lowerSource.includes(lower);
+  });
+}
+
+export interface CheckRepliesResult {
+  /** Recipients who sent a human reply. */
+  responded: string[];
+  /** Recipients a bounce/DSN message named as undeliverable. */
+  bounced: string[];
+}
+
+/**
+ * Checks which of `emails` have written to this mailbox since `since`, and which
+ * bounced instead.
  *
  * One search for everything in the window, then match senders locally. The
  * previous per-address search meant one IMAP round trip per recipient, which on a
  * few hundred recipients ran well past a serverless function's time limit.
+ *
+ * Bounce detection is a second pass: the first pass (envelope only, cheap) flags
+ * which UIDs came from a bounce-looking sender, then only those UIDs get their
+ * full source fetched to find which recipient they're reporting as failed —
+ * fetching full source for every message in the window would be needlessly slow
+ * on an active mailbox.
  */
-export async function findResponders(config: ImapConfig, emails: string[], since: Date): Promise<string[]> {
+export async function findResponders(config: ImapConfig, emails: string[], since: Date): Promise<CheckRepliesResult> {
   const client = new ImapFlow({
     host: config.host,
     port: config.port,
@@ -73,17 +118,30 @@ export async function findResponders(config: ImapConfig, emails: string[], since
 
   await client.connect();
   const inboxSenders: string[] = [];
+  const bounceUids: number[] = [];
+  const bounced = new Set<string>();
   try {
     await client.mailboxOpen('INBOX', { readOnly: true });
     const uids = await client.search({ since }, { uid: true });
     if (uids && uids.length > 0) {
       for await (const msg of client.fetch(uids, { envelope: true }, { uid: true })) {
-        inboxSenders.push(...sendersFromEnvelope(msg.envelope));
+        const senders = sendersFromEnvelope(msg.envelope);
+        inboxSenders.push(...senders);
+        if (typeof msg.uid === 'number' && senders.some(isBounceSender)) bounceUids.push(msg.uid);
+      }
+      if (bounceUids.length > 0) {
+        for await (const msg of client.fetch(bounceUids, { source: true }, { uid: true })) {
+          const source = msg.source?.toString('utf8') ?? '';
+          extractFailedRecipients(source, emails).forEach(email => bounced.add(email.trim().toLowerCase()));
+        }
       }
     }
   } finally {
     await client.logout();
   }
 
-  return matchResponders(emails, inboxSenders);
+  return {
+    responded: matchResponders(emails, inboxSenders),
+    bounced: emails.filter(email => bounced.has(email.trim().toLowerCase())),
+  };
 }

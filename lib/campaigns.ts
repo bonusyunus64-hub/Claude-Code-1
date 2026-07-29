@@ -23,6 +23,7 @@ export interface CampaignRecord {
   emails: string[];
   accountId?: string;
   responded?: string[];
+  bounced?: string[];
   lastChecked?: number;
   recipients?: CampaignRecipient[];
   messageIds?: Record<string, string>;

@@ -351,7 +351,7 @@ export function AccountSection(props: AccountSectionProps) {
       <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
         <div>
           <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Deliverability Check</h2>
-          <p className="text-xs text-zinc-500">Checks SPF, DKIM, and MX DNS records for your sending domain.</p>
+          <p className="text-xs text-zinc-500">Checks SPF, DKIM, MX, and DMARC DNS records for your sending domain.</p>
         </div>
         {selectedAccount ? (
           <div className="space-y-4">
@@ -382,6 +382,13 @@ export function AccountSection(props: AccountSectionProps) {
                     label: 'MX',
                     pass: deliverabilityResult.mx,
                     detail: deliverabilityResult.mx ? deliverabilityResult.mxRecords.join(', ') : 'No MX records found',
+                  },
+                  {
+                    label: 'DMARC',
+                    pass: deliverabilityResult.dmarc,
+                    detail: deliverabilityResult.dmarc
+                      ? `Policy: ${deliverabilityResult.dmarcPolicy || 'unspecified'}${deliverabilityResult.dmarcPolicy === 'none' ? ' (monitoring only — Gmail/Yahoo bulk-sender rules want at least this)' : ''}`
+                      : 'No DMARC record found — Gmail and Yahoo require one for bulk senders',
                   },
                 ].map(item => (
                   <div key={item.label} className={`flex items-start gap-3 px-4 py-3 rounded-lg border ${item.pass ? 'border-green-700/50 bg-green-900/10' : 'border-red-700/50 bg-red-900/10'}`}>

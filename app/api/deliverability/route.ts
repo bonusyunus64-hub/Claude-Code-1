@@ -15,6 +15,9 @@ export async function POST(req: NextRequest) {
     dkimSelector: '',
     mx: false,
     mxRecords: [] as string[],
+    dmarc: false,
+    dmarcRecord: '',
+    dmarcPolicy: '' as '' | 'none' | 'quarantine' | 'reject',
   };
 
   try {
@@ -33,6 +36,20 @@ export async function POST(req: NextRequest) {
   try {
     const mxRecords = await dns.resolveMx(domain);
     if (mxRecords.length > 0) { result.mx = true; result.mxRecords = mxRecords.map(r => r.exchange); }
+  } catch {}
+
+  // DMARC lives on a fixed subdomain rather than the domain itself, and tells
+  // receiving servers what to do with mail that fails SPF/DKIM — Gmail and Yahoo
+  // now require at least a "none" policy from bulk senders.
+  try {
+    const dmarcRecords = await dns.resolveTxt(`_dmarc.${domain}`);
+    const dmarcRecord = dmarcRecords.flat().find(r => r.startsWith('v=DMARC1'));
+    if (dmarcRecord) {
+      result.dmarc = true;
+      result.dmarcRecord = dmarcRecord;
+      const policyMatch = dmarcRecord.match(/p=(none|quarantine|reject)/i);
+      if (policyMatch) result.dmarcPolicy = policyMatch[1].toLowerCase() as 'none' | 'quarantine' | 'reject';
+    }
   } catch {}
 
   return NextResponse.json(result);

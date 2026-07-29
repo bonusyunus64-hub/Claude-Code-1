@@ -66,6 +66,8 @@ export interface Campaign {
   emails: string[];
   accountId?: string;
   responded?: string[];
+  /** Recipients a bounce/DSN message named as undeliverable; auto-added to the blacklist when detected. */
+  bounced?: string[];
   lastChecked?: number;
   recipients?: CampaignRecipient[];
   /** Lowercased recipient -> Message-ID of the email they were sent, so a follow-up can reply into that thread. */
@@ -87,6 +89,9 @@ export interface DeliverabilityResult {
   dkimSelector: string;
   mx: boolean;
   mxRecords: string[];
+  dmarc: boolean;
+  dmarcRecord: string;
+  dmarcPolicy: 'none' | 'quarantine' | 'reject' | '';
 }
 
 export interface DemosFilterPreset {

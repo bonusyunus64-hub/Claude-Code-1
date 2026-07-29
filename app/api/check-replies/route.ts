@@ -28,8 +28,8 @@ export async function POST(req: NextRequest) {
   const imapConfig = resolveImapConfig(smtpHost, smtpUser, smtpPass);
 
   try {
-    const responded = await findResponders(imapConfig, emails, new Date(since));
-    return NextResponse.json({ responded });
+    const { responded, bounced } = await findResponders(imapConfig, emails, new Date(since));
+    return NextResponse.json({ responded, bounced });
   } catch (err) {
     return NextResponse.json(
       { error: `Could not connect to inbox (${imapConfig.host}). Make sure IMAP is enabled on the account and, if 2FA is on, use an app-specific password. ${String(err)}` },

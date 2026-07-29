@@ -23,7 +23,7 @@ export interface HistorySectionProps {
 
   checkingRepliesId: string | null;
   checkReplies: (c: Campaign) => void;
-  replyCheckResult: { campaignId: string; newCount: number; totalCount: number } | null;
+  replyCheckResult: { campaignId: string; newCount: number; totalCount: number; newBounceCount: number } | null;
   replyCheckError: string;
   formatCheckedAt: (ts: number) => string;
 
@@ -131,6 +131,7 @@ export function HistorySection(props: HistorySectionProps) {
                     <p className="text-xs text-zinc-500">
                       {new Date(c.date).toLocaleString()} · {c.emails.length} recipient{c.emails.length !== 1 ? 's' : ''}
                       {(c.responded?.length ?? 0) > 0 && <> · {c.responded!.length} responded</>}
+                      {(c.bounced?.length ?? 0) > 0 && <> · <span className="text-red-400">{c.bounced!.length} bounced</span></>}
                     </p>
                   </div>
                 </div>
@@ -173,11 +174,15 @@ export function HistorySection(props: HistorySectionProps) {
                           {replyCheckResult.newCount > 0
                             ? `✓ Checked — ${replyCheckResult.newCount} new repl${replyCheckResult.newCount === 1 ? 'y' : 'ies'} (${replyCheckResult.totalCount} total)`
                             : '✓ Checked — no new replies'}
+                          {replyCheckResult.newBounceCount > 0 && (
+                            <span className="text-red-400"> · {replyCheckResult.newBounceCount} bounced (auto-blacklisted)</span>
+                          )}
                         </span>
                       )}
                       {checkingRepliesId !== c.id && replyCheckResult?.campaignId !== c.id && c.lastChecked && (
                         <span className="text-xs text-zinc-500">
                           Last checked {formatCheckedAt(c.lastChecked)} · {c.responded?.length ?? 0} replied
+                          {(c.bounced?.length ?? 0) > 0 && <span className="text-red-400"> · {c.bounced!.length} bounced</span>}
                         </span>
                       )}
                     </div>
@@ -189,8 +194,9 @@ export function HistorySection(props: HistorySectionProps) {
                     <div className="border border-zinc-800 rounded-lg divide-y divide-zinc-800 overflow-hidden">
                       {c.recipients!.map(r => {
                         const responded = c.responded?.includes(r.email);
+                        const bounced = c.bounced?.includes(r.email);
                         return (
-                          <div key={r.email} className={`px-3 md:px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4 ${responded ? 'bg-emerald-900/10' : ''}`}>
+                          <div key={r.email} className={`px-3 md:px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4 ${bounced ? 'bg-red-900/10' : responded ? 'bg-emerald-900/10' : ''}`}>
                             <div className="flex items-center gap-3 min-w-0">
                               <div className="shrink-0 w-10 h-10 rounded-full overflow-hidden bg-zinc-700">
                                 {r.avatarUrl ? (
@@ -202,7 +208,10 @@ export function HistorySection(props: HistorySectionProps) {
                               <div className="min-w-0">
                                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                                   <CopyableName name={r.artistName || r.email} className="text-sm font-medium text-white" />
-                                  {responded && (
+                                  {bounced && (
+                                    <span className="text-[11px] px-1.5 py-0.5 rounded-full font-medium bg-red-600/20 text-red-400 border border-red-600/30">Bounced</span>
+                                  )}
+                                  {!bounced && responded && (
                                     <span className="text-[11px] px-1.5 py-0.5 rounded-full font-medium bg-emerald-600/20 text-emerald-400 border border-emerald-600/30">Replied</span>
                                   )}
                                   {r.instagramHandle && (
@@ -253,12 +262,13 @@ export function HistorySection(props: HistorySectionProps) {
                       <div className="flex flex-wrap gap-1.5">
                         {c.emails.map(email => {
                           const responded = c.responded?.includes(email);
+                          const bounced = c.bounced?.includes(email);
                           return (
                             <span
                               key={email}
-                              className={`text-xs px-2 py-1 rounded font-mono border ${responded ? 'bg-emerald-900/30 text-emerald-300 border-emerald-700/40' : 'bg-zinc-800 text-zinc-300 border-transparent'}`}
+                              className={`text-xs px-2 py-1 rounded font-mono border ${bounced ? 'bg-red-900/30 text-red-300 border-red-700/40' : responded ? 'bg-emerald-900/30 text-emerald-300 border-emerald-700/40' : 'bg-zinc-800 text-zinc-300 border-transparent'}`}
                             >
-                              {email}{responded && ' ✓'}
+                              {email}{bounced ? ' ✗' : responded ? ' ✓' : ''}
                             </span>
                           );
                         })}

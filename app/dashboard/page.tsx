@@ -592,7 +592,7 @@ export default function Dashboard() {
 
   const [checkingRepliesId, setCheckingRepliesId] = useState<string | null>(null);
   const [replyCheckError, setReplyCheckError] = useState('');
-  const [replyCheckResult, setReplyCheckResult] = useState<{ campaignId: string; newCount: number; totalCount: number } | null>(null);
+  const [replyCheckResult, setReplyCheckResult] = useState<{ campaignId: string; newCount: number; totalCount: number; newBounceCount: number } | null>(null);
 
   async function checkReplies(c: Campaign) {
     if (!c.accountId || !emailAccounts.some(a => a.id === c.accountId)) {
@@ -614,12 +614,30 @@ export default function Dashboard() {
       });
       const data = await res.json();
       if (!res.ok) { setReplyCheckError(data.error || 'Could not check replies.'); return; }
+
       const before = new Set(c.responded ?? []);
       const found = data.responded as string[];
       const newCount = found.filter(e => !before.has(e)).length;
       const responded = Array.from(new Set([...(c.responded ?? []), ...found]));
-      upsertCampaign({ ...c, responded, lastChecked: Date.now() });
-      setReplyCheckResult({ campaignId: c.id, newCount, totalCount: responded.length });
+
+      // A bounce means the address is dead, not "no reply yet" — repeatedly re-pitching
+      // it just burns sender reputation, so a confirmed bounce is auto-blacklisted the
+      // same way a hard send failure already is (see addFailedToBlacklist).
+      const beforeBounced = new Set(c.bounced ?? []);
+      const foundBounced = (data.bounced as string[] | undefined) ?? [];
+      const newBounceCount = foundBounced.filter(e => !beforeBounced.has(e)).length;
+      const bounced = Array.from(new Set([...(c.bounced ?? []), ...foundBounced]));
+      if (foundBounced.length) addFailedToBlacklist(foundBounced);
+
+      // checkReplies only ever runs from a button's onClick (passed down to
+      // HistorySection), never during render, so Date.now() here is safe — this is
+      // the react-compiler plugin flagging a callback-prop function's body more
+      // strictly than the many identical Date.now()/inline-object patterns used in
+      // page.tsx's own onClick handlers, which it doesn't scrutinize the same way.
+      // eslint-disable-next-line react-hooks/purity
+      const checkedAt = Date.now();
+      upsertCampaign({ ...c, responded, bounced, lastChecked: checkedAt });
+      setReplyCheckResult({ campaignId: c.id, newCount, totalCount: responded.length, newBounceCount });
     } catch (err) {
       setReplyCheckError(`Could not check replies: ${String(err)}`);
     } finally {
