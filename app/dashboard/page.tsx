@@ -60,6 +60,7 @@ export default function Dashboard() {
   const [excludedArtistNames, setExcludedArtistNames] = useState<Set<string>>(new Set());
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewDone, setPreviewDone] = useState(false);
+  const [demosInvalidEmails, setDemosInvalidEmails] = useState<string[]>([]);
   const [sortOrder, setSortOrder] = useState<'followers-desc' | 'followers-asc' | 'alpha-asc' | 'alpha-desc' | 'random'>('followers-desc');
   const [recipientSearch, setRecipientSearch] = useState('');
   const [outsideResults, setOutsideResults] = useState<Artist[]>([]);
@@ -86,6 +87,7 @@ export default function Dashboard() {
   const [radioSubject, setRadioSubject] = useState(DEFAULT_RADIO_SUBJECT);
   const [radioStations, setRadioStations] = useState<RadioStation[]>([]);
   const [radioPreviewDone, setRadioPreviewDone] = useState(false);
+  const [radioInvalidEmails, setRadioInvalidEmails] = useState<string[]>([]);
   const [radioPreviewLoading, setRadioPreviewLoading] = useState(false);
   const [radioSending, setRadioSending] = useState(false);
   const [radioSendResult, setRadioSendResult] = useState<{ sent: number; failed: number; total: number } | null>(null);
@@ -107,6 +109,7 @@ export default function Dashboard() {
   const [playlistSubject, setPlaylistSubject] = useState(DEFAULT_PLAYLIST_SUBJECT);
   const [playlistCurators, setPlaylistCurators] = useState<PlaylistCurator[]>([]);
   const [playlistPreviewDone, setPlaylistPreviewDone] = useState(false);
+  const [playlistInvalidEmails, setPlaylistInvalidEmails] = useState<string[]>([]);
   const [playlistPreviewLoading, setPlaylistPreviewLoading] = useState(false);
   const [playlistSending, setPlaylistSending] = useState(false);
   const [playlistSendResult, setPlaylistSendResult] = useState<{ sent: number; failed: number; total: number } | null>(null);
@@ -890,6 +893,29 @@ export default function Dashboard() {
     syncStorage.setItem('tp_blacklist', JSON.stringify(merged));
   }
 
+  /**
+   * Screens a freshly-loaded recipient list for addresses that are guaranteed to
+   * bounce (malformed, or a domain with no usable mail DNS) so they can be flagged
+   * before a send ever reaches them, rather than only discovered as a failure
+   * afterward. Runs after the preview response lands rather than blocking it —
+   * the DNS lookups take longer than the roster lookup itself.
+   */
+  async function checkRecipientsValidity(emails: string[]): Promise<string[]> {
+    if (!emails.length) return [];
+    try {
+      const res = await fetch('/api/mx-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emails }),
+      });
+      if (!res.ok) return [];
+      const data = await res.json() as { malformed: string[]; noMx: string[] };
+      return [...data.malformed, ...data.noMx];
+    } catch {
+      return [];
+    }
+  }
+
   function recordFailedEmails(emails: string[]) {
     if (!emails.length) return;
     setFailedEmails(prev => {
@@ -1005,6 +1031,7 @@ export default function Dashboard() {
 
   async function handlePreview(genresOverride?: string[], matchModeOverride?: 'any' | 'all') {
     setPreviewLoading(true);
+    setDemosInvalidEmails([]);
     try {
       const res = await fetch('/api/preview', {
         method: 'POST',
@@ -1012,9 +1039,11 @@ export default function Dashboard() {
         body: JSON.stringify({ genres: genresOverride ?? selectedGenres, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode: matchModeOverride ?? demosMatchMode }),
       });
       const data = await res.json();
-      setPreviewArtists(data.artists || []);
+      const artists = data.artists || [];
+      setPreviewArtists(artists);
       setPreviewDone(true);
       setExcludedArtistNames(new Set());
+      checkRecipientsValidity((artists as Artist[]).flatMap(a => a.managerEmails)).then(setDemosInvalidEmails);
     } finally { setPreviewLoading(false); }
   }
 
@@ -1164,7 +1193,7 @@ export default function Dashboard() {
   }, []);
 
   async function handleRadioPreview() {
-    setRadioPreviewLoading(true); setRadioPreviewDone(false);
+    setRadioPreviewLoading(true); setRadioPreviewDone(false); setRadioInvalidEmails([]);
     try {
       const res = await fetch('/api/radio-preview', {
         method: 'POST',
@@ -1172,8 +1201,10 @@ export default function Dashboard() {
         body: JSON.stringify({ genres: selectedRadioGenres, locations: selectedLocations, matchMode: radioMatchMode }),
       });
       const data = await res.json();
-      setRadioStations(data.stations || []);
+      const stations = data.stations || [];
+      setRadioStations(stations);
       setRadioPreviewDone(true);
+      checkRecipientsValidity((stations as RadioStation[]).flatMap(s => s.emails)).then(setRadioInvalidEmails);
     } finally { setRadioPreviewLoading(false); }
   }
 
@@ -1238,7 +1269,7 @@ export default function Dashboard() {
   }, []);
 
   async function handlePlaylistPreview() {
-    setPlaylistPreviewLoading(true); setPlaylistPreviewDone(false);
+    setPlaylistPreviewLoading(true); setPlaylistPreviewDone(false); setPlaylistInvalidEmails([]);
     try {
       const res = await fetch('/api/playlist-preview', {
         method: 'POST',
@@ -1246,8 +1277,10 @@ export default function Dashboard() {
         body: JSON.stringify({ genres: selectedPlaylistGenres, platforms: selectedPlatforms, matchMode: playlistMatchMode }),
       });
       const data = await res.json();
-      setPlaylistCurators(data.curators || []);
+      const curators = data.curators || [];
+      setPlaylistCurators(curators);
       setPlaylistPreviewDone(true);
+      checkRecipientsValidity((curators as PlaylistCurator[]).flatMap(c => c.emails)).then(setPlaylistInvalidEmails);
     } finally { setPlaylistPreviewLoading(false); }
   }
 
@@ -2094,6 +2127,18 @@ export default function Dashboard() {
                     </div>
                   )}
 
+                  {!sendResult && demosInvalidEmails.length > 0 && (
+                    <div className="rounded-lg bg-red-900/20 border border-red-700/40 px-5 py-3 space-y-2">
+                      <p className="text-red-400 text-sm">
+                        {demosInvalidEmails.length} address{demosInvalidEmails.length !== 1 ? 'es' : ''} {demosInvalidEmails.length !== 1 ? "don't" : "doesn't"} look deliverable (no working mail server found) and will likely bounce.
+                      </p>
+                      <button onClick={() => { addFailedToBlacklist(demosInvalidEmails); setDemosInvalidEmails([]); }}
+                        className="text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 rounded-lg text-zinc-300 transition">
+                        Add {demosInvalidEmails.length} address{demosInvalidEmails.length !== 1 ? 'es' : ''} to blacklist
+                      </button>
+                    </div>
+                  )}
+
                   {sendResult && (
                     <div className="rounded-lg bg-green-900/30 border border-green-700 px-5 py-4 space-y-2">
                       <p className="text-green-400 font-semibold">
@@ -2487,6 +2532,18 @@ export default function Dashboard() {
                       </div>
                     )}
 
+                    {!playlistSendResult && playlistInvalidEmails.length > 0 && (
+                      <div className="rounded-lg bg-red-900/20 border border-red-700/40 px-5 py-3 space-y-2">
+                        <p className="text-red-400 text-sm">
+                          {playlistInvalidEmails.length} address{playlistInvalidEmails.length !== 1 ? 'es' : ''} {playlistInvalidEmails.length !== 1 ? "don't" : "doesn't"} look deliverable (no working mail server found) and will likely bounce.
+                        </p>
+                        <button onClick={() => { addFailedToBlacklist(playlistInvalidEmails); setPlaylistInvalidEmails([]); }}
+                          className="text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 rounded-lg text-zinc-300 transition">
+                          Add {playlistInvalidEmails.length} address{playlistInvalidEmails.length !== 1 ? 'es' : ''} to blacklist
+                        </button>
+                      </div>
+                    )}
+
                     {playlistSendResult && (
                       <div className="rounded-lg bg-green-900/30 border border-green-700 px-5 py-4 space-y-2">
                         <p className="text-green-400 font-semibold">
@@ -2707,6 +2764,18 @@ export default function Dashboard() {
                         <p className="text-amber-400 text-sm">
                           {radioDuplicateRecipients.length} recipient{radioDuplicateRecipients.length !== 1 ? 's have' : ' has'} already been pitched &ldquo;{trackTitle}&rdquo; before (via Song Demos or Track Promotion). You can still send.
                         </p>
+                      </div>
+                    )}
+
+                    {!radioSendResult && radioInvalidEmails.length > 0 && (
+                      <div className="rounded-lg bg-red-900/20 border border-red-700/40 px-5 py-3 space-y-2">
+                        <p className="text-red-400 text-sm">
+                          {radioInvalidEmails.length} address{radioInvalidEmails.length !== 1 ? 'es' : ''} {radioInvalidEmails.length !== 1 ? "don't" : "doesn't"} look deliverable (no working mail server found) and will likely bounce.
+                        </p>
+                        <button onClick={() => { addFailedToBlacklist(radioInvalidEmails); setRadioInvalidEmails([]); }}
+                          className="text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 rounded-lg text-zinc-300 transition">
+                          Add {radioInvalidEmails.length} address{radioInvalidEmails.length !== 1 ? 'es' : ''} to blacklist
+                        </button>
                       </div>
                     )}
 
