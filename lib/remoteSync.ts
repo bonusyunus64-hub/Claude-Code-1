@@ -23,6 +23,7 @@ const SYNCED_KEYS = [
   'tp_demos_presets', 'tp_radio_presets', 'tp_playlist_presets',
   'tp_blacklist', 'tp_failed_emails', 'tp_custom_contacts',
   'tp_send_delay', 'tp_daily_cap',
+  'tp_auto_followup_enabled', 'tp_auto_followup_days',
 ];
 
 export async function hydrateFromRemote(): Promise<void> {

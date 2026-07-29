@@ -82,6 +82,11 @@ export interface Campaign {
   messageIds?: Record<string, string>;
   /** Present while a send is still in progress (or was interrupted before finishing) — lets it be resumed from where it left off instead of restarted. */
   pendingSend?: PendingSend;
+  /** Needed to re-render the follow-up template later. */
+  driveLink?: string;
+  senderName?: string;
+  /** Set once the automatic follow-up cron has sent a follow-up for this campaign. */
+  followUpSentAt?: number;
 }
 
 export interface PendingSend {

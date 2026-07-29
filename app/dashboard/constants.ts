@@ -72,6 +72,14 @@ export const DAILY_CAP_OPTIONS = [
   { label: '500', value: 500 },
 ];
 
+export const FOLLOWUP_DAYS_OPTIONS = [
+  { label: '3 days', value: 3 },
+  { label: '5 days', value: 5 },
+  { label: '7 days', value: 7 },
+  { label: '10 days', value: 10 },
+  { label: '14 days', value: 14 },
+];
+
 export const BLANK_ACCOUNT: NewAccountForm = {
   name: '', email: '', smtpHost: 'smtp.zoho.com', smtpPort: '465', smtpUser: '', smtpPass: '', dailyCap: 0,
 };

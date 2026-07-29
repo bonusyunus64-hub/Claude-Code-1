@@ -30,6 +30,11 @@ export interface CampaignRecord {
   messageIds?: Record<string, string>;
   /** Present while a send is still in progress (or was interrupted before finishing) — lets it be resumed from where it left off instead of restarted. */
   pendingSend?: { endpoint: string; payload: Record<string, unknown>; offset: number };
+  /** Needed to re-render the follow-up template later (lib/emailTemplate.ts's {{driveLink}}/{{senderName}}) — not used for anything at send time itself. */
+  driveLink?: string;
+  senderName?: string;
+  /** Set once the automatic follow-up cron (app/api/cron/auto-followup) has sent a follow-up for this campaign, so it isn't sent again on the next run. */
+  followUpSentAt?: number;
 }
 
 // Campaign history used to live as one JSON array under a single settings field,

@@ -139,6 +139,8 @@ export default function Dashboard() {
   const [testEmailMessage, setTestEmailMessage] = useState('');
   const [sendDelay, setSendDelay] = useState(0);
   const [dailySendCap, setDailySendCap] = useState(0);
+  const [autoFollowUpEnabled, setAutoFollowUpEnabled] = useState(false);
+  const [autoFollowUpDays, setAutoFollowUpDays] = useState(5);
   const [sendsToday, setSendsToday] = useState(0);
   const [sendsTodayByAccount, setSendsTodayByAccount] = useState<Record<string, number>>({});
 
@@ -277,6 +279,12 @@ export default function Dashboard() {
 
       const savedDailyCap = localStorage.getItem('tp_daily_cap');
       if (savedDailyCap !== null) setDailySendCap(Number(savedDailyCap));
+
+      const savedAutoFollowUpEnabled = localStorage.getItem('tp_auto_followup_enabled');
+      if (savedAutoFollowUpEnabled !== null) setAutoFollowUpEnabled(savedAutoFollowUpEnabled === 'true');
+
+      const savedAutoFollowUpDays = localStorage.getItem('tp_auto_followup_days');
+      if (savedAutoFollowUpDays !== null) setAutoFollowUpDays(Number(savedAutoFollowUpDays));
     } catch {}
     })();
   }, []);
@@ -825,6 +833,16 @@ export default function Dashboard() {
     syncStorage.setItem('tp_daily_cap', String(value));
   }
 
+  function setAutoFollowUp(enabled: boolean) {
+    setAutoFollowUpEnabled(enabled);
+    syncStorage.setItem('tp_auto_followup_enabled', String(enabled));
+  }
+
+  function setAutoFollowUpDaysValue(days: number) {
+    setAutoFollowUpDays(days);
+    syncStorage.setItem('tp_auto_followup_days', String(days));
+  }
+
   function saveDemosPreset() {
     const name = newDemosPresetName.trim();
     if (!name) return;
@@ -1276,6 +1294,7 @@ export default function Dashboard() {
           emails: sentEmails, accountId: selectedAccountId, recipients,
           messageIds: messageIdsFromResults(resultsSoFar),
           pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: sendPayload, offset: nextOffset } : undefined,
+          driveLink, senderName,
         });
       });
       if (!outcome.ok) { setSendError(outcome.error); }
@@ -1380,6 +1399,7 @@ export default function Dashboard() {
           id: campaignId, trackTitle, date: campaignDate, type: 'radio',
           emails: sentEmails, accountId: selectedAccountId, messageIds: messageIdsFromResults(resultsSoFar),
           pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: sendPayload, offset: nextOffset } : undefined,
+          driveLink, senderName,
         });
       });
       if (!outcome.ok) { setRadioSendError(outcome.error); }
@@ -1460,6 +1480,7 @@ export default function Dashboard() {
           id: campaignId, trackTitle, date: campaignDate, type: 'playlists',
           emails: sentEmails, accountId: selectedAccountId, messageIds: messageIdsFromResults(resultsSoFar),
           pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: sendPayload, offset: nextOffset } : undefined,
+          driveLink, senderName,
         });
       });
       if (!outcome.ok) { setPlaylistSendError(outcome.error); }
@@ -2983,6 +3004,9 @@ export default function Dashboard() {
                 failedEmails={failedEmails} moveFailedToDoNotContact={moveFailedToDoNotContact} removeFromFailedEmails={removeFromFailedEmails}
                 sendDelay={sendDelay} setSendDelay={setSendDelay}
                 dailySendCap={dailySendCap} setDailyCap={setDailyCap} sendsToday={sendsToday} sendsTodayByAccount={sendsTodayByAccount}
+                autoFollowUpEnabled={autoFollowUpEnabled} setAutoFollowUp={setAutoFollowUp}
+                autoFollowUpDays={autoFollowUpDays} setAutoFollowUpDaysValue={setAutoFollowUpDaysValue}
+                demosFollowUpTemplate={demosFollowUpTemplate}
                 testEmailTo={testEmailTo} setTestEmailTo={setTestEmailTo} testEmailSending={testEmailSending} handleTestEmail={handleTestEmail}
                 showTestEmailOptions={showTestEmailOptions} setShowTestEmailOptions={setShowTestEmailOptions}
                 testEmailSubject={testEmailSubject} setTestEmailSubject={setTestEmailSubject}

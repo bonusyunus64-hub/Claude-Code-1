@@ -1,5 +1,5 @@
 import type { EmailAccount, NewAccountForm, DeliverabilityResult } from '../types';
-import { DEFAULT_SIGN_OFF, SEND_DELAY_OPTIONS, DAILY_CAP_OPTIONS, BLANK_ACCOUNT } from '../constants';
+import { DEFAULT_SIGN_OFF, SEND_DELAY_OPTIONS, DAILY_CAP_OPTIONS, FOLLOWUP_DAYS_OPTIONS, BLANK_ACCOUNT } from '../constants';
 import { syncStorage } from '@/lib/remoteSync';
 
 export interface AccountSectionProps {
@@ -40,6 +40,12 @@ export interface AccountSectionProps {
   sendsToday: number;
   sendsTodayByAccount: Record<string, number>;
 
+  autoFollowUpEnabled: boolean;
+  setAutoFollowUp: (enabled: boolean) => void;
+  autoFollowUpDays: number;
+  setAutoFollowUpDaysValue: (days: number) => void;
+  demosFollowUpTemplate: string;
+
   testEmailTo: string;
   setTestEmailTo: (value: string) => void;
   testEmailSending: boolean;
@@ -71,6 +77,7 @@ export function AccountSection(props: AccountSectionProps) {
     failedEmails, moveFailedToDoNotContact, removeFromFailedEmails,
     sendDelay, setSendDelay,
     dailySendCap, setDailyCap, sendsToday, sendsTodayByAccount,
+    autoFollowUpEnabled, setAutoFollowUp, autoFollowUpDays, setAutoFollowUpDaysValue, demosFollowUpTemplate,
     testEmailTo, setTestEmailTo, testEmailSending, handleTestEmail,
     showTestEmailOptions, setShowTestEmailOptions, testEmailSubject, setTestEmailSubject,
     testEmailMessage, setTestEmailMessage, demosSubject, demosTemplate, testEmailResult, setTestEmailResult, testEmailError,
@@ -299,6 +306,44 @@ export function AccountSection(props: AccountSectionProps) {
               </div>
             ))}
           </div>
+        )}
+      </section>
+
+      {/* Automatic Follow-ups */}
+      <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Automatic Follow-ups</h2>
+            <p className="text-xs text-zinc-500">
+              Send the Song Demos follow-up template to anyone who hasn&rsquo;t replied or bounced, N days after the original pitch. Runs once a day.
+            </p>
+          </div>
+          <button
+            onClick={() => setAutoFollowUp(!autoFollowUpEnabled)}
+            className={`shrink-0 relative inline-flex h-6 w-11 items-center rounded-full transition ${autoFollowUpEnabled ? 'bg-violet-600' : 'bg-zinc-700'}`}
+            aria-pressed={autoFollowUpEnabled}
+          >
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${autoFollowUpEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+          </button>
+        </div>
+        {autoFollowUpEnabled && (
+          <>
+            <div className="flex flex-wrap gap-1.5">
+              {FOLLOWUP_DAYS_OPTIONS.map(opt => (
+                <button key={opt.value}
+                  onClick={() => setAutoFollowUpDaysValue(opt.value)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${autoFollowUpDays === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            {!demosFollowUpTemplate.trim() && (
+              <p className="text-xs text-amber-500">Set a Follow-Up template in Song Demos → Email Template first, or automatic follow-ups won&rsquo;t send anything.</p>
+            )}
+            <p className="text-xs text-zinc-600">
+              Only applies to Song Demos campaigns sent with an email account and drive link on record (anything sent before this feature was added won&rsquo;t be picked up). Respects both the daily send limit above and each account&rsquo;s own cap.
+            </p>
+          </>
         )}
       </section>
 
