@@ -24,6 +24,7 @@ export interface CampaignRecord {
   accountId?: string;
   responded?: string[];
   bounced?: string[];
+  classifications?: Record<string, 'interested' | 'pass' | 'auto-reply' | 'unclassified'>;
   lastChecked?: number;
   recipients?: CampaignRecipient[];
   messageIds?: Record<string, string>;

@@ -58,6 +58,10 @@ export interface CampaignRecipient {
   spotifyFollowers: number;
 }
 
+/** Mirrors lib/checkReplies.ts's ReplyClassification — redeclared here since that
+ *  module pulls in imapflow (server-only) and can't be imported client-side. */
+export type ReplyClassification = 'interested' | 'pass' | 'auto-reply' | 'unclassified';
+
 export interface Campaign {
   id: string;
   trackTitle: string;
@@ -68,6 +72,8 @@ export interface Campaign {
   responded?: string[];
   /** Recipients a bounce/DSN message named as undeliverable; auto-added to the blacklist when detected. */
   bounced?: string[];
+  /** Lowercased recipient -> best-effort classification of their most recent reply. */
+  classifications?: Record<string, ReplyClassification>;
   lastChecked?: number;
   recipients?: CampaignRecipient[];
   /** Lowercased recipient -> Message-ID of the email they were sent, so a follow-up can reply into that thread. */

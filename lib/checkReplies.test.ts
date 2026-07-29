@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveImapConfig, sendersFromEnvelope, matchResponders, isBounceSender, extractFailedRecipients } from './checkReplies';
+import { resolveImapConfig, sendersFromEnvelope, matchResponders, isBounceSender, extractFailedRecipients, classifyReply } from './checkReplies';
 
 describe('resolveImapConfig', () => {
   it('derives the imap host from an smtp.* host', () => {
@@ -106,5 +106,57 @@ describe('extractFailedRecipients', () => {
   it('can report multiple failed recipients from one DSN', () => {
     const source = 'Final-Recipient: rfc822;manager@example.com\nFinal-Recipient: rfc822;other@example.com\n';
     expect(extractFailedRecipients(source, candidates)).toEqual(candidates);
+  });
+});
+
+function fakeMessage(opts: { headers?: string; subject?: string; body?: string }): string {
+  const headers = [`Subject: ${opts.subject ?? 'Re: Music Submission'}`, opts.headers ?? ''].filter(Boolean).join('\n');
+  return `${headers}\n\n${opts.body ?? ''}`;
+}
+
+describe('classifyReply', () => {
+  it('classifies an auto-reply by header, regardless of body content', () => {
+    const source = fakeMessage({ headers: 'Auto-Submitted: auto-replied', body: 'I love this, send it over!' });
+    expect(classifyReply(source)).toBe('auto-reply');
+  });
+
+  it('treats "Auto-Submitted: no" as a real reply, not an auto-reply', () => {
+    const source = fakeMessage({ headers: 'Auto-Submitted: no', body: 'Sounds great, would love to hear more.' });
+    expect(classifyReply(source)).toBe('interested');
+  });
+
+  it('classifies a vacation-responder subject as auto-reply', () => {
+    const source = fakeMessage({ subject: 'Automatic reply: Out of Office', body: 'I am currently out of the office.' });
+    expect(classifyReply(source)).toBe('auto-reply');
+  });
+
+  it('classifies a clearly positive reply as interested', () => {
+    const source = fakeMessage({ body: "This sounds great, we'd love to hear more. Please send it over!" });
+    expect(classifyReply(source)).toBe('interested');
+  });
+
+  it('classifies a clearly negative reply as pass', () => {
+    const source = fakeMessage({ body: "Thanks for reaching out, but we're not interested at this time." });
+    expect(classifyReply(source)).toBe('pass');
+  });
+
+  it('falls back to unclassified for an ambiguous reply', () => {
+    const source = fakeMessage({ body: 'Thanks for reaching out, who is this?' });
+    expect(classifyReply(source)).toBe('unclassified');
+  });
+
+  it('strips quoted history so the original pitch text does not skew classification', () => {
+    const source = fakeMessage({
+      body: "Not interested, sorry.\n\nOn Mon, Jan 1, 2024 at 9:00 AM Sender <sender@example.com> wrote:\n> Would love to hear your thoughts, sounds great right?",
+    });
+    expect(classifyReply(source)).toBe('pass');
+  });
+
+  it('strips HTML tags before matching keywords', () => {
+    const source = fakeMessage({
+      headers: 'Content-Type: text/html',
+      body: '<div><p>We are <b>not interested</b> right now, thanks.</p></div>',
+    });
+    expect(classifyReply(source)).toBe('pass');
   });
 });

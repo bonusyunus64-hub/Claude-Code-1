@@ -225,6 +225,7 @@ export function HistorySection(props: HistorySectionProps) {
                       {c.recipients!.map(r => {
                         const responded = c.responded?.includes(r.email);
                         const bounced = c.bounced?.includes(r.email);
+                        const classification = c.classifications?.[r.email.toLowerCase()];
                         return (
                           <div key={r.email} className={`px-3 md:px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4 ${bounced ? 'bg-red-900/10' : responded ? 'bg-emerald-900/10' : ''}`}>
                             <div className="flex items-center gap-3 min-w-0">
@@ -242,7 +243,17 @@ export function HistorySection(props: HistorySectionProps) {
                                     <span className="text-[11px] px-1.5 py-0.5 rounded-full font-medium bg-red-600/20 text-red-400 border border-red-600/30">Bounced</span>
                                   )}
                                   {!bounced && responded && (
-                                    <span className="text-[11px] px-1.5 py-0.5 rounded-full font-medium bg-emerald-600/20 text-emerald-400 border border-emerald-600/30">Replied</span>
+                                    <span className={`text-[11px] px-1.5 py-0.5 rounded-full font-medium border ${
+                                      classification === 'interested' ? 'bg-emerald-600/20 text-emerald-400 border-emerald-600/30'
+                                      : classification === 'pass' ? 'bg-zinc-700/40 text-zinc-400 border-zinc-600/40'
+                                      : classification === 'auto-reply' ? 'bg-sky-600/20 text-sky-400 border-sky-600/30'
+                                      : 'bg-emerald-600/20 text-emerald-400 border-emerald-600/30'
+                                    }`}>
+                                      {classification === 'interested' ? 'Interested'
+                                        : classification === 'pass' ? 'Passed'
+                                        : classification === 'auto-reply' ? 'Auto-reply'
+                                        : 'Replied'}
+                                    </span>
                                   )}
                                   {r.instagramHandle && (
                                     <a href={`https://instagram.com/${r.instagramHandle.replace('@', '')}`} target="_blank" rel="noopener noreferrer"
@@ -293,9 +304,11 @@ export function HistorySection(props: HistorySectionProps) {
                         {c.emails.map(email => {
                           const responded = c.responded?.includes(email);
                           const bounced = c.bounced?.includes(email);
+                          const classification = c.classifications?.[email.toLowerCase()];
                           return (
                             <span
                               key={email}
+                              title={!bounced && responded && classification && classification !== 'unclassified' ? classification : undefined}
                               className={`text-xs px-2 py-1 rounded font-mono border ${bounced ? 'bg-red-900/30 text-red-300 border-red-700/40' : responded ? 'bg-emerald-900/30 text-emerald-300 border-emerald-700/40' : 'bg-zinc-800 text-zinc-300 border-transparent'}`}
                             >
                               {email}{bounced ? ' ✗' : responded ? ' ✓' : ''}

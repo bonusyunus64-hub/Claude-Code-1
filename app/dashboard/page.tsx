@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { hydrateFromRemote, syncStorage } from '@/lib/remoteSync';
 import type {
   Artist, RadioStation, PlaylistCurator, EmailAccount, NewAccountForm,
-  CampaignRecipient, Campaign, CustomContact, DeliverabilityResult,
+  CampaignRecipient, Campaign, CustomContact, DeliverabilityResult, ReplyClassification,
   DemosFilterPreset, RadioFilterPreset, PlaylistFilterPreset, SavedTemplate, SendResultEntry,
 } from './types';
 import {
@@ -632,6 +632,12 @@ export default function Dashboard() {
       const bounced = Array.from(new Set([...(c.bounced ?? []), ...foundBounced]));
       if (foundBounced.length) addFailedToBlacklist(foundBounced);
 
+      // Best-effort keyword classification of what each reply actually said
+      // (lib/checkReplies.ts's classifyReply) — keyed lowercase, since that's how
+      // the check-replies route derives it from inbox envelopes.
+      const foundClassifications = (data.classifications as Record<string, ReplyClassification> | undefined) ?? {};
+      const classifications = { ...(c.classifications ?? {}), ...foundClassifications };
+
       // checkReplies only ever runs from a button's onClick (passed down to
       // HistorySection), never during render, so Date.now() here is safe — this is
       // the react-compiler plugin flagging a callback-prop function's body more
@@ -639,7 +645,7 @@ export default function Dashboard() {
       // page.tsx's own onClick handlers, which it doesn't scrutinize the same way.
       // eslint-disable-next-line react-hooks/purity
       const checkedAt = Date.now();
-      upsertCampaign({ ...c, responded, bounced, lastChecked: checkedAt });
+      upsertCampaign({ ...c, responded, bounced, classifications, lastChecked: checkedAt });
       setReplyCheckResult({ campaignId: c.id, newCount, totalCount: responded.length, newBounceCount });
     } catch (err) {
       setReplyCheckError(`Could not check replies: ${String(err)}`);
