@@ -679,6 +679,58 @@ export default function Dashboard() {
     }
   }
 
+  const [resumingCampaignId, setResumingCampaignId] = useState<string | null>(null);
+  const [resumeError, setResumeError] = useState('');
+  const [resumeProgress, setResumeProgress] = useState<{ campaignId: string; sent: number; total: number } | null>(null);
+
+  /**
+   * Continues a send that was interrupted (tab closed, network drop, crash) partway
+   * through, from the offset it last got to — c.pendingSend was written by the batch
+   * loop in handleSend/handleRadioSend/handlePlaylistSend after every batch, so at
+   * most the one in-flight batch when the interruption happened gets re-sent.
+   *
+   * New recipients picked up here don't have artist metadata to attach (the roster
+   * lookup that built it lived in the original send's closure, long gone by now) —
+   * they land with blank fields, same as a custom contact with no name. "Show
+   * artists sent to" already exists to backfill exactly this from just the address.
+   */
+  async function resumeSend(c: Campaign) {
+    const pending = c.pendingSend;
+    if (!pending) return;
+    setResumingCampaignId(c.id);
+    setResumeError('');
+    setResumeProgress({ campaignId: c.id, sent: 0, total: 0 });
+    try {
+      const outcome = await sendInBatches(pending.endpoint, pending.payload, (progress, resultsSoFar, nextOffset) => {
+        setResumeProgress({ campaignId: c.id, sent: progress.sent, total: progress.total });
+        const newlySent = resultsSoFar.filter(r => r.success).map(r => r.to);
+        const emails = Array.from(new Set([...c.emails, ...newlySent]));
+        const existingRecipientEmails = new Set((c.recipients ?? []).map(r => r.email.toLowerCase()));
+        const recipients = c.recipients
+          ? [
+              ...c.recipients,
+              ...newlySent
+                .filter(email => !existingRecipientEmails.has(email.toLowerCase()))
+                .map(email => ({ email, artistName: '', managerName: '', avatarUrl: '', genres: [], instagramHandle: '', spotifyFollowers: 0 })),
+            ]
+          : undefined;
+        upsertCampaign({
+          ...c,
+          emails,
+          recipients,
+          messageIds: { ...(c.messageIds ?? {}), ...messageIdsFromResults(resultsSoFar) },
+          pendingSend: nextOffset != null ? { ...pending, offset: nextOffset } : undefined,
+        });
+      }, pending.offset);
+      if (!outcome.ok) setResumeError(outcome.error);
+      else if (outcome.results.some(r => r.success)) refreshSendsToday();
+    } catch (err) {
+      setResumeError(`Could not resume send: ${String(err)}`);
+    } finally {
+      setResumingCampaignId(null);
+    }
+  }
+
   function clearCampaignHistory() {
     setCampaigns([]);
     fetch('/api/campaigns?all=true', { method: 'DELETE' }).catch(() => {});
@@ -1098,8 +1150,8 @@ export default function Dashboard() {
 
       const campaignId = Date.now().toString();
       const campaignDate = new Date().toISOString();
-
-      const outcome = await sendInBatches('/api/send', {
+      const sendEndpoint = '/api/send';
+      const sendPayload = {
         trackTitle, driveLink, genres: selectedGenres,
         emailTemplate: useFollowUp ? demosFollowUpTemplate : demosTemplate,
         subjectTemplate: useFollowUp ? demosFollowUpSubject : demosSubject,
@@ -1115,12 +1167,14 @@ export default function Dashboard() {
           : undefined,
         accountId: selectedAccountId || undefined,
         threadIds: useFollowUp ? threadIdsFor('demos', trackTitle) : undefined,
-      }, (progress, resultsSoFar) => {
+      };
+
+      const outcome = await sendInBatches(sendEndpoint, sendPayload, (progress, resultsSoFar, nextOffset) => {
         setSendResult(progress);
         // Persisted as each batch lands: closing the tab mid-send loses at most the
-        // in-flight batch, not the whole campaign record.
+        // in-flight batch, not the whole campaign record. pendingSend carries enough
+        // to resume the remaining recipients later instead of restarting from scratch.
         const sentEmails = resultsSoFar.filter(r => r.success).map(r => r.to);
-        if (!sentEmails.length) return;
         const recipients: CampaignRecipient[] = sentEmails.map(email => ({
           email,
           ...(artistByEmail.get(email.toLowerCase()) ?? {
@@ -1131,6 +1185,7 @@ export default function Dashboard() {
           id: campaignId, trackTitle, date: campaignDate, type: 'demos',
           emails: sentEmails, accountId: selectedAccountId, recipients,
           messageIds: messageIdsFromResults(resultsSoFar),
+          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: sendPayload, offset: nextOffset } : undefined,
         });
       });
       if (!outcome.ok) { setSendError(outcome.error); }
@@ -1218,19 +1273,21 @@ export default function Dashboard() {
     try {
       const campaignId = Date.now().toString();
       const campaignDate = new Date().toISOString();
-      const outcome = await sendInBatches('/api/radio-send', {
+      const sendEndpoint = '/api/radio-send';
+      const sendPayload = {
         trackTitle, driveLink, genres: selectedRadioGenres, locations: selectedLocations,
         emailTemplate: radioTemplate, subjectTemplate: radioSubject, senderName, signOff, signOffImage, matchMode: radioMatchMode,
         sendDelay: sendDelay > 0 ? sendDelay : undefined,
         blacklist: blacklist.length > 0 ? blacklist : undefined,
         accountId: selectedAccountId || undefined,
-      }, (progress, resultsSoFar) => {
+      };
+      const outcome = await sendInBatches(sendEndpoint, sendPayload, (progress, resultsSoFar, nextOffset) => {
         setRadioSendResult(progress);
         const sentEmails = resultsSoFar.filter(r => r.success).map(r => r.to);
-        if (!sentEmails.length) return;
         upsertCampaign({
           id: campaignId, trackTitle, date: campaignDate, type: 'radio',
           emails: sentEmails, accountId: selectedAccountId, messageIds: messageIdsFromResults(resultsSoFar),
+          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: sendPayload, offset: nextOffset } : undefined,
         });
       });
       if (!outcome.ok) { setRadioSendError(outcome.error); }
@@ -1294,19 +1351,21 @@ export default function Dashboard() {
     try {
       const campaignId = Date.now().toString();
       const campaignDate = new Date().toISOString();
-      const outcome = await sendInBatches('/api/playlist-send', {
+      const sendEndpoint = '/api/playlist-send';
+      const sendPayload = {
         trackTitle, driveLink, genres: selectedPlaylistGenres, platforms: selectedPlatforms,
         emailTemplate: playlistTemplate, subjectTemplate: playlistSubject, senderName, signOff, signOffImage, matchMode: playlistMatchMode,
         sendDelay: sendDelay > 0 ? sendDelay : undefined,
         blacklist: blacklist.length > 0 ? blacklist : undefined,
         accountId: selectedAccountId || undefined,
-      }, (progress, resultsSoFar) => {
+      };
+      const outcome = await sendInBatches(sendEndpoint, sendPayload, (progress, resultsSoFar, nextOffset) => {
         setPlaylistSendResult(progress);
         const sentEmails = resultsSoFar.filter(r => r.success).map(r => r.to);
-        if (!sentEmails.length) return;
         upsertCampaign({
           id: campaignId, trackTitle, date: campaignDate, type: 'playlists',
           emails: sentEmails, accountId: selectedAccountId, messageIds: messageIdsFromResults(resultsSoFar),
+          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: sendPayload, offset: nextOffset } : undefined,
         });
       });
       if (!outcome.ok) { setPlaylistSendError(outcome.error); }
@@ -2851,6 +2910,7 @@ export default function Dashboard() {
                 checkingRepliesId={checkingRepliesId} checkReplies={checkReplies} replyCheckResult={replyCheckResult} replyCheckError={replyCheckError}
                 formatCheckedAt={formatCheckedAt}
                 backfillingId={backfillingId} backfillRecipients={backfillRecipients} backfillError={backfillError}
+                resumingCampaignId={resumingCampaignId} resumeSend={resumeSend} resumeError={resumeError} resumeProgress={resumeProgress}
               />
             )}
 

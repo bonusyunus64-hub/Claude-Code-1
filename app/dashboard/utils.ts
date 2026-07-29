@@ -27,13 +27,18 @@ export function getTodayDateStr(): string {
 // onProgress also receives the cumulative results-so-far (not just counts) so a
 // caller can persist campaign history as each batch lands, rather than only after
 // the whole send finishes — closing the tab mid-send then loses at most the
-// in-flight batch instead of the entire campaign record.
+// in-flight batch instead of the entire campaign record. It also gets the offset
+// the *next* batch would start from (null once the whole list is done), so a
+// caller can persist a resume point and pick a paused/interrupted send back up
+// later via `startOffset` instead of restarting — and, since payload/endpoint are
+// exactly what a caller already has on hand, re-sending nothing that already went out.
 export async function sendInBatches(
   endpoint: string,
   payload: Record<string, unknown>,
-  onProgress: (progress: BatchProgress, resultsSoFar: SendResultEntry[]) => void
+  onProgress: (progress: BatchProgress, resultsSoFar: SendResultEntry[], nextOffset: number | null) => void,
+  startOffset = 0
 ): Promise<{ ok: true; results: SendResultEntry[]; total: number } | { ok: false; error: string }> {
-  let offset = 0;
+  let offset = startOffset;
   const allResults: SendResultEntry[] = [];
   let total = 0;
   for (;;) {
@@ -52,13 +57,14 @@ export async function sendInBatches(
     if (!res.ok) return { ok: false, error: data.error || 'Failed to send.' };
     allResults.push(...(data.results ?? []));
     total = data.total ?? allResults.length;
+    const nextOffset = data.nextOffset ?? null;
     onProgress({
       sent: allResults.filter(r => r.success).length,
       failed: allResults.filter(r => !r.success).length,
       total,
-    }, allResults);
-    if (data.nextOffset == null) break;
-    offset = data.nextOffset;
+    }, allResults, nextOffset);
+    if (nextOffset == null) break;
+    offset = nextOffset;
   }
   return { ok: true, results: allResults, total };
 }

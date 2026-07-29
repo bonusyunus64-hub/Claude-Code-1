@@ -30,6 +30,11 @@ export interface HistorySectionProps {
   backfillingId: string | null;
   backfillRecipients: (c: Campaign) => void;
   backfillError: string;
+
+  resumingCampaignId: string | null;
+  resumeSend: (c: Campaign) => void;
+  resumeError: string;
+  resumeProgress: { campaignId: string; sent: number; total: number } | null;
 }
 
 export function HistorySection(props: HistorySectionProps) {
@@ -40,6 +45,7 @@ export function HistorySection(props: HistorySectionProps) {
     demosSendoutGroups, expandedCampaignId, setExpandedCampaignId,
     checkingRepliesId, checkReplies, replyCheckResult, replyCheckError, formatCheckedAt,
     backfillingId, backfillRecipients, backfillError,
+    resumingCampaignId, resumeSend, resumeError, resumeProgress,
   } = props;
 
   return (
@@ -126,6 +132,11 @@ export function HistorySection(props: HistorySectionProps) {
                   <span className={`text-xs px-2 py-0.5 rounded-full font-medium shrink-0 ${c.type === 'demos' ? 'bg-violet-600/20 text-violet-400 border border-violet-600/30' : c.type === 'radio' ? 'bg-sky-600/20 text-sky-400 border border-sky-600/30' : 'bg-emerald-600/20 text-emerald-400 border border-emerald-600/30'}`}>
                     {c.type === 'demos' ? 'Demos' : c.type === 'radio' ? 'Radio' : 'Playlists'}
                   </span>
+                  {c.pendingSend && (
+                    <span className="text-xs px-2 py-0.5 rounded-full font-medium shrink-0 bg-amber-600/20 text-amber-400 border border-amber-600/30">
+                      Incomplete
+                    </span>
+                  )}
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-white truncate">{c.trackTitle}</p>
                     <p className="text-xs text-zinc-500">
@@ -159,6 +170,25 @@ export function HistorySection(props: HistorySectionProps) {
               </div>
               {expandedCampaignId === c.id && (
                 <div className="px-4 md:px-6 pb-4 -mt-1 space-y-3">
+                  {c.pendingSend && (
+                    <div className="rounded-lg bg-amber-900/20 border border-amber-700/40 px-4 py-3 space-y-2">
+                      <p className="text-amber-400 text-sm font-medium">
+                        This send didn&rsquo;t finish — it was interrupted after {c.emails.length} recipient{c.emails.length !== 1 ? 's' : ''}.
+                      </p>
+                      <button
+                        onClick={() => resumeSend(c)}
+                        disabled={resumingCampaignId === c.id}
+                        className="rounded-lg bg-amber-700/30 hover:bg-amber-700/50 border border-amber-600/50 px-3 py-1.5 text-xs font-medium text-amber-300 transition disabled:opacity-40"
+                      >
+                        {resumingCampaignId === c.id
+                          ? `Resuming… (${resumeProgress?.campaignId === c.id ? resumeProgress.sent : 0}/${resumeProgress?.campaignId === c.id ? resumeProgress.total : '?'})`
+                          : 'Resume send'}
+                      </button>
+                      {resumingCampaignId === null && resumeError && (
+                        <p className="text-xs text-red-400">{resumeError}</p>
+                      )}
+                    </div>
+                  )}
                   {c.accountId && (
                     <div className="flex items-center gap-2 flex-wrap">
                       <button

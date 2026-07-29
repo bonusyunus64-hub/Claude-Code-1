@@ -27,6 +27,8 @@ export interface CampaignRecord {
   lastChecked?: number;
   recipients?: CampaignRecipient[];
   messageIds?: Record<string, string>;
+  /** Present while a send is still in progress (or was interrupted before finishing) — lets it be resumed from where it left off instead of restarted. */
+  pendingSend?: { endpoint: string; payload: Record<string, unknown>; offset: number };
 }
 
 // Campaign history used to live as one JSON array under a single settings field,

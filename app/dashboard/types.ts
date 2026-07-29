@@ -72,6 +72,14 @@ export interface Campaign {
   recipients?: CampaignRecipient[];
   /** Lowercased recipient -> Message-ID of the email they were sent, so a follow-up can reply into that thread. */
   messageIds?: Record<string, string>;
+  /** Present while a send is still in progress (or was interrupted before finishing) — lets it be resumed from where it left off instead of restarted. */
+  pendingSend?: PendingSend;
+}
+
+export interface PendingSend {
+  endpoint: string;
+  payload: Record<string, unknown>;
+  offset: number;
 }
 
 export interface CustomContact {

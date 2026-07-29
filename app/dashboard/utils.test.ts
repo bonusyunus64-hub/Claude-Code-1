@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients } from './utils';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, sendInBatches } from './utils';
 
 describe('shuffle', () => {
   it('preserves every element (no drops or duplicates)', () => {
@@ -57,6 +57,52 @@ describe('countUniqueRecipients', () => {
   it('returns 0 for no lists or empty lists', () => {
     expect(countUniqueRecipients()).toBe(0);
     expect(countUniqueRecipients([], [])).toBe(0);
+  });
+});
+
+describe('sendInBatches', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** A fake /api/send-shaped server: 10 recipients total, 4 per batch. */
+  function stubPaginatedServer() {
+    const totalRecipients = 10;
+    const batchSize = 4;
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string) as { offset: number };
+      const offset = body.offset ?? 0;
+      const batch = Array.from({ length: Math.min(batchSize, totalRecipients - offset) }, (_, i) => offset + i);
+      const results = batch.map(i => ({ to: `r${i}@example.com`, success: true, messageId: `m${i}` }));
+      const nextOffset = offset + batch.length < totalRecipients ? offset + batch.length : null;
+      return { ok: true, json: async () => ({ results, total: totalRecipients, nextOffset }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('pages through every batch starting from offset 0 by default', async () => {
+    stubPaginatedServer();
+    const ticks: number[] = [];
+    const outcome = await sendInBatches('/api/send', {}, (progress) => { ticks.push(progress.sent); });
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.results).toHaveLength(10);
+    expect(ticks).toEqual([4, 8, 10]);
+  });
+
+  it('reports the offset the next batch would start from, and null once done', async () => {
+    stubPaginatedServer();
+    const nextOffsets: (number | null)[] = [];
+    await sendInBatches('/api/send', {}, (_progress, _results, nextOffset) => { nextOffsets.push(nextOffset); });
+    expect(nextOffsets).toEqual([4, 8, null]);
+  });
+
+  it('resumes from a given startOffset instead of restarting at 0', async () => {
+    const fetchMock = stubPaginatedServer();
+    const outcome = await sendInBatches('/api/send', {}, () => {}, 8);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.results.map(r => r.to)).toEqual(['r8@example.com', 'r9@example.com']);
+    // Never re-requests the already-sent offset=0 batch.
+    const requestedOffsets = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string).offset);
+    expect(requestedOffsets).toEqual([8]);
   });
 });
 
