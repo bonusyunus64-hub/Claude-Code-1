@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { renderTemplate, textToHtml } from '@/lib/emailTemplate';
-import { resolveSmtpConfig, createTransport } from '@/lib/mailSend';
+import { resolveSmtpConfig, createTransport, formatFromHeader } from '@/lib/mailSend';
 import { resolveAccount } from '@/lib/accounts';
+import { recordSends } from '@/lib/sendQuota';
 
 interface TestEmailPayload {
   to: string;
@@ -71,7 +72,7 @@ export async function POST(req: NextRequest) {
   }
 
   const mailOptions: Parameters<typeof transporter.sendMail>[0] = {
-    from: `"${fromName}" <${fromEmail}>`,
+    from: formatFromHeader(fromName, fromEmail as string),
     to,
     subject,
     text,
@@ -86,6 +87,16 @@ export async function POST(req: NextRequest) {
 
   try {
     await transporter.sendMail(mailOptions);
+    // Recorded the same way /api/send and lib/broadcastSend.ts count a real send
+    // (see lib/sendQuota.ts) — this goes out over the same real SMTP account, so
+    // leaving it uncounted would let test sends quietly push the account past
+    // Zoho's actual rate limit. Deliberately NOT gated behind checkCapAllows,
+    // though: this is a single, hand-triggered diagnostic email, not a bulk send
+    // that could run away, and refusing to let someone verify their SMTP config
+    // works just because the day's bulk-send cap is exhausted would be a
+    // confusing failure mode of its own. It still counts toward the cap for
+    // whoever sends after it.
+    await recordSends(1, account?.id);
     return NextResponse.json({ success: true });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

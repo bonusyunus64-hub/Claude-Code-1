@@ -29,6 +29,14 @@ export interface SendResult {
   to: string;
   success: boolean;
   error?: string;
+  /**
+   * Set on a failure that will never succeed on a retry — the address was rejected
+   * outright (5xx, bad envelope) rather than lost to a dropped connection. Callers
+   * that decide whether to try an address again need this: a synchronous rejection
+   * generates no bounce message, so nothing downstream (lib/checkReplies.ts) will
+   * ever discover the address is dead on its behalf.
+   */
+  permanent?: boolean;
   /** The Message-ID the server assigned, stored so a later follow-up can thread onto it. */
   messageId?: string;
 }
@@ -41,6 +49,21 @@ export function resolveSmtpConfig(fromAccount: FromAccount | undefined, senderNa
   const fromName = fromAccount?.name || senderName || 'TrackPitch';
   const fromEmail = fromAccount?.email || smtpUser;
   return { smtpUser, smtpPass, smtpHost, smtpPort, fromName, fromEmail };
+}
+
+/**
+ * Builds a RFC 5322 `From` header value. The display name is only wrapped in a
+ * quoted-string when it needs one; RFC 5322 §3.2.4 says a quoted-string only
+ * requires escaping two characters — backslash and double-quote — and each needs
+ * its own escaping backslash. Without this, an account name containing a quote
+ * (e.g. Sender's "Nickname" Band) breaks out of the quoting early and produces a
+ * malformed header that some mail clients mis-parse, truncate, or reject outright.
+ */
+export function formatFromHeader(name: string, email: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return email;
+  const escaped = trimmed.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${escaped}" <${email}>`;
 }
 
 export function createTransport(config: { smtpHost: string; smtpPort: number; smtpUser: string; smtpPass: string }) {
@@ -101,7 +124,7 @@ export async function sendMessages(
       const textBody = unsubUrl ? `${msg.body}\n\n---\nDon't want to hear from us? Unsubscribe: ${unsubUrl}` : msg.body;
 
       const mailOptions: Parameters<typeof transporter.sendMail>[0] = {
-        from: `"${opts.fromName}" <${opts.fromEmail}>`,
+        from: formatFromHeader(opts.fromName, opts.fromEmail),
         to: msg.to,
         subject: msg.subject,
         text: textBody,
@@ -133,7 +156,7 @@ export async function sendMessages(
       const messageId = await sendWithRetry(transporter, mailOptions);
       results.push({ to: msg.to, success: true, messageId });
     } catch (err) {
-      results.push({ to: msg.to, success: false, error: String(err) });
+      results.push({ to: msg.to, success: false, error: String(err), permanent: isPermanentSendError(err) });
     }
   }
   return results;

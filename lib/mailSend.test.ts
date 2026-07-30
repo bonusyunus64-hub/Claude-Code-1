@@ -1,5 +1,25 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { paginate, resolveSmtpConfig, sendMessages, dedupeByRecipient, type OutboundMessage } from './mailSend';
+import { paginate, resolveSmtpConfig, sendMessages, dedupeByRecipient, formatFromHeader, type OutboundMessage } from './mailSend';
+
+describe('formatFromHeader', () => {
+  it('quotes a plain display name', () => {
+    expect(formatFromHeader('TrackPitch', 'hello@example.com')).toBe('"TrackPitch" <hello@example.com>');
+  });
+
+  it('escapes a double quote in the display name', () => {
+    expect(formatFromHeader('Sender\'s "Nickname" Band', 'hello@example.com'))
+      .toBe('"Sender\'s \\"Nickname\\" Band" <hello@example.com>');
+  });
+
+  it('escapes a backslash in the display name', () => {
+    expect(formatFromHeader('Rock \\ Roll', 'hello@example.com')).toBe('"Rock \\\\ Roll" <hello@example.com>');
+  });
+
+  it('omits the quoting entirely for an empty name', () => {
+    expect(formatFromHeader('', 'hello@example.com')).toBe('hello@example.com');
+    expect(formatFromHeader('   ', 'hello@example.com')).toBe('hello@example.com');
+  });
+});
 
 describe('dedupeByRecipient', () => {
   it('collapses multiple messages to the same address down to one', () => {

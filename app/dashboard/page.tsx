@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { hydrateFromRemote, syncStorage } from '@/lib/remoteSync';
 import type {
   Artist, RadioStation, PlaylistCurator, EmailAccount,
@@ -23,6 +23,12 @@ import { DemosSection } from './sections/DemosSection';
 import { PromotionSection } from './sections/PromotionSection';
 import { AccountSection } from './sections/AccountSection';
 import { HistorySection } from './sections/HistorySection';
+
+// Rendering every recipient's fully-built email body in the preview modal doesn't
+// scale to a several-hundred-row send — it's wasted work the user never scrolls
+// to. Capped, but the modal still reports the true recipient count (see
+// previewModalTotal below) so "first 20" never reads as "this is everyone".
+const PREVIEW_MODAL_RECIPIENT_CAP = 20;
 
 export default function Dashboard() {
   const [activeSection, setActiveSection] = useState<'overview' | 'demos' | 'promotion' | 'account' | 'history'>('demos');
@@ -436,11 +442,14 @@ export default function Dashboard() {
 
   // Build email preview modal entries
   type PreviewEntry = { label: string; to: string; subject: string; body: string };
-  const previewModalEntries = useMemo((): PreviewEntry[] => {
-    if (!previewModalType) return [];
+  // Total true recipient count for the active preview type, computed over the
+  // *unsliced* lists — this is what lets the modal say "first 20 of 340" instead
+  // of quietly only ever showing 20.
+  const { entries: previewModalEntries, total: previewModalTotal } = useMemo((): { entries: PreviewEntry[]; total: number } => {
+    if (!previewModalType) return { entries: [], total: 0 };
     if (previewModalType === 'demos') {
       const entries: PreviewEntry[] = [];
-      demos.includedArtists.slice(0, 20).forEach(a => {
+      demos.includedArtists.slice(0, PREVIEW_MODAL_RECIPIENT_CAP).forEach(a => {
         a.managerEmails.forEach((email, idx) => {
           const vars = { managerName: a.managerNames[idx] || 'there', artistName: a.name, trackTitle, driveLink, senderName, managementCompany: a.managementCompany, pronoun: pronounForClient(a.gender, a.type) };
           const tpl = demos.useFollowUp ? demosFollowUpTemplate : demosTemplate;
@@ -468,11 +477,12 @@ export default function Dashboard() {
           body: bodyParts.join('\n\n'),
         });
       });
-      return entries;
+      const total = demos.includedArtists.reduce((sum, a) => sum + a.managerEmails.length, 0) + customContacts.length;
+      return { entries, total };
     }
     if (previewModalType === 'playlists') {
       const entries: PreviewEntry[] = [];
-      playlists.results.slice(0, 20).forEach(c => {
+      playlists.results.slice(0, PREVIEW_MODAL_RECIPIENT_CAP).forEach(c => {
         c.emails.forEach(email => {
           const vars = { curatorName: c.name, trackTitle, driveLink, senderName };
           const bodyParts = [renderTemplateClient(playlists.template, vars)];
@@ -485,10 +495,11 @@ export default function Dashboard() {
           });
         });
       });
-      return entries;
+      const total = playlists.results.reduce((sum, c) => sum + c.emails.length, 0);
+      return { entries, total };
     }
     const entries: PreviewEntry[] = [];
-    radio.results.slice(0, 20).forEach(s => {
+    radio.results.slice(0, PREVIEW_MODAL_RECIPIENT_CAP).forEach(s => {
       s.emails.forEach(email => {
         const vars = { stationName: s.name, trackTitle, driveLink, senderName };
         const bodyParts = [renderTemplateClient(radio.template, vars)];
@@ -501,8 +512,34 @@ export default function Dashboard() {
         });
       });
     });
-    return entries;
+    const total = radio.results.reduce((sum, s) => sum + s.emails.length, 0);
+    return { entries, total };
   }, [previewModalType, demos.includedArtists, radio.results, playlists.results, demosTemplate, demosSubject, demosFollowUpTemplate, demosFollowUpSubject, demos.useFollowUp, radio.template, radio.subject, playlists.template, playlists.subject, account.signOff, trackTitle, driveLink, senderName, customContacts]);
+
+  // Keyboard/focus handling for the preview modal (see the modal markup below):
+  // Escape closes it, and focus moves into the dialog on open and back to
+  // whatever triggered it on close, since there's no focus-trap library in this
+  // project to reach for.
+  const previewModalPanelRef = useRef<HTMLDivElement>(null);
+  const previewModalTriggerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!previewModalType) return;
+    previewModalTriggerRef.current = document.activeElement as HTMLElement | null;
+    previewModalPanelRef.current?.focus();
+    return () => {
+      previewModalTriggerRef.current?.focus();
+    };
+  }, [previewModalType]);
+
+  useEffect(() => {
+    if (!previewModalType) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setPreviewModalType(null);
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [previewModalType]);
 
   const NAV_ITEMS = [
     {
@@ -675,10 +712,21 @@ export default function Dashboard() {
 
       {/* Email Preview Modal */}
       {previewModalType && previewModalEntries.length > 0 && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center p-4 md:p-8 bg-black/70 backdrop-blur-sm overflow-y-auto">
-          <div className="bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl w-full max-w-2xl mt-4 mb-8">
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center p-4 md:p-8 bg-black/70 backdrop-blur-sm overflow-y-auto"
+          onClick={() => setPreviewModalType(null)}
+        >
+          <div
+            ref={previewModalPanelRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="email-preview-modal-heading"
+            tabIndex={-1}
+            onClick={e => e.stopPropagation()}
+            className="bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl w-full max-w-2xl mt-4 mb-8 focus:outline-none"
+          >
             <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800">
-              <h2 className="text-sm font-semibold text-white">Email Preview</h2>
+              <h2 id="email-preview-modal-heading" className="text-sm font-semibold text-white">Email Preview</h2>
               <button onClick={() => setPreviewModalType(null)} className="text-zinc-500 hover:text-white transition text-xl leading-none">×</button>
             </div>
             <div className="p-5 space-y-4">
@@ -693,6 +741,13 @@ export default function Dashboard() {
                     <option key={i} value={i}>{entry.label}</option>
                   ))}
                 </select>
+                {previewModalTotal > previewModalEntries.length ? (
+                  <p className="text-xs text-amber-400 mt-1.5">
+                    Showing the first {previewModalEntries.length} of {previewModalTotal} recipients — the rest will still be sent, this is just a preview.
+                  </p>
+                ) : (
+                  <p className="text-xs text-zinc-500 mt-1.5">{previewModalTotal} recipient{previewModalTotal === 1 ? '' : 's'}</p>
+                )}
               </div>
               {previewModalEntries[previewModalIdx] && (
                 <div className="space-y-3">
