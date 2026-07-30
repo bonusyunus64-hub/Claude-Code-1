@@ -14,6 +14,10 @@ import {
 import {
   parseContactsCsv, renderTemplateClient, pronounForClient, computeAnalyticsStats,
 } from './utils';
+import {
+  buildPreviewEntries, PREVIEW_MODAL_RECIPIENT_CAP, CUSTOM_CONTACT_RANK,
+  type PreviewCandidate, type PreviewEntry,
+} from './previewEntries';
 import { usePromotionChannel } from './hooks/usePromotionChannel';
 import { useCampaignHistory } from './hooks/useCampaignHistory';
 import { useDemosFlow } from './hooks/useDemosFlow';
@@ -24,11 +28,6 @@ import { PromotionSection } from './sections/PromotionSection';
 import { AccountSection } from './sections/AccountSection';
 import { HistorySection } from './sections/HistorySection';
 
-// Rendering every recipient's fully-built email body in the preview modal doesn't
-// scale to a several-hundred-row send — it's wasted work the user never scrolls
-// to. Capped, but the modal still reports the true recipient count (see
-// previewModalTotal below) so "first 20" never reads as "this is everyone".
-const PREVIEW_MODAL_RECIPIENT_CAP = 20;
 
 export default function Dashboard() {
   const [activeSection, setActiveSection] = useState<'overview' | 'demos' | 'promotion' | 'account' | 'history'>('demos');
@@ -440,80 +439,76 @@ export default function Dashboard() {
     finally { setTestEmailSending(false); }
   }
 
-  // Build email preview modal entries
-  type PreviewEntry = { label: string; to: string; subject: string; body: string };
-  // Total true recipient count for the active preview type, computed over the
-  // *unsliced* lists — this is what lets the modal say "first 20 of 340" instead
-  // of quietly only ever showing 20.
+  // Build email preview modal entries. Candidates are cheap (no template rendering)
+  // so building the *full*, unsliced list per branch costs nothing; buildPreviewEntries
+  // is what dedupes them by address and renders only the capped survivors.
   const { entries: previewModalEntries, total: previewModalTotal } = useMemo((): { entries: PreviewEntry[]; total: number } => {
     if (!previewModalType) return { entries: [], total: 0 };
     if (previewModalType === 'demos') {
-      const entries: PreviewEntry[] = [];
-      demos.includedArtists.slice(0, PREVIEW_MODAL_RECIPIENT_CAP).forEach(a => {
-        a.managerEmails.forEach((email, idx) => {
-          const vars = { managerName: a.managerNames[idx] || 'there', artistName: a.name, trackTitle, driveLink, senderName, managementCompany: a.managementCompany, pronoun: pronounForClient(a.gender, a.type) };
-          const tpl = demos.useFollowUp ? demosFollowUpTemplate : demosTemplate;
-          const subjectTpl = demos.useFollowUp ? demosFollowUpSubject : demosSubject;
-          const bodyParts = [renderTemplateClient(tpl, vars)];
-          if (account.signOff?.trim()) bodyParts.push(renderTemplateClient(account.signOff, vars));
-          entries.push({
-            label: `${a.name}${a.managerNames[idx] ? ` (${a.managerNames[idx]})` : ''} <${email}>`,
-            to: email,
-            subject: renderTemplateClient(subjectTpl, vars),
-            body: bodyParts.join('\n\n'),
-          });
-        });
-      });
-      customContacts.forEach(cc => {
-        const vars = { managerName: cc.managerName || 'there', artistName: cc.artistName, trackTitle, driveLink, senderName, managementCompany: '', pronoun: 'they' };
-        const tpl = demos.useFollowUp ? demosFollowUpTemplate : demosTemplate;
-        const subjectTpl = demos.useFollowUp ? demosFollowUpSubject : demosSubject;
+      const tpl = demos.useFollowUp ? demosFollowUpTemplate : demosTemplate;
+      const subjectTpl = demos.useFollowUp ? demosFollowUpSubject : demosSubject;
+      const render = (vars: Record<string, string>) => {
         const bodyParts = [renderTemplateClient(tpl, vars)];
         if (account.signOff?.trim()) bodyParts.push(renderTemplateClient(account.signOff, vars));
-        entries.push({
+        return { subject: renderTemplateClient(subjectTpl, vars), body: bodyParts.join('\n\n') };
+      };
+      const candidates: PreviewCandidate[] = [];
+      // Custom contacts first: they always outrank roster suggestions for the same
+      // address (CUSTOM_CONTACT_RANK), and putting them first also means a hand-added
+      // contact — the whole reason someone added it — isn't the entry that falls off
+      // the end when a large roster match pushes the deduped list past the cap.
+      customContacts.forEach(cc => {
+        candidates.push({
+          to: cc.managerEmail, subject: '', body: '', rank: CUSTOM_CONTACT_RANK,
           label: `${cc.artistName}${cc.managerName ? ` (${cc.managerName})` : ''} <${cc.managerEmail}> [Custom]`,
-          to: cc.managerEmail,
-          subject: renderTemplateClient(subjectTpl, vars),
-          body: bodyParts.join('\n\n'),
+          vars: { managerName: cc.managerName || 'there', artistName: cc.artistName, trackTitle, driveLink, senderName, managementCompany: '', pronoun: 'they' },
         });
       });
-      const total = demos.includedArtists.reduce((sum, a) => sum + a.managerEmails.length, 0) + customContacts.length;
-      return { entries, total };
-    }
-    if (previewModalType === 'playlists') {
-      const entries: PreviewEntry[] = [];
-      playlists.results.slice(0, PREVIEW_MODAL_RECIPIENT_CAP).forEach(c => {
-        c.emails.forEach(email => {
-          const vars = { curatorName: c.name, trackTitle, driveLink, senderName };
-          const bodyParts = [renderTemplateClient(playlists.template, vars)];
-          if (account.signOff?.trim()) bodyParts.push(renderTemplateClient(account.signOff, vars));
-          entries.push({
-            label: `${c.name} <${email}>`,
-            to: email,
-            subject: renderTemplateClient(playlists.subject, vars),
-            body: bodyParts.join('\n\n'),
+      demos.includedArtists.forEach(a => {
+        a.managerEmails.forEach((email, idx) => {
+          candidates.push({
+            to: email, subject: '', body: '', rank: a.spotifyFollowers ?? 0,
+            label: `${a.name}${a.managerNames[idx] ? ` (${a.managerNames[idx]})` : ''} <${email}>`,
+            vars: { managerName: a.managerNames[idx] || 'there', artistName: a.name, trackTitle, driveLink, senderName, managementCompany: a.managementCompany, pronoun: pronounForClient(a.gender, a.type) },
           });
         });
       });
-      const total = playlists.results.reduce((sum, c) => sum + c.emails.length, 0);
-      return { entries, total };
+      return buildPreviewEntries(candidates, PREVIEW_MODAL_RECIPIENT_CAP, render);
     }
-    const entries: PreviewEntry[] = [];
-    radio.results.slice(0, PREVIEW_MODAL_RECIPIENT_CAP).forEach(s => {
-      s.emails.forEach(email => {
-        const vars = { stationName: s.name, trackTitle, driveLink, senderName };
-        const bodyParts = [renderTemplateClient(radio.template, vars)];
+    if (previewModalType === 'playlists') {
+      const render = (vars: Record<string, string>) => {
+        const bodyParts = [renderTemplateClient(playlists.template, vars)];
         if (account.signOff?.trim()) bodyParts.push(renderTemplateClient(account.signOff, vars));
-        entries.push({
+        return { subject: renderTemplateClient(playlists.subject, vars), body: bodyParts.join('\n\n') };
+      };
+      const candidates: PreviewCandidate[] = [];
+      playlists.results.forEach(c => {
+        c.emails.forEach(email => {
+          candidates.push({
+            to: email, subject: '', body: '',
+            label: `${c.name} <${email}>`,
+            vars: { curatorName: c.name, trackTitle, driveLink, senderName },
+          });
+        });
+      });
+      return buildPreviewEntries(candidates, PREVIEW_MODAL_RECIPIENT_CAP, render);
+    }
+    const render = (vars: Record<string, string>) => {
+      const bodyParts = [renderTemplateClient(radio.template, vars)];
+      if (account.signOff?.trim()) bodyParts.push(renderTemplateClient(account.signOff, vars));
+      return { subject: renderTemplateClient(radio.subject, vars), body: bodyParts.join('\n\n') };
+    };
+    const candidates: PreviewCandidate[] = [];
+    radio.results.forEach(s => {
+      s.emails.forEach(email => {
+        candidates.push({
+          to: email, subject: '', body: '',
           label: `${s.name} <${email}>`,
-          to: email,
-          subject: renderTemplateClient(radio.subject, vars),
-          body: bodyParts.join('\n\n'),
+          vars: { stationName: s.name, trackTitle, driveLink, senderName },
         });
       });
     });
-    const total = radio.results.reduce((sum, s) => sum + s.emails.length, 0);
-    return { entries, total };
+    return buildPreviewEntries(candidates, PREVIEW_MODAL_RECIPIENT_CAP, render);
   }, [previewModalType, demos.includedArtists, radio.results, playlists.results, demosTemplate, demosSubject, demosFollowUpTemplate, demosFollowUpSubject, demos.useFollowUp, radio.template, radio.subject, playlists.template, playlists.subject, account.signOff, trackTitle, driveLink, senderName, customContacts]);
 
   // Keyboard/focus handling for the preview modal (see the modal markup below):
@@ -743,7 +738,7 @@ export default function Dashboard() {
                 </select>
                 {previewModalTotal > previewModalEntries.length ? (
                   <p className="text-xs text-amber-400 mt-1.5">
-                    Showing the first {previewModalEntries.length} of {previewModalTotal} recipients — the rest will still be sent, this is just a preview.
+                    Showing the first {previewModalEntries.length} of {previewModalTotal} recipients — the rest will still be sent, just not previewed here.
                   </p>
                 ) : (
                   <p className="text-xs text-zinc-500 mt-1.5">{previewModalTotal} recipient{previewModalTotal === 1 ? '' : 's'}</p>

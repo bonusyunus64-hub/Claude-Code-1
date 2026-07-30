@@ -1,6 +1,7 @@
 import nodemailer from 'nodemailer';
 import { textToHtml } from '@/lib/emailTemplate';
 import { buildUnsubscribeUrl, buildUnsubscribeApiUrl } from '@/lib/unsubscribe';
+import type { OutboundMessage } from '@/lib/recipients';
 
 // Same fallback used by /api/test-email — the real deployed URL when NEXT_PUBLIC_BASE_URL
 // isn't set, so unsubscribe links in outbound mail are never accidentally localhost.
@@ -15,15 +16,7 @@ export interface FromAccount {
   smtpPass: string;
 }
 
-export interface OutboundMessage {
-  to: string;
-  subject: string;
-  body: string;
-  /** Higher wins when two messages target the same address. See dedupeByRecipient. */
-  rank?: number;
-  /** Message-ID of the pitch this one follows up on, so it threads instead of arriving cold. */
-  inReplyTo?: string;
-}
+export type { OutboundMessage } from '@/lib/recipients';
 
 export interface SendResult {
   to: string;
@@ -162,40 +155,9 @@ export async function sendMessages(
   return results;
 }
 
-/**
- * One address, one email per send.
- *
- * The roster maps its artists onto far fewer manager addresses than there are
- * artists — a single address can represent 40+ of them — so building one message
- * per artist drops dozens of near-identical pitches into the same inbox within
- * seconds. That reads as spam to both the human and the receiving server.
- *
- * Keeps the highest-`rank` message per address (ties keep the first seen), so
- * callers control which artist gets to front the pitch. Insertion order is
- * preserved: replacing a Map value leaves its original position alone.
- */
-export function dedupeByRecipient<T extends OutboundMessage>(messages: T[]): T[] {
-  const best = new Map<string, T>();
-  for (const msg of messages) {
-    const key = msg.to.trim().toLowerCase();
-    const current = best.get(key);
-    if (!current || (msg.rank ?? 0) > (current.rank ?? 0)) best.set(key, msg);
-  }
-  return Array.from(best.values());
-}
-
-/**
- * Slices a full message list into one page. Send routes accept `offset`/`limit`
- * so the client can send in small batches instead of one long request that
- * risks a serverless function timeout on large recipient lists.
- */
-export function paginate<T>(items: T[], offset: number, limit: number) {
-  const batch = items.slice(offset, offset + limit);
-  const nextOffset = offset + batch.length < items.length ? offset + batch.length : null;
-  return { batch, total: items.length, nextOffset };
-}
-
-// Sized so a batch comfortably finishes inside the send routes' maxDuration=60s
-// even with SMTP retries (up to 2, ~1-2s each) stacked on top of the largest
-// realistic inter-message sendDelay — 25 ran too close to that ceiling in practice.
-export const DEFAULT_SEND_BATCH_SIZE = 10;
+// Re-exported so every server-side importer of these (app/api/send/route.ts,
+// lib/broadcastSend.ts, the tests) keeps working unchanged. They live in
+// lib/recipients.ts because the preview modal in the browser needs the same
+// dedupe logic, and importing it from here would drag nodemailer into the client
+// bundle — see that file's header for the full reasoning.
+export { dedupeByRecipient, paginate, DEFAULT_SEND_BATCH_SIZE } from '@/lib/recipients';
