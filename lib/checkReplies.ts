@@ -186,6 +186,14 @@ export async function findResponders(config: ImapConfig, emails: string[], since
     secure: true,
     auth: { user: config.user, pass: config.pass },
     logger: false,
+    // ImapFlow's defaults (16s/90s/5min) assume a long-running process. This runs
+    // inside a serverless function with a much smaller execution budget, so an
+    // unresponsive mail server should fail fast with the clear, actionable error
+    // app/api/check-replies/route.ts's catch block produces, rather than running
+    // until the platform kills the function with a generic timeout.
+    greetingTimeout: 10_000,
+    connectionTimeout: 15_000,
+    socketTimeout: 30_000,
   });
 
   const recipientSet = new Set(emails.map(e => e.trim().toLowerCase()));
@@ -230,7 +238,10 @@ export async function findResponders(config: ImapConfig, emails: string[], since
       }
     }
   } finally {
-    await client.logout();
+    // Best-effort: if the connection is already broken (e.g. the operation above
+    // failed because the socket died), logout() rejecting too would replace the
+    // original, more useful error with a secondary one about the connection.
+    await client.logout().catch(() => {});
   }
 
   return {
