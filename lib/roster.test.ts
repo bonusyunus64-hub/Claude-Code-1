@@ -34,9 +34,10 @@ const FIXTURE_ARTISTS: Artist[] = [
   },
 ];
 
-vi.mock('fs', () => ({
-  readFileSync: () => JSON.stringify({ artists: FIXTURE_ARTISTS, genres: ['Pop', 'Rock', 'Indie'] }),
-}));
+vi.mock('fs', () => {
+  const readFileSync = () => JSON.stringify({ artists: FIXTURE_ARTISTS, genres: ['Pop', 'Rock', 'Indie'] });
+  return { readFileSync, default: { readFileSync } };
+});
 
 const { getArtistsByGenres, getTopGenres, searchArtistsByName } = await import('./roster');
 

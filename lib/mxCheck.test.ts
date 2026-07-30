@@ -3,15 +3,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mxRecords = new Map<string, { exchange: string; priority: number }[]>();
 const aRecords = new Set<string>();
 
-vi.mock('dns', () => ({
-  promises: {
+vi.mock('dns', () => {
+  const promises = {
     resolveMx: (domain: string) => {
       const records = mxRecords.get(domain);
       return records && records.length > 0 ? Promise.resolve(records) : Promise.reject(new Error('ENODATA'));
     },
     resolve: (domain: string) => aRecords.has(domain) ? Promise.resolve(['1.2.3.4']) : Promise.reject(new Error('ENOTFOUND')),
-  },
-}));
+  };
+  return { promises, default: { promises } };
+});
 
 import { domainOf, isWellFormedEmail, checkRecipients } from './mxCheck';
 
