@@ -84,6 +84,12 @@ export default function Dashboard() {
   const [lastSavedSignOff, setLastSavedSignOff] = useState(DEFAULT_SIGN_OFF);
   const [lastSavedSignOffImage, setLastSavedSignOffImage] = useState<string | null>(null);
 
+  // Set when saveAll() finds that one of its syncStorage.setItem calls couldn't write to
+  // localStorage (see the return-value comment on syncStorage.setItem) — most likely the
+  // signature image pushing the synced-settings blob over the browser's 5MB quota. The
+  // server copy still saved fine, so this is informational rather than blocking.
+  const [saveLocalWarning, setSaveLocalWarning] = useState('');
+
   // Accounts, sign-off, blacklist, failed-sends, send-pacing settings, deliverability —
   // instantiated first since history/radio/playlists/demos below all read config
   // from it (account.signOff, account.blacklist, account.accountCapError, etc.).
@@ -297,17 +303,26 @@ export default function Dashboard() {
     account.signOffImage !== lastSavedSignOffImage;
 
   function saveAll() {
-    syncStorage.setItem('tp_email_template', demosTemplate);
-    syncStorage.setItem('tp_email_subject', demosSubject);
-    syncStorage.setItem('tp_followup_template', demosFollowUpTemplate);
-    syncStorage.setItem('tp_followup_subject', demosFollowUpSubject);
-    syncStorage.setItem('tp_radio_template', radioTemplate);
-    syncStorage.setItem('tp_radio_subject', radioSubject);
-    syncStorage.setItem('tp_playlist_template', playlistTemplate);
-    syncStorage.setItem('tp_playlist_subject', playlistSubject);
-    syncStorage.setItem('tp_sign_off', account.signOff);
-    if (account.signOffImage) syncStorage.setItem('tp_sign_off_image', account.signOffImage);
+    // syncStorage.setItem returns false when the localStorage half of the write failed
+    // (e.g. quota exceeded) — it still pushes to the server regardless, so nothing here
+    // is actually lost, but the user should know their next page-load might not reflect
+    // it instantly if this browser goes offline before the server copy is fetched again.
+    let localWriteFailed = false;
+    const track = (ok: boolean) => { if (!ok) localWriteFailed = true; };
+    track(syncStorage.setItem('tp_email_template', demosTemplate));
+    track(syncStorage.setItem('tp_email_subject', demosSubject));
+    track(syncStorage.setItem('tp_followup_template', demosFollowUpTemplate));
+    track(syncStorage.setItem('tp_followup_subject', demosFollowUpSubject));
+    track(syncStorage.setItem('tp_radio_template', radioTemplate));
+    track(syncStorage.setItem('tp_radio_subject', radioSubject));
+    track(syncStorage.setItem('tp_playlist_template', playlistTemplate));
+    track(syncStorage.setItem('tp_playlist_subject', playlistSubject));
+    track(syncStorage.setItem('tp_sign_off', account.signOff));
+    if (account.signOffImage) track(syncStorage.setItem('tp_sign_off_image', account.signOffImage));
     else syncStorage.removeItem('tp_sign_off_image');
+    setSaveLocalWarning(localWriteFailed
+      ? "Saved to your account, but this browser's local storage is full (likely the signature image) — clear some space or shrink the image so this device stays in sync while offline."
+      : '');
     setLastSavedDemosTemplate(demosTemplate);
     setLastSavedDemosSubject(demosSubject);
     setLastSavedFollowUpTemplate(demosFollowUpTemplate);
@@ -331,6 +346,7 @@ export default function Dashboard() {
     setPlaylistSubject(lastSavedPlaylistSubject);
     account.setSignOff(lastSavedSignOff);
     account.setSignOffImage(lastSavedSignOffImage);
+    setSaveLocalWarning('');
   }
 
   function addCustomContact() {
@@ -647,6 +663,13 @@ export default function Dashboard() {
           <span className="text-xs text-zinc-400 mr-1 flex-1 md:flex-none">Unsaved changes</span>
           <button onClick={discardChanges} className="text-xs text-zinc-400 hover:text-zinc-200 px-2 py-1.5 rounded transition hover:bg-zinc-800">Discard</button>
           <button onClick={saveAll} className="text-xs bg-violet-600 hover:bg-violet-500 text-white font-semibold px-3 py-1.5 rounded-lg transition">Save</button>
+        </div>
+      )}
+
+      {!isDirty && saveLocalWarning && (
+        <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-6 md:bottom-6 md:w-auto md:max-w-sm z-50 flex items-start gap-2 bg-zinc-900 border border-amber-700/50 rounded-xl shadow-2xl shadow-black/50 px-4 py-3">
+          <span className="text-xs text-amber-400 flex-1">{saveLocalWarning}</span>
+          <button onClick={() => setSaveLocalWarning('')} className="text-zinc-500 hover:text-white transition text-sm leading-none shrink-0">×</button>
         </div>
       )}
 

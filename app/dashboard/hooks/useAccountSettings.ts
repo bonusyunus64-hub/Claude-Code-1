@@ -5,6 +5,117 @@ import { syncStorage } from '@/lib/remoteSync';
 import type { EmailAccount, NewAccountForm, DeliverabilityResult } from '../types';
 import { DEFAULT_SIGN_OFF, BLANK_ACCOUNT } from '../constants';
 
+// --- Signature image upload: bounded size, downscaled client-side ---
+//
+// The data URL produced here travels a long way: into localStorage (5MB browser
+// quota), into Redis via /api/state (see lib/remoteSync.ts), into the body of every
+// outbound send request, and into every campaign's persisted pendingSend.payload. An
+// unbounded upload — a user reasonably dropping in a full-resolution signature export —
+// blows through all four before anyone notices: a ~3MB PNG becomes a ~4MB base64
+// string, well past what Upstash accepts in a single write, so a large signature can
+// break campaign-history persistence for the whole account, not just the signature.
+//
+// Signatures render at max-width:600px in the email body (lib/mailSend.ts) and at
+// max-h-24 in the settings preview below, so there's no visual benefit to keeping more
+// resolution than that. Rather than reject anything over the cap outright, this
+// downscales via an offscreen canvas until the encoded result fits.
+
+// ~200KB keeps a single signature well clear of Upstash's per-write limits even after
+// JSON/base64 overhead, while leaving headroom for everything else already living in
+// the same synced-settings blob (see SYNCED_KEYS in lib/remoteSync.ts) and in each
+// campaign's pendingSend.payload.
+export const SIGN_OFF_IMAGE_MAX_BYTES = 200 * 1024;
+
+// Comfortably above both render sizes (600px wide in email, ~96px tall in the
+// max-h-24 preview) so a downscaled signature still looks sharp at either.
+export const SIGN_OFF_IMAGE_MAX_EDGE = 600;
+
+/**
+ * Pure: given an image's natural size and a target longest-edge, returns the size to
+ * draw it at. Never upscales — a signature already smaller than the cap is left
+ * exactly as-is instead of being blown up and softened.
+ */
+export function fitWithinEdge(width: number, height: number, maxEdge: number): { width: number; height: number } {
+  const longest = Math.max(width, height);
+  if (longest <= maxEdge || longest === 0) return { width, height };
+  const scale = maxEdge / longest;
+  return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
+}
+
+/**
+ * Pure: the actual byte size of the binary a data URL encodes, as opposed to the
+ * string's own length — base64 inflates size by ~4/3, and the `data:image/png;base64,`
+ * prefix isn't part of the image at all, so `.length` alone overstates or understates
+ * depending on the prefix's length relative to the payload.
+ */
+export function dataUrlByteSize(dataUrl: string): number {
+  const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error('Could not read that file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImage(dataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Could not decode that image.'));
+    img.src = dataUrl;
+  });
+}
+
+/**
+ * Draws `img` at `width`x`height` onto an offscreen canvas and re-encodes as PNG (not
+ * JPEG) so a signature with a transparent background stays transparent. Kept as its
+ * own function (rather than inlined into the resize loop below) so it can be driven
+ * directly in tests via a stubbed Image/canvas, without needing a real image decode.
+ */
+export function renderScaledPng(img: CanvasImageSource, width: number, height: number): string {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not process that image.');
+  ctx.drawImage(img, 0, 0, width, height);
+  return canvas.toDataURL('image/png');
+}
+
+// How many times to try a smaller size before giving up — each attempt shrinks the
+// target long-edge by 25%, so 6 attempts covers 600px down to well under 100px, far
+// past the point any real signature would still need shrinking.
+const MAX_DOWNSCALE_ATTEMPTS = 6;
+const MIN_EDGE_PX = 40;
+
+/**
+ * File -> bounded data URL. Returns the original data URL untouched when it's already
+ * under the cap, so a small image isn't needlessly re-encoded and re-compressed.
+ * Otherwise decodes it, downscales toward SIGN_OFF_IMAGE_MAX_EDGE, and re-encodes,
+ * stepping the target size down further if one pass isn't enough — PNG is lossless,
+ * so dimensions are the only lever available here, unlike JPEG's quality knob.
+ */
+async function buildBoundedSignOffImage(file: File): Promise<string> {
+  const original = await readFileAsDataUrl(file);
+  if (dataUrlByteSize(original) <= SIGN_OFF_IMAGE_MAX_BYTES) return original;
+
+  const img = await loadImage(original);
+  let maxEdge = SIGN_OFF_IMAGE_MAX_EDGE;
+  for (let attempt = 0; attempt < MAX_DOWNSCALE_ATTEMPTS && maxEdge >= MIN_EDGE_PX; attempt++) {
+    const { width, height } = fitWithinEdge(img.naturalWidth || img.width, img.naturalHeight || img.height, maxEdge);
+    const resized = renderScaledPng(img, width, height);
+    if (dataUrlByteSize(resized) <= SIGN_OFF_IMAGE_MAX_BYTES) return resized;
+    maxEdge = Math.round(maxEdge * 0.75);
+  }
+  throw new Error('That image is too large to use as a signature even after shrinking. Try a smaller or simpler image.');
+}
+
 /**
  * Accounts, sign-off, blacklist, failed-sends, send-pacing settings, and
  * deliverability — everything the Account tab owns, plus the handful of values
@@ -31,6 +142,7 @@ export function useAccountSettings() {
 
   const [signOff, setSignOff] = useState(DEFAULT_SIGN_OFF);
   const [signOffImage, setSignOffImage] = useState<string | null>(null);
+  const [signOffImageError, setSignOffImageError] = useState('');
 
   const [sendDelay, setSendDelay] = useState(0);
   const [dailySendCap, setDailySendCap] = useState(0);
@@ -102,12 +214,21 @@ export function useAccountSettings() {
     syncStorage.setItem('tp_selected_account', id);
   }
 
-  function handleSignOffImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleSignOffImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
+    // Reset the input so choosing the same file again after a rejection still fires onChange.
+    e.target.value = '';
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setSignOffImage(reader.result as string);
-    reader.readAsDataURL(file);
+    setSignOffImageError('');
+    if (!file.type.startsWith('image/')) {
+      setSignOffImageError('Please choose an image file.');
+      return;
+    }
+    try {
+      setSignOffImage(await buildBoundedSignOffImage(file));
+    } catch (err) {
+      setSignOffImageError(err instanceof Error ? err.message : 'Could not process that image.');
+    }
   }
 
   function addToBlacklist() {
@@ -209,7 +330,7 @@ export function useAccountSettings() {
     emailAccounts, setEmailAccounts, selectedAccountId, setSelectedAccountId, selectAccount, removeAccount,
     showAddAccount, setShowAddAccount, newAccount, setNewAccount, addAccount, savingAccount, accountError, setAccountError,
 
-    signOff, setSignOff, signOffImage, setSignOffImage, handleSignOffImageUpload,
+    signOff, setSignOff, signOffImage, setSignOffImage, handleSignOffImageUpload, signOffImageError, setSignOffImageError,
 
     blacklist, setBlacklist, newBlacklistEmail, setNewBlacklistEmail, addToBlacklist, removeFromBlacklist, addFailedToBlacklist,
 

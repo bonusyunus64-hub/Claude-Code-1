@@ -22,7 +22,15 @@ export default function LoginPage() {
       if (res.ok) {
         router.push('/dashboard');
       } else {
-        setError('Incorrect password.');
+        // /api/auth returns { error } for both a plain wrong-password 401 and a rate-limited
+        // 429 — the latter carries lib/rateLimit.ts's lockout message (e.g. "Too many
+        // incorrect attempts. Try again in 12 minutes."), which the user needs to see so they
+        // stop guessing against a lock that only gets longer with each failed attempt. Fall
+        // back to the generic message if the body has no usable string (including when it
+        // isn't valid JSON at all).
+        const data = await res.json().catch(() => null);
+        const message = typeof data?.error === 'string' && data.error ? data.error : 'Incorrect password.';
+        setError(message);
       }
     } catch {
       setError('Something went wrong. Try again.');

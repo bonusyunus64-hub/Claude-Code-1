@@ -21,6 +21,7 @@ export interface AccountSectionProps {
   signOffImage: string | null;
   setSignOffImage: (value: string | null) => void;
   handleSignOffImageUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  signOffImageError: string;
 
   blacklist: string[];
   newBlacklistEmail: string;
@@ -72,7 +73,7 @@ export function AccountSection(props: AccountSectionProps) {
   const {
     emailAccounts, selectedAccountId, selectAccount, removeAccount,
     showAddAccount, setShowAddAccount, newAccount, setNewAccount, addAccount, savingAccount, accountError, setAccountError,
-    signOff, setSignOff, signOffImage, setSignOffImage, handleSignOffImageUpload,
+    signOff, setSignOff, signOffImage, setSignOffImage, handleSignOffImageUpload, signOffImageError,
     blacklist, newBlacklistEmail, setNewBlacklistEmail, addToBlacklist, removeFromBlacklist,
     failedEmails, moveFailedToDoNotContact, removeFromFailedEmails,
     sendDelay, setSendDelay,
@@ -195,6 +196,7 @@ export function AccountSection(props: AccountSectionProps) {
             <input type="file" accept="image/*" className="hidden" onChange={handleSignOffImageUpload} />
           </label>
         )}
+        {signOffImageError && <p className="text-xs text-red-400">{signOffImageError}</p>}
         <button onClick={() => setSignOff(DEFAULT_SIGN_OFF)} className="text-xs text-zinc-500 hover:text-zinc-300 transition">Reset to default</button>
       </section>
 

@@ -4,8 +4,17 @@ import { renderHook, act } from '@testing-library/react';
 const syncStorage = vi.hoisted(() => ({ setItem: vi.fn(), removeItem: vi.fn() }));
 vi.mock('@/lib/remoteSync', () => ({ syncStorage }));
 
-import { useAccountSettings } from './useAccountSettings';
+import { useAccountSettings, fitWithinEdge, dataUrlByteSize, SIGN_OFF_IMAGE_MAX_BYTES } from './useAccountSettings';
 import type { EmailAccount } from '../types';
+
+function makeChangeEvent(file: File | undefined): React.ChangeEvent<HTMLInputElement> {
+  return { target: { files: file ? [file] : [], value: '' } } as unknown as React.ChangeEvent<HTMLInputElement>;
+}
+
+/** A base64 string of roughly `bytes` decoded bytes — enough to build an oversized file without a real image. */
+function base64OfSize(bytes: number): string {
+  return 'A'.repeat(Math.ceil((bytes * 4) / 3));
+}
 
 function account(overrides: Partial<EmailAccount> = {}): EmailAccount {
   return { id: 'acct-1', name: 'Main', email: 'main@example.com', smtpHost: 'smtp.zoho.com', smtpPort: '465', smtpUser: 'main@example.com', ...overrides };
@@ -247,5 +256,155 @@ describe('useAccountSettings', () => {
       const [, init] = fetchMock.mock.calls[0];
       expect(JSON.parse((init as RequestInit).body as string)).toEqual({ domain: 'example.com' });
     });
+  });
+
+  describe('handleSignOffImageUpload', () => {
+    it('does nothing when no file was chosen', async () => {
+      const { result } = renderHook(() => useAccountSettings());
+      await act(async () => { await result.current.handleSignOffImageUpload(makeChangeEvent(undefined)); });
+      expect(result.current.signOffImage).toBeNull();
+      expect(result.current.signOffImageError).toBe('');
+    });
+
+    it('rejects a non-image file with a visible error and leaves signOffImage untouched', async () => {
+      const { result } = renderHook(() => useAccountSettings());
+      const file = new File(['not an image'], 'notes.txt', { type: 'text/plain' });
+      await act(async () => { await result.current.handleSignOffImageUpload(makeChangeEvent(file)); });
+      expect(result.current.signOffImage).toBeNull();
+      expect(result.current.signOffImageError).toBe('Please choose an image file.');
+    });
+
+    it('stores a small image directly, without touching Image/canvas at all', async () => {
+      // Small enough that dataUrlByteSize(...) <= SIGN_OFF_IMAGE_MAX_BYTES, so the
+      // implementation should short-circuit before ever constructing an Image.
+      const imageCtor = vi.fn();
+      vi.stubGlobal('Image', imageCtor);
+      const { result } = renderHook(() => useAccountSettings());
+      const file = new File(['tiny signature bytes'], 'sig.png', { type: 'image/png' });
+      await act(async () => { await result.current.handleSignOffImageUpload(makeChangeEvent(file)); });
+      expect(result.current.signOffImage).toMatch(/^data:image\/png;base64,/);
+      expect(result.current.signOffImageError).toBe('');
+      expect(imageCtor).not.toHaveBeenCalled();
+    });
+
+    it('downscales an oversized image, stepping dimensions down until the re-encoded PNG fits the cap', async () => {
+      // Stand in for a large photo: file content alone decodes to well over the cap.
+      const file = new File([base64OfSize(SIGN_OFF_IMAGE_MAX_BYTES * 3)], 'signature.png', { type: 'image/png' });
+
+      // jsdom doesn't decode images at all (Image never fires load/error for a real
+      // src), so both Image and canvas need stubbing to exercise this path.
+      class FakeImage {
+        naturalWidth = 3000;
+        naturalHeight = 1500;
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        set src(_v: string) { queueMicrotask(() => this.onload?.()); }
+      }
+      vi.stubGlobal('Image', FakeImage);
+
+      // Each render's output "size" scales with requested canvas area, tuned so the
+      // first pass (600x300, the un-stepped-down SIGN_OFF_IMAGE_MAX_EDGE) is still over
+      // the cap and the second pass (after one 25% step-down) fits — exercising the
+      // real step-down loop, not just a single pass.
+      const toDataURL = vi.fn((canvas: { width: number; height: number }) => {
+        const bytes = Math.floor(canvas.width * canvas.height * 1.7);
+        return `data:image/png;base64,${base64OfSize(bytes)}`;
+      });
+      const realCreateElement = document.createElement.bind(document);
+      const createElementSpy = vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+        if (tag !== 'canvas') return realCreateElement(tag);
+        const canvas = { width: 0, height: 0, getContext: () => ({ drawImage: () => {} }), toDataURL: () => '' };
+        canvas.toDataURL = () => toDataURL(canvas);
+        return canvas as unknown as HTMLCanvasElement;
+      });
+
+      const { result } = renderHook(() => useAccountSettings());
+      await act(async () => { await result.current.handleSignOffImageUpload(makeChangeEvent(file)); });
+
+      expect(result.current.signOffImageError).toBe('');
+      expect(result.current.signOffImage).toMatch(/^data:image\/png;base64,/);
+      expect(dataUrlByteSize(result.current.signOffImage!)).toBeLessThanOrEqual(SIGN_OFF_IMAGE_MAX_BYTES);
+      // More than one render pass was needed — confirms the step-down loop actually ran.
+      expect(toDataURL.mock.calls.length).toBeGreaterThan(1);
+
+      createElementSpy.mockRestore();
+    });
+
+    it('gives up with a clear, user-visible error when no amount of downscaling fits the cap', async () => {
+      const file = new File([base64OfSize(SIGN_OFF_IMAGE_MAX_BYTES * 3)], 'signature.png', { type: 'image/png' });
+
+      class FakeImage {
+        naturalWidth = 3000;
+        naturalHeight = 1500;
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        set src(_v: string) { queueMicrotask(() => this.onload?.()); }
+      }
+      vi.stubGlobal('Image', FakeImage);
+
+      // Always over the cap, no matter how small the requested canvas gets.
+      const realCreateElement = document.createElement.bind(document);
+      const createElementSpy = vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+        if (tag !== 'canvas') return realCreateElement(tag);
+        return {
+          width: 0, height: 0,
+          getContext: () => ({ drawImage: () => {} }),
+          toDataURL: () => `data:image/png;base64,${base64OfSize(SIGN_OFF_IMAGE_MAX_BYTES * 2)}`,
+        } as unknown as HTMLCanvasElement;
+      });
+
+      const { result } = renderHook(() => useAccountSettings());
+      await act(async () => { await result.current.handleSignOffImageUpload(makeChangeEvent(file)); });
+
+      expect(result.current.signOffImage).toBeNull();
+      expect(result.current.signOffImageError).toMatch(/too large/i);
+
+      createElementSpy.mockRestore();
+    });
+
+    it('clears a previous error once a new upload succeeds', async () => {
+      const { result } = renderHook(() => useAccountSettings());
+      const badFile = new File(['x'], 'notes.txt', { type: 'text/plain' });
+      await act(async () => { await result.current.handleSignOffImageUpload(makeChangeEvent(badFile)); });
+      expect(result.current.signOffImageError).not.toBe('');
+
+      const goodFile = new File(['tiny'], 'sig.png', { type: 'image/png' });
+      await act(async () => { await result.current.handleSignOffImageUpload(makeChangeEvent(goodFile)); });
+      expect(result.current.signOffImageError).toBe('');
+      expect(result.current.signOffImage).toMatch(/^data:image\/png;base64,/);
+    });
+  });
+});
+
+describe('fitWithinEdge', () => {
+  it('leaves an image already within the cap untouched', () => {
+    expect(fitWithinEdge(400, 200, 600)).toEqual({ width: 400, height: 200 });
+  });
+
+  it('scales the longest edge down to the cap, preserving aspect ratio', () => {
+    expect(fitWithinEdge(3000, 1500, 600)).toEqual({ width: 600, height: 300 });
+    expect(fitWithinEdge(1500, 3000, 600)).toEqual({ width: 300, height: 600 });
+  });
+
+  it('never upscales a small image', () => {
+    expect(fitWithinEdge(100, 50, 600)).toEqual({ width: 100, height: 50 });
+  });
+
+  it('does not divide by zero for a degenerate zero-sized image', () => {
+    expect(fitWithinEdge(0, 0, 600)).toEqual({ width: 0, height: 0 });
+  });
+});
+
+describe('dataUrlByteSize', () => {
+  it('matches the real decoded byte length of a small data URL', () => {
+    const bytes = Buffer.from('hello world');
+    const dataUrl = `data:image/png;base64,${bytes.toString('base64')}`;
+    expect(dataUrlByteSize(dataUrl)).toBe(bytes.length);
+  });
+
+  it('accounts for base64 padding', () => {
+    const bytes = Buffer.from('ab'); // 2 bytes -> base64 padded with one '='
+    const dataUrl = `data:image/png;base64,${bytes.toString('base64')}`;
+    expect(dataUrlByteSize(dataUrl)).toBe(2);
   });
 });

@@ -60,9 +60,40 @@ function removeFromRemote(key: string): void {
 // Drop-in replacement for the localStorage.setItem/removeItem calls this app already made —
 // same signature, plus a fire-and-forget push to the server.
 export const syncStorage = {
-  setItem(key: string, value: string): void {
-    localStorage.setItem(key, value);
+  /**
+   * localStorage.setItem can throw QuotaExceededError — most commonly today because a
+   * signature image (see handleSignOffImageUpload in useAccountSettings.ts) pushed the
+   * synced-settings blob over the browser's ~5MB-per-origin quota. Before this guard, that
+   * exception propagated straight out of setItem and up through callers that don't wrap
+   * their calls in try/catch (saveAll() in app/dashboard/page.tsx is the main one) — the
+   * Save button would die on whichever key happened to be too big, silently skipping every
+   * key after it in the same function, including the remote push for all of them.
+   *
+   * The fix treats the local write and the remote push as independent: localStorage is
+   * just a fast local cache (hydrateFromRemote() is what lets a second device catch up),
+   * so failing to update it is a much smaller problem than failing to reach the server —
+   * Upstash has no 5MB ceiling, and the server copy is what every other device/tab
+   * reconciles against on load. So a local quota failure is caught and warned about, but
+   * never blocks the remote push from being attempted.
+   *
+   * On reporting the failure: rather than threading a new error-reporting channel through
+   * this module's ~20 call sites (most of which don't check a return value today and don't
+   * need to), setItem returns a boolean — true when localStorage was actually updated,
+   * false when it wasn't. Existing call sites that ignore the return value keep compiling
+   * and behaving exactly as before; a call site that cares (saveAll, which surfaces a
+   * warning near the Save button) can start checking it. That's the least invasive option
+   * that still doesn't let the failure disappear silently.
+   */
+  setItem(key: string, value: string): boolean {
+    let localOk = true;
+    try {
+      localStorage.setItem(key, value);
+    } catch (err) {
+      localOk = false;
+      console.warn(`syncStorage: localStorage.setItem('${key}') failed — continuing with remote-only save.`, err);
+    }
     pushToRemote(key, value);
+    return localOk;
   },
   removeItem(key: string): void {
     localStorage.removeItem(key);
