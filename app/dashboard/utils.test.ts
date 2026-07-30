@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, sendInBatches } from './utils';
+import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, sendInBatches, findDuplicateRecipients, messageIdsFromResults } from './utils';
 
 describe('shuffle', () => {
   it('preserves every element (no drops or duplicates)', () => {
@@ -127,5 +127,50 @@ describe('parseContactsCsv', () => {
 
   it('skips rows without a valid email', () => {
     expect(parseContactsCsv('Nova,not-an-email')).toEqual([]);
+  });
+});
+
+describe('findDuplicateRecipients', () => {
+  const pitchedEmailMap = new Map<string, string[]>([
+    ['a@example.com', ['Song One', 'Song Two']],
+    ['b@example.com', ['Song Two']],
+  ]);
+
+  it('flags addresses already pitched the current track', () => {
+    expect(findDuplicateRecipients(pitchedEmailMap, 'Song One', ['a@example.com', 'c@example.com'])).toEqual(['a@example.com']);
+  });
+
+  it('is case- and whitespace-insensitive on both the track title and the email', () => {
+    expect(findDuplicateRecipients(pitchedEmailMap, '  song one  ', ['A@Example.com'])).toEqual(['A@Example.com']);
+  });
+
+  it('returns nothing when the track title is blank', () => {
+    expect(findDuplicateRecipients(pitchedEmailMap, '', ['a@example.com'])).toEqual([]);
+  });
+
+  it('does not flag an address that was pitched a different track', () => {
+    expect(findDuplicateRecipients(pitchedEmailMap, 'Song Three', ['a@example.com'])).toEqual([]);
+  });
+
+  it('dedupes repeated addresses in the input list', () => {
+    expect(findDuplicateRecipients(pitchedEmailMap, 'Song Two', ['b@example.com', 'B@Example.com'])).toEqual(['b@example.com']);
+  });
+});
+
+describe('messageIdsFromResults', () => {
+  it('maps lowercased recipient to Message-ID for successful sends', () => {
+    const ids = messageIdsFromResults([
+      { to: 'Manager@Example.com', success: true, messageId: '<abc@mail>' },
+      { to: 'b@example.com', success: true, messageId: '<def@mail>' },
+    ]);
+    expect(ids).toEqual({ 'manager@example.com': '<abc@mail>', 'b@example.com': '<def@mail>' });
+  });
+
+  it('skips failed sends and successes with no Message-ID', () => {
+    const ids = messageIdsFromResults([
+      { to: 'a@example.com', success: false, error: 'bounced' },
+      { to: 'b@example.com', success: true },
+    ]);
+    expect(ids).toEqual({});
   });
 });

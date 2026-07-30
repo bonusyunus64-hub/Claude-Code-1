@@ -110,3 +110,57 @@ export function shuffle<T>(arr: T[]): T[] {
   }
   return out;
 }
+
+/**
+ * Which of `emails` were already pitched the current track under a previous
+ * campaign — `pitchedEmailMap` (lowercased email -> track titles it's been sent
+ * for) is built once from campaign history, so this is just a lookup per address.
+ * Empty `trackTitle` means nothing to compare against yet, so nothing is flagged.
+ */
+export function findDuplicateRecipients(
+  pitchedEmailMap: Map<string, string[]>,
+  trackTitle: string,
+  emails: string[]
+): string[] {
+  const title = trackTitle.trim().toLowerCase();
+  if (!title) return [];
+  const seen = new Set<string>();
+  const dupes: string[] = [];
+  for (const email of emails) {
+    const key = email.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const tracks = pitchedEmailMap.get(key) ?? [];
+    if (tracks.some(t => t.trim().toLowerCase() === title)) dupes.push(email);
+  }
+  return dupes;
+}
+
+/** Lowercased recipient -> Message-ID, for whichever results actually got one (skips failures). */
+export function messageIdsFromResults(results: SendResultEntry[]): Record<string, string> {
+  const ids: Record<string, string> = {};
+  results.forEach(r => { if (r.success && r.messageId) ids[r.to.toLowerCase()] = r.messageId; });
+  return ids;
+}
+
+/**
+ * Screens a freshly-loaded recipient list for addresses guaranteed to bounce
+ * (malformed, or a domain with no usable mail DNS) so they can be flagged before
+ * a send ever reaches them. Best-effort: any network/server failure just means no
+ * addresses get flagged, not that the caller's preview fails.
+ */
+export async function checkRecipientsValidity(emails: string[]): Promise<string[]> {
+  if (!emails.length) return [];
+  try {
+    const res = await fetch('/api/mx-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emails }),
+    });
+    if (!res.ok) return [];
+    const data = await res.json() as { malformed: string[]; noMx: string[] };
+    return [...data.malformed, ...data.noMx];
+  } catch {
+    return [];
+  }
+}

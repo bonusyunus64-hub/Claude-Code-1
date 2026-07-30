@@ -5,7 +5,7 @@ import { hydrateFromRemote, syncStorage } from '@/lib/remoteSync';
 import type {
   Artist, RadioStation, PlaylistCurator, EmailAccount, NewAccountForm,
   CampaignRecipient, Campaign, CustomContact, DeliverabilityResult, ReplyClassification, RateBreakdown,
-  DemosFilterPreset, RadioFilterPreset, PlaylistFilterPreset, SavedTemplate, SendResultEntry,
+  DemosFilterPreset, SavedTemplate,
 } from './types';
 import {
   DEFAULT_DEMOS_TEMPLATE, DEFAULT_FOLLOWUP_TEMPLATE, DEFAULT_RADIO_TEMPLATE, DEFAULT_PLAYLIST_TEMPLATE,
@@ -14,8 +14,9 @@ import {
 } from './constants';
 import {
   sendInBatches, downloadCsv, parseContactsCsv, shuffle, countUniqueRecipients,
-  renderTemplateClient, pronounForClient,
+  renderTemplateClient, pronounForClient, findDuplicateRecipients, messageIdsFromResults, checkRecipientsValidity,
 } from './utils';
+import { usePromotionChannel } from './hooks/usePromotionChannel';
 import { OverviewSection } from './sections/OverviewSection';
 import { DemosSection } from './sections/DemosSection';
 import { PromotionSection } from './sections/PromotionSection';
@@ -28,7 +29,6 @@ export default function Dashboard() {
   const [promotionTab, setPromotionTab] = useState<'compose' | 'template'>('compose');
   const [promotionSection, setPromotionSection] = useState<'radio' | 'playlists'>('radio');
   const [demosMatchMode, setDemosMatchMode] = useState<'any' | 'all'>('any');
-  const [radioMatchMode, setRadioMatchMode] = useState<'any' | 'all'>('any');
 
   // Shared track details
   const [trackTitle, setTrackTitle] = useState('');
@@ -74,48 +74,14 @@ export default function Dashboard() {
   const [followUpTemplateLibrary, setFollowUpTemplateLibrary] = useState<SavedTemplate[]>([]);
   const [newFollowUpTemplateName, setNewFollowUpTemplateName] = useState('');
 
-  // Track Promotion (Radio) state
-  const [radioAllGenres, setRadioAllGenres] = useState<string[]>([]);
-  const [radioGenreSearch, setRadioGenreSearch] = useState('');
-  const [selectedRadioGenres, setSelectedRadioGenres] = useState<string[]>([]);
-  const [showRadioGenreDropdown, setShowRadioGenreDropdown] = useState(false);
-  const [selectedLocations, setSelectedLocations] = useState<string[]>([]);
+  // Track Promotion (Radio/Playlists) — template/subject text stays here since it
+  // participates in the shared dirty-tracking/save-all below; everything else
+  // (genre/secondary-filter selection, preview, send, presets, template library)
+  // is owned by usePromotionChannel, instantiated further down for each channel.
   const [radioTemplate, setRadioTemplate] = useState(DEFAULT_RADIO_TEMPLATE);
   const [radioSubject, setRadioSubject] = useState(DEFAULT_RADIO_SUBJECT);
-  const [radioStations, setRadioStations] = useState<RadioStation[]>([]);
-  const [radioPreviewDone, setRadioPreviewDone] = useState(false);
-  const [radioInvalidEmails, setRadioInvalidEmails] = useState<string[]>([]);
-  const [radioPreviewLoading, setRadioPreviewLoading] = useState(false);
-  const [radioSending, setRadioSending] = useState(false);
-  const [radioSendResult, setRadioSendResult] = useState<{ sent: number; failed: number; total: number } | null>(null);
-  const [radioSendError, setRadioSendError] = useState('');
-  const [radioSendFailedEmails, setRadioSendFailedEmails] = useState<string[]>([]);
-  const [radioPresets, setRadioPresets] = useState<RadioFilterPreset[]>([]);
-  const [newRadioPresetName, setNewRadioPresetName] = useState('');
-  const [radioTemplateLibrary, setRadioTemplateLibrary] = useState<SavedTemplate[]>([]);
-  const [newRadioTemplateName, setNewRadioTemplateName] = useState('');
-
-  // Track Promotion (Playlists) state
-  const [playlistAllGenres, setPlaylistAllGenres] = useState<string[]>([]);
-  const [playlistGenreSearch, setPlaylistGenreSearch] = useState('');
-  const [selectedPlaylistGenres, setSelectedPlaylistGenres] = useState<string[]>([]);
-  const [showPlaylistGenreDropdown, setShowPlaylistGenreDropdown] = useState(false);
-  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
-  const [playlistMatchMode, setPlaylistMatchMode] = useState<'any' | 'all'>('any');
   const [playlistTemplate, setPlaylistTemplate] = useState(DEFAULT_PLAYLIST_TEMPLATE);
   const [playlistSubject, setPlaylistSubject] = useState(DEFAULT_PLAYLIST_SUBJECT);
-  const [playlistCurators, setPlaylistCurators] = useState<PlaylistCurator[]>([]);
-  const [playlistPreviewDone, setPlaylistPreviewDone] = useState(false);
-  const [playlistInvalidEmails, setPlaylistInvalidEmails] = useState<string[]>([]);
-  const [playlistPreviewLoading, setPlaylistPreviewLoading] = useState(false);
-  const [playlistSending, setPlaylistSending] = useState(false);
-  const [playlistSendResult, setPlaylistSendResult] = useState<{ sent: number; failed: number; total: number } | null>(null);
-  const [playlistSendError, setPlaylistSendError] = useState('');
-  const [playlistSendFailedEmails, setPlaylistSendFailedEmails] = useState<string[]>([]);
-  const [playlistPresets, setPlaylistPresets] = useState<PlaylistFilterPreset[]>([]);
-  const [newPlaylistPresetName, setNewPlaylistPresetName] = useState('');
-  const [playlistTemplateLibrary, setPlaylistTemplateLibrary] = useState<SavedTemplate[]>([]);
-  const [newPlaylistTemplateName, setNewPlaylistTemplateName] = useState('');
 
   // Account state — accounts (and their SMTP passwords) live server-side behind
   // /api/accounts; the client only ever holds the password transiently in the add-account form.
@@ -194,10 +160,56 @@ export default function Dashboard() {
     } catch {}
   }
 
+  const pitchedEmailMap = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const campaign of campaigns) {
+      for (const email of campaign.emails) {
+        const key = email.toLowerCase();
+        const existing = map.get(key) ?? [];
+        if (!existing.includes(campaign.trackTitle)) {
+          map.set(key, [...existing, campaign.trackTitle]);
+        }
+      }
+    }
+    return map;
+  }, [campaigns]);
+
+  // Radio and Playlists were near-exact duplicates of each other (genre/secondary-filter
+  // selection, preview, send, presets, template library) — one hook, instantiated twice,
+  // instead of two copies. See usePromotionChannel for what it owns vs. what stays here
+  // (template/subject text, which participates in the dirty-tracking below). Declared
+  // before the initial-load effect below so that effect can hydrate radio/playlists'
+  // presets and template library via the hook's exposed setters.
+  const radio = usePromotionChannel<RadioStation>({
+    campaignType: 'radio',
+    genresEndpoint: '/api/radio-genres',
+    previewEndpoint: '/api/radio-preview',
+    sendEndpoint: '/api/radio-send',
+    resultsKey: 'stations',
+    secondaryFilterKey: 'locations',
+    nameVar: 'stationName',
+    trackTitle, driveLink, senderName,
+    template: radioTemplate, subject: radioSubject, setTemplate: setRadioTemplate, setSubject: setRadioSubject,
+    signOff, signOffImage, selectedAccountId, sendDelay, blacklist, dailySendCap, sendsToday,
+    accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap, upsertCampaign,
+  });
+
+  const playlists = usePromotionChannel<PlaylistCurator>({
+    campaignType: 'playlists',
+    genresEndpoint: '/api/playlist-genres',
+    previewEndpoint: '/api/playlist-preview',
+    sendEndpoint: '/api/playlist-send',
+    resultsKey: 'curators',
+    secondaryFilterKey: 'platforms',
+    nameVar: 'curatorName',
+    trackTitle, driveLink, senderName,
+    template: playlistTemplate, subject: playlistSubject, setTemplate: setPlaylistTemplate, setSubject: setPlaylistSubject,
+    signOff, signOffImage, selectedAccountId, sendDelay, blacklist, dailySendCap, sendsToday,
+    accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap, upsertCampaign,
+  });
+
   useEffect(() => {
     fetch('/api/genres').then(r => r.json()).then(d => { setAllGenres(d.genres || []); setTopGenres(d.topGenres || []); });
-    fetch('/api/radio-genres').then(r => r.json()).then(d => setRadioAllGenres(d.genres || []));
-    fetch('/api/playlist-genres').then(r => r.json()).then(d => setPlaylistAllGenres(d.genres || []));
     fetch('/api/send-quota').then(r => r.json()).then(d => { setSendsToday(d.count ?? 0); setSendsTodayByAccount(d.byAccount ?? {}); }).catch(() => {});
     fetch('/api/campaigns').then(r => r.json()).then(d => setCampaigns(d.campaigns || [])).catch(() => {});
     (async () => {
@@ -257,10 +269,10 @@ export default function Dashboard() {
       if (savedDemosPresets) setDemosPresets(JSON.parse(savedDemosPresets));
 
       const savedRadioPresets = localStorage.getItem('tp_radio_presets');
-      if (savedRadioPresets) setRadioPresets(JSON.parse(savedRadioPresets));
+      if (savedRadioPresets) radio.setPresets(JSON.parse(savedRadioPresets));
 
       const savedPlaylistPresets = localStorage.getItem('tp_playlist_presets');
-      if (savedPlaylistPresets) setPlaylistPresets(JSON.parse(savedPlaylistPresets));
+      if (savedPlaylistPresets) playlists.setPresets(JSON.parse(savedPlaylistPresets));
 
       const savedDemosTemplates = localStorage.getItem('tp_demos_templates');
       if (savedDemosTemplates) setDemosTemplateLibrary(JSON.parse(savedDemosTemplates));
@@ -269,10 +281,10 @@ export default function Dashboard() {
       if (savedFollowUpTemplates) setFollowUpTemplateLibrary(JSON.parse(savedFollowUpTemplates));
 
       const savedRadioTemplates = localStorage.getItem('tp_radio_templates');
-      if (savedRadioTemplates) setRadioTemplateLibrary(JSON.parse(savedRadioTemplates));
+      if (savedRadioTemplates) radio.setTemplateLibrary(JSON.parse(savedRadioTemplates));
 
       const savedPlaylistTemplates = localStorage.getItem('tp_playlist_templates');
-      if (savedPlaylistTemplates) setPlaylistTemplateLibrary(JSON.parse(savedPlaylistTemplates));
+      if (savedPlaylistTemplates) playlists.setTemplateLibrary(JSON.parse(savedPlaylistTemplates));
 
       const savedDailyCap = localStorage.getItem('tp_daily_cap');
       if (savedDailyCap !== null) setDailySendCap(Number(savedDailyCap));
@@ -284,21 +296,11 @@ export default function Dashboard() {
       if (savedAutoFollowUpDays !== null) setAutoFollowUpDays(Number(savedAutoFollowUpDays));
     } catch {}
     })();
+    // radio/playlists are plain objects rebuilt every render, so listing them here
+    // would re-run this mount-only hydration on every render; only their setPresets/
+    // setTemplateLibrary setters (stable, from useState) are actually called below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const pitchedEmailMap = useMemo(() => {
-    const map = new Map<string, string[]>();
-    for (const campaign of campaigns) {
-      for (const email of campaign.emails) {
-        const key = email.toLowerCase();
-        const existing = map.get(key) ?? [];
-        if (!existing.includes(campaign.trackTitle)) {
-          map.set(key, [...existing, campaign.trackTitle]);
-        }
-      }
-    }
-    return map;
-  }, [campaigns]);
 
   const demosPitchCount = useMemo(() => {
     const title = trackTitle.trim().toLowerCase();
@@ -454,21 +456,6 @@ export default function Dashboard() {
       });
     return groups;
   }, [campaigns]);
-
-  function findDuplicateRecipients(emails: string[]): string[] {
-    const title = trackTitle.trim().toLowerCase();
-    if (!title) return [];
-    const seen = new Set<string>();
-    const dupes: string[] = [];
-    for (const email of emails) {
-      const key = email.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const tracks = pitchedEmailMap.get(key) ?? [];
-      if (tracks.some(t => t.trim().toLowerCase() === title)) dupes.push(email);
-    }
-    return dupes;
-  }
 
   const isDirty =
     demosTemplate !== lastSavedDemosTemplate ||
@@ -659,12 +646,6 @@ export default function Dashboard() {
     return ids;
   }
 
-  function messageIdsFromResults(results: SendResultEntry[]): Record<string, string> {
-    const ids: Record<string, string> = {};
-    results.forEach(r => { if (r.success && r.messageId) ids[r.to.toLowerCase()] = r.messageId; });
-    return ids;
-  }
-
   const [checkingRepliesId, setCheckingRepliesId] = useState<string | null>(null);
   const [replyCheckError, setReplyCheckError] = useState('');
   const [replyCheckResult, setReplyCheckResult] = useState<{ campaignId: string; newCount: number; totalCount: number; newBounceCount: number } | null>(null);
@@ -764,8 +745,8 @@ export default function Dashboard() {
   /**
    * Continues a send that was interrupted (tab closed, network drop, crash) partway
    * through, from the offset it last got to — c.pendingSend was written by the batch
-   * loop in handleSend/handleRadioSend/handlePlaylistSend after every batch, so at
-   * most the one in-flight batch when the interruption happened gets re-sent.
+   * loop in handleSend and usePromotionChannel's handleSend after every batch, so
+   * at most the one in-flight batch when the interruption happened gets re-sent.
    *
    * New recipients picked up here don't have artist metadata to attach (the roster
    * lookup that built it lived in the original send's closure, long gone by now) —
@@ -872,58 +853,6 @@ export default function Dashboard() {
     syncStorage.setItem('tp_demos_presets', JSON.stringify(updated));
   }
 
-  function saveRadioPreset() {
-    const name = newRadioPresetName.trim();
-    if (!name) return;
-    const preset: RadioFilterPreset = {
-      id: Date.now().toString(), name, genres: selectedRadioGenres, locations: selectedLocations, matchMode: radioMatchMode,
-    };
-    const updated = [...radioPresets, preset];
-    setRadioPresets(updated);
-    syncStorage.setItem('tp_radio_presets', JSON.stringify(updated));
-    setNewRadioPresetName('');
-  }
-
-  function loadRadioPreset(preset: RadioFilterPreset) {
-    setSelectedRadioGenres(preset.genres);
-    setSelectedLocations(preset.locations);
-    setRadioMatchMode(preset.matchMode);
-    setRadioPreviewDone(false);
-    setRadioSendResult(null);
-  }
-
-  function deleteRadioPreset(id: string) {
-    const updated = radioPresets.filter(p => p.id !== id);
-    setRadioPresets(updated);
-    syncStorage.setItem('tp_radio_presets', JSON.stringify(updated));
-  }
-
-  function savePlaylistPreset() {
-    const name = newPlaylistPresetName.trim();
-    if (!name) return;
-    const preset: PlaylistFilterPreset = {
-      id: Date.now().toString(), name, genres: selectedPlaylistGenres, platforms: selectedPlatforms, matchMode: playlistMatchMode,
-    };
-    const updated = [...playlistPresets, preset];
-    setPlaylistPresets(updated);
-    syncStorage.setItem('tp_playlist_presets', JSON.stringify(updated));
-    setNewPlaylistPresetName('');
-  }
-
-  function loadPlaylistPreset(preset: PlaylistFilterPreset) {
-    setSelectedPlaylistGenres(preset.genres);
-    setSelectedPlatforms(preset.platforms);
-    setPlaylistMatchMode(preset.matchMode);
-    setPlaylistPreviewDone(false);
-    setPlaylistSendResult(null);
-  }
-
-  function deletePlaylistPreset(id: string) {
-    const updated = playlistPresets.filter(p => p.id !== id);
-    setPlaylistPresets(updated);
-    syncStorage.setItem('tp_playlist_presets', JSON.stringify(updated));
-  }
-
   function saveDemosTemplateToLibrary() {
     const name = newDemosTemplateName.trim();
     if (!name) return;
@@ -966,48 +895,6 @@ export default function Dashboard() {
     syncStorage.setItem('tp_followup_templates', JSON.stringify(updated));
   }
 
-  function saveRadioTemplateToLibrary() {
-    const name = newRadioTemplateName.trim();
-    if (!name) return;
-    const template: SavedTemplate = { id: Date.now().toString(), name, body: radioTemplate, subject: radioSubject };
-    const updated = [...radioTemplateLibrary, template];
-    setRadioTemplateLibrary(updated);
-    syncStorage.setItem('tp_radio_templates', JSON.stringify(updated));
-    setNewRadioTemplateName('');
-  }
-
-  function loadRadioTemplateFromLibrary(template: SavedTemplate) {
-    setRadioTemplate(template.body);
-    if (template.subject !== undefined) setRadioSubject(template.subject);
-  }
-
-  function deleteRadioTemplateFromLibrary(id: string) {
-    const updated = radioTemplateLibrary.filter(t => t.id !== id);
-    setRadioTemplateLibrary(updated);
-    syncStorage.setItem('tp_radio_templates', JSON.stringify(updated));
-  }
-
-  function savePlaylistTemplateToLibrary() {
-    const name = newPlaylistTemplateName.trim();
-    if (!name) return;
-    const template: SavedTemplate = { id: Date.now().toString(), name, body: playlistTemplate, subject: playlistSubject };
-    const updated = [...playlistTemplateLibrary, template];
-    setPlaylistTemplateLibrary(updated);
-    syncStorage.setItem('tp_playlist_templates', JSON.stringify(updated));
-    setNewPlaylistTemplateName('');
-  }
-
-  function loadPlaylistTemplateFromLibrary(template: SavedTemplate) {
-    setPlaylistTemplate(template.body);
-    if (template.subject !== undefined) setPlaylistSubject(template.subject);
-  }
-
-  function deletePlaylistTemplateFromLibrary(id: string) {
-    const updated = playlistTemplateLibrary.filter(t => t.id !== id);
-    setPlaylistTemplateLibrary(updated);
-    syncStorage.setItem('tp_playlist_templates', JSON.stringify(updated));
-  }
-
   function handleCustomContactsCsv(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1031,29 +918,6 @@ export default function Dashboard() {
     const merged = [...new Set([...blacklist, ...lower])];
     setBlacklist(merged);
     syncStorage.setItem('tp_blacklist', JSON.stringify(merged));
-  }
-
-  /**
-   * Screens a freshly-loaded recipient list for addresses that are guaranteed to
-   * bounce (malformed, or a domain with no usable mail DNS) so they can be flagged
-   * before a send ever reaches them, rather than only discovered as a failure
-   * afterward. Runs after the preview response lands rather than blocking it —
-   * the DNS lookups take longer than the roster lookup itself.
-   */
-  async function checkRecipientsValidity(emails: string[]): Promise<string[]> {
-    if (!emails.length) return [];
-    try {
-      const res = await fetch('/api/mx-check', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ emails }),
-      });
-      if (!res.ok) return [];
-      const data = await res.json() as { malformed: string[]; noMx: string[] };
-      return [...data.malformed, ...data.noMx];
-    } catch {
-      return [];
-    }
   }
 
   /**
@@ -1309,169 +1173,11 @@ export default function Dashboard() {
     (previewDone || selectedGenres.length === 0) && totalEmails > 0;
 
   const demosDuplicateRecipients = useMemo(
-    () => findDuplicateRecipients([...includedArtists.flatMap(a => a.managerEmails), ...customContacts.map(c => c.managerEmail)]),
+    () => findDuplicateRecipients(pitchedEmailMap, trackTitle, [...includedArtists.flatMap(a => a.managerEmails), ...customContacts.map(c => c.managerEmail)]),
     [includedArtists, customContacts, trackTitle, pitchedEmailMap]
   );
 
-  const filteredRadioGenres = useMemo(() =>
-    radioAllGenres.filter(g => g.toLowerCase().includes(radioGenreSearch.toLowerCase()) && !selectedRadioGenres.includes(g)).slice(0, 50),
-    [radioAllGenres, radioGenreSearch, selectedRadioGenres]
-  );
-
-  const toggleRadioGenre = useCallback((genre: string) => {
-    setSelectedRadioGenres(prev => prev.includes(genre) ? prev.filter(g => g !== genre) : [...prev, genre]);
-    setRadioPreviewDone(false); setRadioSendResult(null);
-  }, []);
-
-  const toggleLocation = useCallback((loc: string) => {
-    setSelectedLocations(prev => prev.includes(loc) ? prev.filter(l => l !== loc) : [...prev, loc]);
-    setRadioPreviewDone(false); setRadioSendResult(null);
-  }, []);
-
-  async function handleRadioPreview() {
-    setRadioPreviewLoading(true); setRadioPreviewDone(false); setRadioInvalidEmails([]);
-    try {
-      const res = await fetch('/api/radio-preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ genres: selectedRadioGenres, locations: selectedLocations, matchMode: radioMatchMode }),
-      });
-      const data = await res.json();
-      const stations = data.stations || [];
-      setRadioStations(stations);
-      setRadioPreviewDone(true);
-      checkRecipientsValidity((stations as RadioStation[]).flatMap(s => s.emails)).then(setRadioInvalidEmails);
-    } finally { setRadioPreviewLoading(false); }
-  }
-
-  async function handleRadioSend() {
-    if (!trackTitle || !driveLink) return;
-    if (dailySendCap > 0 && sendsToday + radioTotalEmails > dailySendCap) {
-      setRadioSendError(`Daily send limit reached (${sendsToday}/${dailySendCap} sent today). Wait until tomorrow or raise the limit in Account settings.`);
-      return;
-    }
-    const radioAccountCapErr = selectedAccountId && accountCapError(selectedAccountId, radioTotalEmails);
-    if (radioAccountCapErr) { setRadioSendError(radioAccountCapErr); return; }
-    setRadioSending(true); setRadioSendError(''); setRadioSendResult(null); setRadioSendFailedEmails([]);
-    try {
-      const campaignId = Date.now().toString();
-      const campaignDate = new Date().toISOString();
-      const sendEndpoint = '/api/radio-send';
-      const sendPayload = {
-        trackTitle, driveLink, genres: selectedRadioGenres, locations: selectedLocations,
-        emailTemplate: radioTemplate, subjectTemplate: radioSubject, senderName, signOff, signOffImage, matchMode: radioMatchMode,
-        sendDelay: sendDelay > 0 ? sendDelay : undefined,
-        blacklist: blacklist.length > 0 ? blacklist : undefined,
-        accountId: selectedAccountId || undefined,
-      };
-      const outcome = await sendInBatches(sendEndpoint, sendPayload, (progress, resultsSoFar, nextOffset) => {
-        setRadioSendResult(progress);
-        const sentEmails = resultsSoFar.filter(r => r.success).map(r => r.to);
-        upsertCampaign({
-          id: campaignId, trackTitle, date: campaignDate, type: 'radio',
-          emails: sentEmails, accountId: selectedAccountId, messageIds: messageIdsFromResults(resultsSoFar),
-          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: sendPayload, offset: nextOffset } : undefined,
-          driveLink, senderName,
-        });
-      });
-      if (!outcome.ok) { setRadioSendError(outcome.error); }
-      else {
-        const failed = outcome.results.filter(r => !r.success).map(r => r.to);
-        setRadioSendFailedEmails(failed);
-        recordFailedEmails(failed);
-        if (outcome.results.some(r => r.success)) refreshSendsToday();
-      }
-    } finally { setRadioSending(false); }
-  }
-
-  const radioTotalEmails = countUniqueRecipients(radioStations.flatMap(s => s.emails));
-  const canSendRadio = !!trackTitle && !!driveLink && radioPreviewDone;
-
-  const radioDuplicateRecipients = useMemo(
-    () => findDuplicateRecipients(radioStations.flatMap(s => s.emails)),
-    [radioStations, trackTitle, pitchedEmailMap]
-  );
-
   const selectedAccount = emailAccounts.find(a => a.id === selectedAccountId);
-
-  const filteredPlaylistGenres = useMemo(() =>
-    playlistAllGenres.filter(g => g.toLowerCase().includes(playlistGenreSearch.toLowerCase()) && !selectedPlaylistGenres.includes(g)).slice(0, 50),
-    [playlistAllGenres, playlistGenreSearch, selectedPlaylistGenres]
-  );
-
-  const togglePlaylistGenre = useCallback((genre: string) => {
-    setSelectedPlaylistGenres(prev => prev.includes(genre) ? prev.filter(g => g !== genre) : [...prev, genre]);
-    setPlaylistPreviewDone(false); setPlaylistSendResult(null);
-  }, []);
-
-  const togglePlatform = useCallback((platform: string) => {
-    setSelectedPlatforms(prev => prev.includes(platform) ? prev.filter(p => p !== platform) : [...prev, platform]);
-    setPlaylistPreviewDone(false); setPlaylistSendResult(null);
-  }, []);
-
-  async function handlePlaylistPreview() {
-    setPlaylistPreviewLoading(true); setPlaylistPreviewDone(false); setPlaylistInvalidEmails([]);
-    try {
-      const res = await fetch('/api/playlist-preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ genres: selectedPlaylistGenres, platforms: selectedPlatforms, matchMode: playlistMatchMode }),
-      });
-      const data = await res.json();
-      const curators = data.curators || [];
-      setPlaylistCurators(curators);
-      setPlaylistPreviewDone(true);
-      checkRecipientsValidity((curators as PlaylistCurator[]).flatMap(c => c.emails)).then(setPlaylistInvalidEmails);
-    } finally { setPlaylistPreviewLoading(false); }
-  }
-
-  async function handlePlaylistSend() {
-    if (!trackTitle || !driveLink) return;
-    if (dailySendCap > 0 && sendsToday + playlistTotalEmails > dailySendCap) {
-      setPlaylistSendError(`Daily send limit reached (${sendsToday}/${dailySendCap} sent today). Wait until tomorrow or raise the limit in Account settings.`);
-      return;
-    }
-    const playlistAccountCapErr = selectedAccountId && accountCapError(selectedAccountId, playlistTotalEmails);
-    if (playlistAccountCapErr) { setPlaylistSendError(playlistAccountCapErr); return; }
-    setPlaylistSending(true); setPlaylistSendError(''); setPlaylistSendResult(null); setPlaylistSendFailedEmails([]);
-    try {
-      const campaignId = Date.now().toString();
-      const campaignDate = new Date().toISOString();
-      const sendEndpoint = '/api/playlist-send';
-      const sendPayload = {
-        trackTitle, driveLink, genres: selectedPlaylistGenres, platforms: selectedPlatforms,
-        emailTemplate: playlistTemplate, subjectTemplate: playlistSubject, senderName, signOff, signOffImage, matchMode: playlistMatchMode,
-        sendDelay: sendDelay > 0 ? sendDelay : undefined,
-        blacklist: blacklist.length > 0 ? blacklist : undefined,
-        accountId: selectedAccountId || undefined,
-      };
-      const outcome = await sendInBatches(sendEndpoint, sendPayload, (progress, resultsSoFar, nextOffset) => {
-        setPlaylistSendResult(progress);
-        const sentEmails = resultsSoFar.filter(r => r.success).map(r => r.to);
-        upsertCampaign({
-          id: campaignId, trackTitle, date: campaignDate, type: 'playlists',
-          emails: sentEmails, accountId: selectedAccountId, messageIds: messageIdsFromResults(resultsSoFar),
-          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: sendPayload, offset: nextOffset } : undefined,
-          driveLink, senderName,
-        });
-      });
-      if (!outcome.ok) { setPlaylistSendError(outcome.error); }
-      else {
-        const failed = outcome.results.filter(r => !r.success).map(r => r.to);
-        setPlaylistSendFailedEmails(failed);
-        recordFailedEmails(failed);
-        if (outcome.results.some(r => r.success)) refreshSendsToday();
-      }
-    } finally { setPlaylistSending(false); }
-  }
-
-  const playlistTotalEmails = countUniqueRecipients(playlistCurators.flatMap(c => c.emails));
-  const canSendPlaylist = !!trackTitle && !!driveLink && playlistPreviewDone;
-
-  const playlistDuplicateRecipients = useMemo(
-    () => findDuplicateRecipients(playlistCurators.flatMap(c => c.emails)),
-    [playlistCurators, trackTitle, pitchedEmailMap]
-  );
 
   // Build email preview modal entries
   type PreviewEntry = { label: string; to: string; subject: string; body: string };
@@ -1511,15 +1217,15 @@ export default function Dashboard() {
     }
     if (previewModalType === 'playlists') {
       const entries: PreviewEntry[] = [];
-      playlistCurators.slice(0, 20).forEach(c => {
+      playlists.results.slice(0, 20).forEach(c => {
         c.emails.forEach(email => {
           const vars = { curatorName: c.name, trackTitle, driveLink, senderName };
-          const bodyParts = [renderTemplateClient(playlistTemplate, vars)];
+          const bodyParts = [renderTemplateClient(playlists.template, vars)];
           if (signOff?.trim()) bodyParts.push(renderTemplateClient(signOff, vars));
           entries.push({
             label: `${c.name} <${email}>`,
             to: email,
-            subject: renderTemplateClient(playlistSubject, vars),
+            subject: renderTemplateClient(playlists.subject, vars),
             body: bodyParts.join('\n\n'),
           });
         });
@@ -1527,21 +1233,21 @@ export default function Dashboard() {
       return entries;
     }
     const entries: PreviewEntry[] = [];
-    radioStations.slice(0, 20).forEach(s => {
+    radio.results.slice(0, 20).forEach(s => {
       s.emails.forEach(email => {
         const vars = { stationName: s.name, trackTitle, driveLink, senderName };
-        const bodyParts = [renderTemplateClient(radioTemplate, vars)];
+        const bodyParts = [renderTemplateClient(radio.template, vars)];
         if (signOff?.trim()) bodyParts.push(renderTemplateClient(signOff, vars));
         entries.push({
           label: `${s.name} <${email}>`,
           to: email,
-          subject: renderTemplateClient(radioSubject, vars),
+          subject: renderTemplateClient(radio.subject, vars),
           body: bodyParts.join('\n\n'),
         });
       });
     });
     return entries;
-  }, [previewModalType, includedArtists, radioStations, playlistCurators, demosTemplate, demosSubject, demosFollowUpTemplate, demosFollowUpSubject, useFollowUp, radioTemplate, radioSubject, playlistTemplate, playlistSubject, signOff, trackTitle, driveLink, senderName, customContacts]);
+  }, [previewModalType, includedArtists, radio.results, playlists.results, demosTemplate, demosSubject, demosFollowUpTemplate, demosFollowUpSubject, useFollowUp, radio.template, radio.subject, playlists.template, playlists.subject, signOff, trackTitle, driveLink, senderName, customContacts]);
 
   const NAV_ITEMS = [
     {
@@ -1690,34 +1396,8 @@ export default function Dashboard() {
                 driveLink={driveLink} setDriveLink={setDriveLink}
                 pitchedEmailMap={pitchedEmailMap} selectedAccount={selectedAccount} setActiveSection={setActiveSection}
                 addFailedToBlacklist={addFailedToBlacklist} setPreviewModalType={setPreviewModalType} setPreviewModalIdx={setPreviewModalIdx}
-                radioSubject={radioSubject} setRadioSubject={setRadioSubject} radioTemplate={radioTemplate} setRadioTemplate={setRadioTemplate}
-                radioTemplateLibrary={radioTemplateLibrary} newRadioTemplateName={newRadioTemplateName} setNewRadioTemplateName={setNewRadioTemplateName}
-                saveRadioTemplateToLibrary={saveRadioTemplateToLibrary} loadRadioTemplateFromLibrary={loadRadioTemplateFromLibrary} deleteRadioTemplateFromLibrary={deleteRadioTemplateFromLibrary}
-                radioPitchCount={radioPitchCount} radioPresets={radioPresets} newRadioPresetName={newRadioPresetName} setNewRadioPresetName={setNewRadioPresetName}
-                saveRadioPreset={saveRadioPreset} loadRadioPreset={loadRadioPreset} deleteRadioPreset={deleteRadioPreset}
-                radioMatchMode={radioMatchMode} setRadioMatchMode={setRadioMatchMode} setRadioPreviewDone={setRadioPreviewDone} setRadioSendResult={setRadioSendResult}
-                selectedRadioGenres={selectedRadioGenres} toggleRadioGenre={toggleRadioGenre} setSelectedRadioGenres={setSelectedRadioGenres}
-                radioGenreSearch={radioGenreSearch} setRadioGenreSearch={setRadioGenreSearch} showRadioGenreDropdown={showRadioGenreDropdown} setShowRadioGenreDropdown={setShowRadioGenreDropdown}
-                filteredRadioGenres={filteredRadioGenres} selectedLocations={selectedLocations} toggleLocation={toggleLocation} setSelectedLocations={setSelectedLocations}
-                handleRadioPreview={handleRadioPreview} radioPreviewLoading={radioPreviewLoading} radioPreviewDone={radioPreviewDone} radioStations={radioStations} radioTotalEmails={radioTotalEmails}
-                radioDuplicateRecipients={radioDuplicateRecipients} radioInvalidEmails={radioInvalidEmails} setRadioInvalidEmails={setRadioInvalidEmails}
-                radioSendResult={radioSendResult} radioSendFailedEmails={radioSendFailedEmails} setRadioSendFailedEmails={setRadioSendFailedEmails}
-                radioSendError={radioSendError} handleRadioSend={handleRadioSend} canSendRadio={canSendRadio} radioSending={radioSending}
-                playlistSubject={playlistSubject} setPlaylistSubject={setPlaylistSubject} playlistTemplate={playlistTemplate} setPlaylistTemplate={setPlaylistTemplate}
-                playlistTemplateLibrary={playlistTemplateLibrary} newPlaylistTemplateName={newPlaylistTemplateName} setNewPlaylistTemplateName={setNewPlaylistTemplateName}
-                savePlaylistTemplateToLibrary={savePlaylistTemplateToLibrary} loadPlaylistTemplateFromLibrary={loadPlaylistTemplateFromLibrary} deletePlaylistTemplateFromLibrary={deletePlaylistTemplateFromLibrary}
-                playlistPitchCount={playlistPitchCount} playlistAllGenres={playlistAllGenres}
-                playlistPresets={playlistPresets} newPlaylistPresetName={newPlaylistPresetName} setNewPlaylistPresetName={setNewPlaylistPresetName}
-                savePlaylistPreset={savePlaylistPreset} loadPlaylistPreset={loadPlaylistPreset} deletePlaylistPreset={deletePlaylistPreset}
-                playlistMatchMode={playlistMatchMode} setPlaylistMatchMode={setPlaylistMatchMode} setPlaylistPreviewDone={setPlaylistPreviewDone} setPlaylistSendResult={setPlaylistSendResult}
-                selectedPlaylistGenres={selectedPlaylistGenres} togglePlaylistGenre={togglePlaylistGenre} setSelectedPlaylistGenres={setSelectedPlaylistGenres}
-                playlistGenreSearch={playlistGenreSearch} setPlaylistGenreSearch={setPlaylistGenreSearch} showPlaylistGenreDropdown={showPlaylistGenreDropdown} setShowPlaylistGenreDropdown={setShowPlaylistGenreDropdown}
-                filteredPlaylistGenres={filteredPlaylistGenres} selectedPlatforms={selectedPlatforms} togglePlatform={togglePlatform} setSelectedPlatforms={setSelectedPlatforms}
-                handlePlaylistPreview={handlePlaylistPreview} playlistPreviewLoading={playlistPreviewLoading} playlistPreviewDone={playlistPreviewDone}
-                playlistCurators={playlistCurators} playlistTotalEmails={playlistTotalEmails}
-                playlistDuplicateRecipients={playlistDuplicateRecipients} playlistInvalidEmails={playlistInvalidEmails} setPlaylistInvalidEmails={setPlaylistInvalidEmails}
-                playlistSendResult={playlistSendResult} playlistSendFailedEmails={playlistSendFailedEmails} setPlaylistSendFailedEmails={setPlaylistSendFailedEmails}
-                playlistSendError={playlistSendError} handlePlaylistSend={handlePlaylistSend} canSendPlaylist={canSendPlaylist} playlistSending={playlistSending}
+                radio={radio} radioPitchCount={radioPitchCount}
+                playlists={playlists} playlistPitchCount={playlistPitchCount}
               />
             )}
 

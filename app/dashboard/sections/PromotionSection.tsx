@@ -1,4 +1,5 @@
-import type { EmailAccount, PlaylistCurator, PlaylistFilterPreset, RadioFilterPreset, RadioStation, SavedTemplate } from '../types';
+import type { EmailAccount, PlaylistCurator, RadioStation } from '../types';
+import type { PromotionChannel } from '../hooks/usePromotionChannel';
 import {
   DEFAULT_RADIO_TEMPLATE, DEFAULT_RADIO_SUBJECT, DEFAULT_PLAYLIST_TEMPLATE, DEFAULT_PLAYLIST_SUBJECT,
   LOCATION_OPTIONS, PLATFORM_OPTIONS,
@@ -27,104 +28,10 @@ export interface PromotionSectionProps {
   setPreviewModalType: (type: 'demos' | 'radio' | 'playlists' | null) => void;
   setPreviewModalIdx: (idx: number) => void;
 
-  // Radio
-  radioSubject: string;
-  setRadioSubject: (value: string) => void;
-  radioTemplate: string;
-  setRadioTemplate: (value: string) => void;
-  radioTemplateLibrary: SavedTemplate[];
-  newRadioTemplateName: string;
-  setNewRadioTemplateName: (value: string) => void;
-  saveRadioTemplateToLibrary: () => void;
-  loadRadioTemplateFromLibrary: (template: SavedTemplate) => void;
-  deleteRadioTemplateFromLibrary: (id: string) => void;
+  radio: PromotionChannel<RadioStation>;
   radioPitchCount: number;
-  radioPresets: RadioFilterPreset[];
-  newRadioPresetName: string;
-  setNewRadioPresetName: (value: string) => void;
-  saveRadioPreset: () => void;
-  loadRadioPreset: (preset: RadioFilterPreset) => void;
-  deleteRadioPreset: (id: string) => void;
-  radioMatchMode: 'any' | 'all';
-  setRadioMatchMode: (mode: 'any' | 'all') => void;
-  setRadioPreviewDone: (done: boolean) => void;
-  setRadioSendResult: (result: { sent: number; failed: number; total: number } | null) => void;
-  selectedRadioGenres: string[];
-  toggleRadioGenre: (genre: string) => void;
-  setSelectedRadioGenres: (genres: string[]) => void;
-  radioGenreSearch: string;
-  setRadioGenreSearch: (value: string) => void;
-  showRadioGenreDropdown: boolean;
-  setShowRadioGenreDropdown: (show: boolean) => void;
-  filteredRadioGenres: string[];
-  selectedLocations: string[];
-  toggleLocation: (loc: string) => void;
-  setSelectedLocations: (locations: string[]) => void;
-  handleRadioPreview: () => void;
-  radioPreviewLoading: boolean;
-  radioPreviewDone: boolean;
-  radioStations: RadioStation[];
-  radioTotalEmails: number;
-  radioDuplicateRecipients: string[];
-  radioInvalidEmails: string[];
-  setRadioInvalidEmails: (emails: string[]) => void;
-  radioSendResult: { sent: number; failed: number; total: number } | null;
-  radioSendFailedEmails: string[];
-  setRadioSendFailedEmails: (emails: string[]) => void;
-  radioSendError: string;
-  handleRadioSend: () => void;
-  canSendRadio: boolean;
-  radioSending: boolean;
-
-  // Playlists
-  playlistSubject: string;
-  setPlaylistSubject: (value: string) => void;
-  playlistTemplate: string;
-  setPlaylistTemplate: (value: string) => void;
-  playlistTemplateLibrary: SavedTemplate[];
-  newPlaylistTemplateName: string;
-  setNewPlaylistTemplateName: (value: string) => void;
-  savePlaylistTemplateToLibrary: () => void;
-  loadPlaylistTemplateFromLibrary: (template: SavedTemplate) => void;
-  deletePlaylistTemplateFromLibrary: (id: string) => void;
+  playlists: PromotionChannel<PlaylistCurator>;
   playlistPitchCount: number;
-  playlistAllGenres: string[];
-  playlistPresets: PlaylistFilterPreset[];
-  newPlaylistPresetName: string;
-  setNewPlaylistPresetName: (value: string) => void;
-  savePlaylistPreset: () => void;
-  loadPlaylistPreset: (preset: PlaylistFilterPreset) => void;
-  deletePlaylistPreset: (id: string) => void;
-  playlistMatchMode: 'any' | 'all';
-  setPlaylistMatchMode: (mode: 'any' | 'all') => void;
-  setPlaylistPreviewDone: (done: boolean) => void;
-  setPlaylistSendResult: (result: { sent: number; failed: number; total: number } | null) => void;
-  selectedPlaylistGenres: string[];
-  togglePlaylistGenre: (genre: string) => void;
-  setSelectedPlaylistGenres: (genres: string[]) => void;
-  playlistGenreSearch: string;
-  setPlaylistGenreSearch: (value: string) => void;
-  showPlaylistGenreDropdown: boolean;
-  setShowPlaylistGenreDropdown: (show: boolean) => void;
-  filteredPlaylistGenres: string[];
-  selectedPlatforms: string[];
-  togglePlatform: (platform: string) => void;
-  setSelectedPlatforms: (platforms: string[]) => void;
-  handlePlaylistPreview: () => void;
-  playlistPreviewLoading: boolean;
-  playlistPreviewDone: boolean;
-  playlistCurators: PlaylistCurator[];
-  playlistTotalEmails: number;
-  playlistDuplicateRecipients: string[];
-  playlistInvalidEmails: string[];
-  setPlaylistInvalidEmails: (emails: string[]) => void;
-  playlistSendResult: { sent: number; failed: number; total: number } | null;
-  playlistSendFailedEmails: string[];
-  setPlaylistSendFailedEmails: (emails: string[]) => void;
-  playlistSendError: string;
-  handlePlaylistSend: () => void;
-  canSendPlaylist: boolean;
-  playlistSending: boolean;
 }
 
 export function PromotionSection(props: PromotionSectionProps) {
@@ -132,29 +39,7 @@ export function PromotionSection(props: PromotionSectionProps) {
     promotionTab, setPromotionTab, promotionSection, setPromotionSection,
     senderName, setSenderName, trackTitle, setTrackTitle, driveLink, setDriveLink,
     pitchedEmailMap, selectedAccount, setActiveSection, addFailedToBlacklist, setPreviewModalType, setPreviewModalIdx,
-
-    radioSubject, setRadioSubject, radioTemplate, setRadioTemplate, radioTemplateLibrary,
-    newRadioTemplateName, setNewRadioTemplateName, saveRadioTemplateToLibrary, loadRadioTemplateFromLibrary, deleteRadioTemplateFromLibrary,
-    radioPitchCount, radioPresets, newRadioPresetName, setNewRadioPresetName, saveRadioPreset, loadRadioPreset, deleteRadioPreset,
-    radioMatchMode, setRadioMatchMode, setRadioPreviewDone, setRadioSendResult,
-    selectedRadioGenres, toggleRadioGenre, setSelectedRadioGenres, radioGenreSearch, setRadioGenreSearch,
-    showRadioGenreDropdown, setShowRadioGenreDropdown, filteredRadioGenres,
-    selectedLocations, toggleLocation, setSelectedLocations,
-    handleRadioPreview, radioPreviewLoading, radioPreviewDone, radioStations, radioTotalEmails,
-    radioDuplicateRecipients, radioInvalidEmails, setRadioInvalidEmails,
-    radioSendResult, radioSendFailedEmails, setRadioSendFailedEmails, radioSendError, handleRadioSend, canSendRadio, radioSending,
-
-    playlistSubject, setPlaylistSubject, playlistTemplate, setPlaylistTemplate, playlistTemplateLibrary,
-    newPlaylistTemplateName, setNewPlaylistTemplateName, savePlaylistTemplateToLibrary, loadPlaylistTemplateFromLibrary, deletePlaylistTemplateFromLibrary,
-    playlistPitchCount, playlistAllGenres, playlistPresets, newPlaylistPresetName, setNewPlaylistPresetName,
-    savePlaylistPreset, loadPlaylistPreset, deletePlaylistPreset,
-    playlistMatchMode, setPlaylistMatchMode, setPlaylistPreviewDone, setPlaylistSendResult,
-    selectedPlaylistGenres, togglePlaylistGenre, setSelectedPlaylistGenres, playlistGenreSearch, setPlaylistGenreSearch,
-    showPlaylistGenreDropdown, setShowPlaylistGenreDropdown, filteredPlaylistGenres,
-    selectedPlatforms, togglePlatform, setSelectedPlatforms,
-    handlePlaylistPreview, playlistPreviewLoading, playlistPreviewDone, playlistCurators, playlistTotalEmails,
-    playlistDuplicateRecipients, playlistInvalidEmails, setPlaylistInvalidEmails,
-    playlistSendResult, playlistSendFailedEmails, setPlaylistSendFailedEmails, playlistSendError, handlePlaylistSend, canSendPlaylist, playlistSending,
+    radio, radioPitchCount, playlists, playlistPitchCount,
   } = props;
 
   return (
@@ -181,35 +66,35 @@ export function PromotionSection(props: PromotionSectionProps) {
           </div>
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1.5">Subject line</label>
-            <input type="text" value={radioSubject} onChange={e => setRadioSubject(e.target.value)}
+            <input type="text" value={radio.subject} onChange={e => radio.setSubject(e.target.value)}
               className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
           </div>
-          <textarea value={radioTemplate} onChange={e => setRadioTemplate(e.target.value)} rows={16}
+          <textarea value={radio.template} onChange={e => radio.setTemplate(e.target.value)} rows={16}
             className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
           <div className="flex items-center justify-between gap-2 flex-wrap">
-            <button onClick={() => { setRadioTemplate(DEFAULT_RADIO_TEMPLATE); setRadioSubject(DEFAULT_RADIO_SUBJECT); }} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+            <button onClick={() => { radio.setTemplate(DEFAULT_RADIO_TEMPLATE); radio.setSubject(DEFAULT_RADIO_SUBJECT); }} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
               Reset to default
             </button>
-            <SpamScoreBadge template={radioTemplate} />
+            <SpamScoreBadge template={radio.template} />
           </div>
           <div className="pt-3 border-t border-zinc-800 space-y-3">
             <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Saved Templates</h3>
-            {radioTemplateLibrary.length > 0 && (
+            {radio.templateLibrary.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
-                {radioTemplateLibrary.map(t => (
+                {radio.templateLibrary.map(t => (
                   <div key={t.id} className="inline-flex items-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded-full pl-3 pr-1.5 py-1">
-                    <button onClick={() => loadRadioTemplateFromLibrary(t)} className="text-xs text-zinc-200 hover:text-violet-400 transition">{t.name}</button>
-                    <button onClick={() => deleteRadioTemplateFromLibrary(t.id)} className="text-zinc-600 hover:text-red-400 transition text-sm leading-none px-1">×</button>
+                    <button onClick={() => radio.loadTemplateFromLibrary(t)} className="text-xs text-zinc-200 hover:text-violet-400 transition">{t.name}</button>
+                    <button onClick={() => radio.deleteTemplateFromLibrary(t.id)} className="text-zinc-600 hover:text-red-400 transition text-sm leading-none px-1">×</button>
                   </div>
                 ))}
               </div>
             )}
             <div className="flex gap-2">
-              <input value={newRadioTemplateName} onChange={e => setNewRadioTemplateName(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') saveRadioTemplateToLibrary(); }}
+              <input value={radio.newTemplateName} onChange={e => radio.setNewTemplateName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') radio.saveTemplateToLibrary(); }}
                 placeholder="Name this template (e.g. Indie Stations)"
                 className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
-              <button onClick={saveRadioTemplateToLibrary} disabled={!newRadioTemplateName.trim()}
+              <button onClick={radio.saveTemplateToLibrary} disabled={!radio.newTemplateName.trim()}
                 className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2 text-sm font-semibold text-white transition shrink-0">
                 Save Current
               </button>
@@ -231,35 +116,35 @@ export function PromotionSection(props: PromotionSectionProps) {
           </div>
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1.5">Subject line</label>
-            <input type="text" value={playlistSubject} onChange={e => setPlaylistSubject(e.target.value)}
+            <input type="text" value={playlists.subject} onChange={e => playlists.setSubject(e.target.value)}
               className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
           </div>
-          <textarea value={playlistTemplate} onChange={e => setPlaylistTemplate(e.target.value)} rows={16}
+          <textarea value={playlists.template} onChange={e => playlists.setTemplate(e.target.value)} rows={16}
             className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
           <div className="flex items-center justify-between gap-2 flex-wrap">
-            <button onClick={() => { setPlaylistTemplate(DEFAULT_PLAYLIST_TEMPLATE); setPlaylistSubject(DEFAULT_PLAYLIST_SUBJECT); }} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
+            <button onClick={() => { playlists.setTemplate(DEFAULT_PLAYLIST_TEMPLATE); playlists.setSubject(DEFAULT_PLAYLIST_SUBJECT); }} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
               Reset to default
             </button>
-            <SpamScoreBadge template={playlistTemplate} />
+            <SpamScoreBadge template={playlists.template} />
           </div>
           <div className="pt-3 border-t border-zinc-800 space-y-3">
             <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Saved Templates</h3>
-            {playlistTemplateLibrary.length > 0 && (
+            {playlists.templateLibrary.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
-                {playlistTemplateLibrary.map(t => (
+                {playlists.templateLibrary.map(t => (
                   <div key={t.id} className="inline-flex items-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded-full pl-3 pr-1.5 py-1">
-                    <button onClick={() => loadPlaylistTemplateFromLibrary(t)} className="text-xs text-zinc-200 hover:text-violet-400 transition">{t.name}</button>
-                    <button onClick={() => deletePlaylistTemplateFromLibrary(t.id)} className="text-zinc-600 hover:text-red-400 transition text-sm leading-none px-1">×</button>
+                    <button onClick={() => playlists.loadTemplateFromLibrary(t)} className="text-xs text-zinc-200 hover:text-violet-400 transition">{t.name}</button>
+                    <button onClick={() => playlists.deleteTemplateFromLibrary(t.id)} className="text-zinc-600 hover:text-red-400 transition text-sm leading-none px-1">×</button>
                   </div>
                 ))}
               </div>
             )}
             <div className="flex gap-2">
-              <input value={newPlaylistTemplateName} onChange={e => setNewPlaylistTemplateName(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') savePlaylistTemplateToLibrary(); }}
+              <input value={playlists.newTemplateName} onChange={e => playlists.setNewTemplateName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') playlists.saveTemplateToLibrary(); }}
                 placeholder="Name this template (e.g. Indie Pop Playlists)"
                 className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
-              <button onClick={savePlaylistTemplateToLibrary} disabled={!newPlaylistTemplateName.trim()}
+              <button onClick={playlists.saveTemplateToLibrary} disabled={!playlists.newTemplateName.trim()}
                 className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2 text-sm font-semibold text-white transition shrink-0">
                 Save Current
               </button>
@@ -281,7 +166,7 @@ export function PromotionSection(props: PromotionSectionProps) {
 
         {/* Playlists section */}
         {promotionSection === 'playlists' && (<>
-          {playlistAllGenres.length === 0 && (
+          {playlists.allGenres.length === 0 && (
             <div className="rounded-lg bg-amber-900/20 border border-amber-700/40 px-5 py-3">
               <p className="text-amber-400 text-sm">
                 The playlist curator database (<code className="text-amber-300">data/playlists.json</code>) is empty, so this tab has no one to send to yet.
@@ -320,22 +205,22 @@ export function PromotionSection(props: PromotionSectionProps) {
           {/* Saved Filter Presets */}
           <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-3">
             <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Saved Filters</h2>
-            {playlistPresets.length > 0 && (
+            {playlists.presets.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
-                {playlistPresets.map(p => (
+                {playlists.presets.map(p => (
                   <div key={p.id} className="inline-flex items-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded-full pl-3 pr-1.5 py-1">
-                    <button onClick={() => loadPlaylistPreset(p)} className="text-xs text-zinc-200 hover:text-violet-400 transition">{p.name}</button>
-                    <button onClick={() => deletePlaylistPreset(p.id)} className="text-zinc-600 hover:text-red-400 transition text-sm leading-none px-1">×</button>
+                    <button onClick={() => playlists.loadPreset(p)} className="text-xs text-zinc-200 hover:text-violet-400 transition">{p.name}</button>
+                    <button onClick={() => playlists.deletePreset(p.id)} className="text-zinc-600 hover:text-red-400 transition text-sm leading-none px-1">×</button>
                   </div>
                 ))}
               </div>
             )}
             <div className="flex gap-2">
-              <input value={newPlaylistPresetName} onChange={e => setNewPlaylistPresetName(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') savePlaylistPreset(); }}
+              <input value={playlists.newPresetName} onChange={e => playlists.setNewPresetName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') playlists.savePreset(); }}
                 placeholder="Name this filter set (e.g. Indie Pop Playlists)"
                 className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
-              <button onClick={savePlaylistPreset} disabled={!newPlaylistPresetName.trim()}
+              <button onClick={playlists.savePreset} disabled={!playlists.newPresetName.trim()}
                 className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2 text-sm font-semibold text-white transition shrink-0">
                 Save Current
               </button>
@@ -349,38 +234,38 @@ export function PromotionSection(props: PromotionSectionProps) {
               <div className="flex items-center gap-1.5">
                 <span className="text-xs text-zinc-500">Match:</span>
                 {(['any', 'all'] as const).map(mode => (
-                  <button key={mode} onClick={() => { setPlaylistMatchMode(mode); setPlaylistPreviewDone(false); setPlaylistSendResult(null); }}
-                    className={`px-3 py-1 rounded-full text-xs font-medium border transition ${playlistMatchMode === mode ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                  <button key={mode} onClick={() => { playlists.setMatchMode(mode); playlists.resetPreview(); }}
+                    className={`px-3 py-1 rounded-full text-xs font-medium border transition ${playlists.matchMode === mode ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
                     {mode === 'any' ? 'Any genre' : 'All genres'}
                   </button>
                 ))}
               </div>
             </div>
             <p className="text-sm text-zinc-500">
-              {playlistMatchMode === 'any' ? 'Curators tagged with at least one selected genre. Leave empty to include all.' : 'Curators tagged with every selected genre.'}
+              {playlists.matchMode === 'any' ? 'Curators tagged with at least one selected genre. Leave empty to include all.' : 'Curators tagged with every selected genre.'}
             </p>
-            {selectedPlaylistGenres.length > 0 && (
+            {playlists.selectedGenres.length > 0 && (
               <div className="flex flex-wrap gap-2">
-                {selectedPlaylistGenres.map(g => (
-                  <button key={g} onClick={() => togglePlaylistGenre(g)}
+                {playlists.selectedGenres.map(g => (
+                  <button key={g} onClick={() => playlists.toggleGenre(g)}
                     className="inline-flex items-center gap-1.5 bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium px-3 py-1 rounded-full transition">
                     {g}<span className="text-violet-200">×</span>
                   </button>
                 ))}
-                <button onClick={() => { setSelectedPlaylistGenres([]); setPlaylistPreviewDone(false); setPlaylistSendResult(null); }}
+                <button onClick={() => { playlists.setSelectedGenres([]); playlists.resetPreview(); }}
                   className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 transition">Clear all</button>
               </div>
             )}
             <div className="relative">
-              <input type="text" value={playlistGenreSearch} onChange={e => setPlaylistGenreSearch(e.target.value)}
-                onFocus={() => setShowPlaylistGenreDropdown(true)}
-                onBlur={() => setTimeout(() => setShowPlaylistGenreDropdown(false), 150)}
+              <input type="text" value={playlists.genreSearch} onChange={e => playlists.setGenreSearch(e.target.value)}
+                onFocus={() => playlists.setShowGenreDropdown(true)}
+                onBlur={() => setTimeout(() => playlists.setShowGenreDropdown(false), 150)}
                 placeholder="Search genres (e.g. Pop, Alternative, Indie...)"
                 className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
-              {showPlaylistGenreDropdown && filteredPlaylistGenres.length > 0 && (
+              {playlists.showGenreDropdown && playlists.filteredGenres.length > 0 && (
                 <div className="absolute z-10 mt-1 w-full bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl max-h-56 overflow-y-auto">
-                  {filteredPlaylistGenres.map(g => (
-                    <button key={g} onMouseDown={() => { togglePlaylistGenre(g); setPlaylistGenreSearch(''); }}
+                  {playlists.filteredGenres.map(g => (
+                    <button key={g} onMouseDown={() => { playlists.toggleGenre(g); playlists.setGenreSearch(''); }}
                       className="w-full text-left px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700 transition">{g}</button>
                   ))}
                 </div>
@@ -394,17 +279,17 @@ export function PromotionSection(props: PromotionSectionProps) {
             <p className="text-sm text-zinc-500">Filter curators by streaming platform. Leave empty to include all platforms.</p>
             <div className="flex flex-wrap gap-2">
               {PLATFORM_OPTIONS.map(platform => (
-                <button key={platform} onClick={() => togglePlatform(platform)}
+                <button key={platform} onClick={() => playlists.toggleSecondary(platform)}
                   className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${
-                    selectedPlatforms.includes(platform)
+                    playlists.selectedSecondary.includes(platform)
                       ? 'bg-violet-600 border-violet-500 text-white'
                       : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
                   }`}>
                   {platform}
                 </button>
               ))}
-              {selectedPlatforms.length > 0 && (
-                <button onClick={() => { setSelectedPlatforms([]); setPlaylistPreviewDone(false); setPlaylistSendResult(null); }}
+              {playlists.selectedSecondary.length > 0 && (
+                <button onClick={() => { playlists.setSelectedSecondary([]); playlists.resetPreview(); }}
                   className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 transition">Clear</button>
               )}
             </div>
@@ -412,29 +297,29 @@ export function PromotionSection(props: PromotionSectionProps) {
 
           {/* Preview */}
           <div className="flex flex-wrap items-center gap-3">
-            <button onClick={handlePlaylistPreview} disabled={playlistPreviewLoading}
+            <button onClick={playlists.handlePreview} disabled={playlists.previewLoading}
               className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-5 py-2.5 text-sm font-semibold text-white transition">
-              {playlistPreviewLoading ? 'Loading...' : 'Preview Curators'}
+              {playlists.previewLoading ? 'Loading...' : 'Preview Curators'}
             </button>
-            {playlistPreviewDone && (
+            {playlists.previewDone && (
               <>
                 <button
                   onClick={() => { setPreviewModalType('playlists'); setPreviewModalIdx(0); }}
                   className="rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-4 py-2.5 text-sm font-medium text-zinc-300 transition">
                   Preview Email
                 </button>
-                <span className="text-sm text-zinc-400">{playlistCurators.length} curators · {playlistTotalEmails} emails</span>
+                <span className="text-sm text-zinc-400">{playlists.results.length} curators · {playlists.totalEmails} emails</span>
               </>
             )}
           </div>
 
-          {playlistPreviewDone && playlistCurators.length > 0 && (
+          {playlists.previewDone && playlists.results.length > 0 && (
             <section className="bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden">
               <div className="px-4 md:px-6 py-3 md:py-4 border-b border-zinc-800">
-                <h3 className="text-sm font-semibold text-zinc-300">Curators Preview <span className="text-zinc-500 font-normal">· {playlistCurators.length} curators</span></h3>
+                <h3 className="text-sm font-semibold text-zinc-300">Curators Preview <span className="text-zinc-500 font-normal">· {playlists.results.length} curators</span></h3>
               </div>
               <div className="divide-y divide-zinc-800 max-h-[32rem] overflow-y-auto">
-                {playlistCurators.map(c => {
+                {playlists.results.map(c => {
                   const pitchedTracks = c.emails.flatMap(email => pitchedEmailMap.get(email.toLowerCase()) ?? []);
                   const uniquePitched = [...new Set(pitchedTracks)];
                   return (
@@ -463,56 +348,56 @@ export function PromotionSection(props: PromotionSectionProps) {
             </section>
           )}
 
-          {playlistPreviewDone && playlistCurators.length === 0 && (
+          {playlists.previewDone && playlists.results.length === 0 && (
             <p className="text-sm text-zinc-500">No curators found for the selected filters.</p>
           )}
 
-          {!playlistSendResult && playlistDuplicateRecipients.length > 0 && (
+          {!playlists.sendResult && playlists.duplicateRecipients.length > 0 && (
             <div className="rounded-lg bg-amber-900/20 border border-amber-700/40 px-5 py-3">
               <p className="text-amber-400 text-sm">
-                {playlistDuplicateRecipients.length} recipient{playlistDuplicateRecipients.length !== 1 ? 's have' : ' has'} already been pitched &ldquo;{trackTitle}&rdquo; before (via Song Demos or Track Promotion). You can still send.
+                {playlists.duplicateRecipients.length} recipient{playlists.duplicateRecipients.length !== 1 ? 's have' : ' has'} already been pitched &ldquo;{trackTitle}&rdquo; before (via Song Demos or Track Promotion). You can still send.
               </p>
             </div>
           )}
 
-          {!playlistSendResult && playlistInvalidEmails.length > 0 && (
+          {!playlists.sendResult && playlists.invalidEmails.length > 0 && (
             <div className="rounded-lg bg-red-900/20 border border-red-700/40 px-5 py-3 space-y-2">
               <p className="text-red-400 text-sm">
-                {playlistInvalidEmails.length} address{playlistInvalidEmails.length !== 1 ? 'es' : ''} {playlistInvalidEmails.length !== 1 ? "don't" : "doesn't"} look deliverable (no working mail server found) and will likely bounce.
+                {playlists.invalidEmails.length} address{playlists.invalidEmails.length !== 1 ? 'es' : ''} {playlists.invalidEmails.length !== 1 ? "don't" : "doesn't"} look deliverable (no working mail server found) and will likely bounce.
               </p>
-              <button onClick={() => { addFailedToBlacklist(playlistInvalidEmails); setPlaylistInvalidEmails([]); }}
+              <button onClick={() => { addFailedToBlacklist(playlists.invalidEmails); playlists.setInvalidEmails([]); }}
                 className="text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 rounded-lg text-zinc-300 transition">
-                Add {playlistInvalidEmails.length} address{playlistInvalidEmails.length !== 1 ? 'es' : ''} to blacklist
+                Add {playlists.invalidEmails.length} address{playlists.invalidEmails.length !== 1 ? 'es' : ''} to blacklist
               </button>
             </div>
           )}
 
-          {playlistSendResult && (
+          {playlists.sendResult && (
             <div className="rounded-lg bg-green-900/30 border border-green-700 px-5 py-4 space-y-2">
               <p className="text-green-400 font-semibold">
-                Sent {playlistSendResult.sent} of {playlistSendResult.total} emails successfully.
-                {playlistSendResult.failed > 0 && ` ${playlistSendResult.failed} failed.`}
+                Sent {playlists.sendResult.sent} of {playlists.sendResult.total} emails successfully.
+                {playlists.sendResult.failed > 0 && ` ${playlists.sendResult.failed} failed.`}
               </p>
-              {playlistSendFailedEmails.length > 0 && (
+              {playlists.sendFailedEmails.length > 0 && (
                 <button
-                  onClick={() => { addFailedToBlacklist(playlistSendFailedEmails); setPlaylistSendFailedEmails([]); }}
+                  onClick={() => { addFailedToBlacklist(playlists.sendFailedEmails); playlists.setSendFailedEmails([]); }}
                   className="text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 rounded-lg text-zinc-300 transition"
                 >
-                  Add {playlistSendFailedEmails.length} failed address{playlistSendFailedEmails.length !== 1 ? 'es' : ''} to blacklist
+                  Add {playlists.sendFailedEmails.length} failed address{playlists.sendFailedEmails.length !== 1 ? 'es' : ''} to blacklist
                 </button>
               )}
             </div>
           )}
-          {playlistSendError && (
+          {playlists.sendError && (
             <div className="rounded-lg bg-red-900/30 border border-red-700 px-5 py-4">
-              <p className="text-red-400 text-sm">{playlistSendError}</p>
+              <p className="text-red-400 text-sm">{playlists.sendError}</p>
             </div>
           )}
 
           <div className="flex flex-col sm:flex-row sm:items-center gap-3 pb-6">
-            <button onClick={handlePlaylistSend} disabled={!canSendPlaylist || playlistSending}
+            <button onClick={playlists.handleSend} disabled={!playlists.canSend || playlists.sending}
               className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-6 py-3 font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-zinc-950 text-sm">
-              {playlistSending ? `Sending... (${(playlistSendResult?.sent ?? 0) + (playlistSendResult?.failed ?? 0)}/${playlistTotalEmails})` : canSendPlaylist ? `Send to ${playlistTotalEmails} curator${playlistTotalEmails !== 1 ? 's' : ''}` : 'Preview curators first'}
+              {playlists.sending ? `Sending... (${(playlists.sendResult?.sent ?? 0) + (playlists.sendResult?.failed ?? 0)}/${playlists.totalEmails})` : playlists.canSend ? `Send to ${playlists.totalEmails} curator${playlists.totalEmails !== 1 ? 's' : ''}` : 'Preview curators first'}
             </button>
             {selectedAccount ? (
               <span className="text-xs text-zinc-500">From <span className="text-zinc-300">{selectedAccount.name}</span> ({selectedAccount.email || selectedAccount.smtpUser})</span>
@@ -555,22 +440,22 @@ export function PromotionSection(props: PromotionSectionProps) {
           {/* Saved Filter Presets */}
           <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-3">
             <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Saved Filters</h2>
-            {radioPresets.length > 0 && (
+            {radio.presets.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
-                {radioPresets.map(p => (
+                {radio.presets.map(p => (
                   <div key={p.id} className="inline-flex items-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded-full pl-3 pr-1.5 py-1">
-                    <button onClick={() => loadRadioPreset(p)} className="text-xs text-zinc-200 hover:text-violet-400 transition">{p.name}</button>
-                    <button onClick={() => deleteRadioPreset(p.id)} className="text-zinc-600 hover:text-red-400 transition text-sm leading-none px-1">×</button>
+                    <button onClick={() => radio.loadPreset(p)} className="text-xs text-zinc-200 hover:text-violet-400 transition">{p.name}</button>
+                    <button onClick={() => radio.deletePreset(p.id)} className="text-zinc-600 hover:text-red-400 transition text-sm leading-none px-1">×</button>
                   </div>
                 ))}
               </div>
             )}
             <div className="flex gap-2">
-              <input value={newRadioPresetName} onChange={e => setNewRadioPresetName(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') saveRadioPreset(); }}
+              <input value={radio.newPresetName} onChange={e => radio.setNewPresetName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') radio.savePreset(); }}
                 placeholder="Name this filter set (e.g. Australian Radio)"
                 className="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent" />
-              <button onClick={saveRadioPreset} disabled={!newRadioPresetName.trim()}
+              <button onClick={radio.savePreset} disabled={!radio.newPresetName.trim()}
                 className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-4 py-2 text-sm font-semibold text-white transition shrink-0">
                 Save Current
               </button>
@@ -584,38 +469,38 @@ export function PromotionSection(props: PromotionSectionProps) {
               <div className="flex items-center gap-1.5">
                 <span className="text-xs text-zinc-500">Match:</span>
                 {(['any', 'all'] as const).map(mode => (
-                  <button key={mode} onClick={() => { setRadioMatchMode(mode); setRadioPreviewDone(false); setRadioSendResult(null); }}
-                    className={`px-3 py-1 rounded-full text-xs font-medium border transition ${radioMatchMode === mode ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                  <button key={mode} onClick={() => { radio.setMatchMode(mode); radio.resetPreview(); }}
+                    className={`px-3 py-1 rounded-full text-xs font-medium border transition ${radio.matchMode === mode ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
                     {mode === 'any' ? 'Any genre' : 'All genres'}
                   </button>
                 ))}
               </div>
             </div>
             <p className="text-sm text-zinc-500">
-              {radioMatchMode === 'any' ? 'Stations tagged with at least one selected genre. Leave empty to include all.' : 'Stations tagged with every selected genre.'}
+              {radio.matchMode === 'any' ? 'Stations tagged with at least one selected genre. Leave empty to include all.' : 'Stations tagged with every selected genre.'}
             </p>
-            {selectedRadioGenres.length > 0 && (
+            {radio.selectedGenres.length > 0 && (
               <div className="flex flex-wrap gap-2">
-                {selectedRadioGenres.map(g => (
-                  <button key={g} onClick={() => toggleRadioGenre(g)}
+                {radio.selectedGenres.map(g => (
+                  <button key={g} onClick={() => radio.toggleGenre(g)}
                     className="inline-flex items-center gap-1.5 bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium px-3 py-1 rounded-full transition">
                     {g}<span className="text-violet-200">×</span>
                   </button>
                 ))}
-                <button onClick={() => { setSelectedRadioGenres([]); setRadioPreviewDone(false); setRadioSendResult(null); }}
+                <button onClick={() => { radio.setSelectedGenres([]); radio.resetPreview(); }}
                   className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 transition">Clear all</button>
               </div>
             )}
             <div className="relative">
-              <input type="text" value={radioGenreSearch} onChange={e => setRadioGenreSearch(e.target.value)}
-                onFocus={() => setShowRadioGenreDropdown(true)}
-                onBlur={() => setTimeout(() => setShowRadioGenreDropdown(false), 150)}
+              <input type="text" value={radio.genreSearch} onChange={e => radio.setGenreSearch(e.target.value)}
+                onFocus={() => radio.setShowGenreDropdown(true)}
+                onBlur={() => setTimeout(() => radio.setShowGenreDropdown(false), 150)}
                 placeholder="Search genres (e.g. Pop, Alternative, Indie...)"
                 className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
-              {showRadioGenreDropdown && filteredRadioGenres.length > 0 && (
+              {radio.showGenreDropdown && radio.filteredGenres.length > 0 && (
                 <div className="absolute z-10 mt-1 w-full bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl max-h-56 overflow-y-auto">
-                  {filteredRadioGenres.map(g => (
-                    <button key={g} onMouseDown={() => { toggleRadioGenre(g); setRadioGenreSearch(''); }}
+                  {radio.filteredGenres.map(g => (
+                    <button key={g} onMouseDown={() => { radio.toggleGenre(g); radio.setGenreSearch(''); }}
                       className="w-full text-left px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700 transition">{g}</button>
                   ))}
                 </div>
@@ -629,17 +514,17 @@ export function PromotionSection(props: PromotionSectionProps) {
             <p className="text-sm text-zinc-500">Filter stations by region. Leave empty to include all locations.</p>
             <div className="flex flex-wrap gap-2">
               {LOCATION_OPTIONS.map(loc => (
-                <button key={loc} onClick={() => toggleLocation(loc)}
+                <button key={loc} onClick={() => radio.toggleSecondary(loc)}
                   className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${
-                    selectedLocations.includes(loc)
+                    radio.selectedSecondary.includes(loc)
                       ? 'bg-violet-600 border-violet-500 text-white'
                       : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
                   }`}>
                   {loc}
                 </button>
               ))}
-              {selectedLocations.length > 0 && (
-                <button onClick={() => { setSelectedLocations([]); setRadioPreviewDone(false); setRadioSendResult(null); }}
+              {radio.selectedSecondary.length > 0 && (
+                <button onClick={() => { radio.setSelectedSecondary([]); radio.resetPreview(); }}
                   className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 transition">Clear</button>
               )}
             </div>
@@ -647,29 +532,29 @@ export function PromotionSection(props: PromotionSectionProps) {
 
           {/* Preview */}
           <div className="flex flex-wrap items-center gap-3">
-            <button onClick={handleRadioPreview} disabled={radioPreviewLoading}
+            <button onClick={radio.handlePreview} disabled={radio.previewLoading}
               className="rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 px-5 py-2.5 text-sm font-semibold text-white transition">
-              {radioPreviewLoading ? 'Loading...' : 'Preview Stations'}
+              {radio.previewLoading ? 'Loading...' : 'Preview Stations'}
             </button>
-            {radioPreviewDone && (
+            {radio.previewDone && (
               <>
                 <button
                   onClick={() => { setPreviewModalType('radio'); setPreviewModalIdx(0); }}
                   className="rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-4 py-2.5 text-sm font-medium text-zinc-300 transition">
                   Preview Email
                 </button>
-                <span className="text-sm text-zinc-400">{radioStations.length} stations · {radioTotalEmails} emails</span>
+                <span className="text-sm text-zinc-400">{radio.results.length} stations · {radio.totalEmails} emails</span>
               </>
             )}
           </div>
 
-          {radioPreviewDone && radioStations.length > 0 && (
+          {radio.previewDone && radio.results.length > 0 && (
             <section className="bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden">
               <div className="px-4 md:px-6 py-3 md:py-4 border-b border-zinc-800">
-                <h3 className="text-sm font-semibold text-zinc-300">Stations Preview <span className="text-zinc-500 font-normal">· {radioStations.length} stations</span></h3>
+                <h3 className="text-sm font-semibold text-zinc-300">Stations Preview <span className="text-zinc-500 font-normal">· {radio.results.length} stations</span></h3>
               </div>
               <div className="divide-y divide-zinc-800 max-h-[32rem] overflow-y-auto">
-                {radioStations.map(s => {
+                {radio.results.map(s => {
                   const pitchedTracks = s.emails.flatMap(email => pitchedEmailMap.get(email.toLowerCase()) ?? []);
                   const uniquePitched = [...new Set(pitchedTracks)];
                   return (
@@ -698,56 +583,56 @@ export function PromotionSection(props: PromotionSectionProps) {
             </section>
           )}
 
-          {radioPreviewDone && radioStations.length === 0 && (
+          {radio.previewDone && radio.results.length === 0 && (
             <p className="text-sm text-zinc-500">No stations found for the selected filters.</p>
           )}
 
-          {!radioSendResult && radioDuplicateRecipients.length > 0 && (
+          {!radio.sendResult && radio.duplicateRecipients.length > 0 && (
             <div className="rounded-lg bg-amber-900/20 border border-amber-700/40 px-5 py-3">
               <p className="text-amber-400 text-sm">
-                {radioDuplicateRecipients.length} recipient{radioDuplicateRecipients.length !== 1 ? 's have' : ' has'} already been pitched &ldquo;{trackTitle}&rdquo; before (via Song Demos or Track Promotion). You can still send.
+                {radio.duplicateRecipients.length} recipient{radio.duplicateRecipients.length !== 1 ? 's have' : ' has'} already been pitched &ldquo;{trackTitle}&rdquo; before (via Song Demos or Track Promotion). You can still send.
               </p>
             </div>
           )}
 
-          {!radioSendResult && radioInvalidEmails.length > 0 && (
+          {!radio.sendResult && radio.invalidEmails.length > 0 && (
             <div className="rounded-lg bg-red-900/20 border border-red-700/40 px-5 py-3 space-y-2">
               <p className="text-red-400 text-sm">
-                {radioInvalidEmails.length} address{radioInvalidEmails.length !== 1 ? 'es' : ''} {radioInvalidEmails.length !== 1 ? "don't" : "doesn't"} look deliverable (no working mail server found) and will likely bounce.
+                {radio.invalidEmails.length} address{radio.invalidEmails.length !== 1 ? 'es' : ''} {radio.invalidEmails.length !== 1 ? "don't" : "doesn't"} look deliverable (no working mail server found) and will likely bounce.
               </p>
-              <button onClick={() => { addFailedToBlacklist(radioInvalidEmails); setRadioInvalidEmails([]); }}
+              <button onClick={() => { addFailedToBlacklist(radio.invalidEmails); radio.setInvalidEmails([]); }}
                 className="text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 rounded-lg text-zinc-300 transition">
-                Add {radioInvalidEmails.length} address{radioInvalidEmails.length !== 1 ? 'es' : ''} to blacklist
+                Add {radio.invalidEmails.length} address{radio.invalidEmails.length !== 1 ? 'es' : ''} to blacklist
               </button>
             </div>
           )}
 
-          {radioSendResult && (
+          {radio.sendResult && (
             <div className="rounded-lg bg-green-900/30 border border-green-700 px-5 py-4 space-y-2">
               <p className="text-green-400 font-semibold">
-                Sent {radioSendResult.sent} of {radioSendResult.total} emails successfully.
-                {radioSendResult.failed > 0 && ` ${radioSendResult.failed} failed.`}
+                Sent {radio.sendResult.sent} of {radio.sendResult.total} emails successfully.
+                {radio.sendResult.failed > 0 && ` ${radio.sendResult.failed} failed.`}
               </p>
-              {radioSendFailedEmails.length > 0 && (
+              {radio.sendFailedEmails.length > 0 && (
                 <button
-                  onClick={() => { addFailedToBlacklist(radioSendFailedEmails); setRadioSendFailedEmails([]); }}
+                  onClick={() => { addFailedToBlacklist(radio.sendFailedEmails); radio.setSendFailedEmails([]); }}
                   className="text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 rounded-lg text-zinc-300 transition"
                 >
-                  Add {radioSendFailedEmails.length} failed address{radioSendFailedEmails.length !== 1 ? 'es' : ''} to blacklist
+                  Add {radio.sendFailedEmails.length} failed address{radio.sendFailedEmails.length !== 1 ? 'es' : ''} to blacklist
                 </button>
               )}
             </div>
           )}
-          {radioSendError && (
+          {radio.sendError && (
             <div className="rounded-lg bg-red-900/30 border border-red-700 px-5 py-4">
-              <p className="text-red-400 text-sm">{radioSendError}</p>
+              <p className="text-red-400 text-sm">{radio.sendError}</p>
             </div>
           )}
 
           <div className="flex flex-col sm:flex-row sm:items-center gap-3 pb-6">
-            <button onClick={handleRadioSend} disabled={!canSendRadio || radioSending}
+            <button onClick={radio.handleSend} disabled={!radio.canSend || radio.sending}
               className="rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-6 py-3 font-semibold text-white transition focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-zinc-950 text-sm">
-              {radioSending ? `Sending... (${(radioSendResult?.sent ?? 0) + (radioSendResult?.failed ?? 0)}/${radioTotalEmails})` : canSendRadio ? `Send to ${radioTotalEmails} station${radioTotalEmails !== 1 ? 's' : ''}` : 'Preview stations first'}
+              {radio.sending ? `Sending... (${(radio.sendResult?.sent ?? 0) + (radio.sendResult?.failed ?? 0)}/${radio.totalEmails})` : radio.canSend ? `Send to ${radio.totalEmails} station${radio.totalEmails !== 1 ? 's' : ''}` : 'Preview stations first'}
             </button>
             {selectedAccount ? (
               <span className="text-xs text-zinc-500">From <span className="text-zinc-300">{selectedAccount.name}</span> ({selectedAccount.email || selectedAccount.smtpUser})</span>
