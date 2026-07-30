@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, sendInBatches, findDuplicateRecipients, messageIdsFromResults } from './utils';
+import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, sendInBatches, findDuplicateRecipients, messageIdsFromResults, computeAnalyticsStats } from './utils';
+import type { Campaign, CampaignRecipient } from './types';
 
 describe('shuffle', () => {
   it('preserves every element (no drops or duplicates)', () => {
@@ -172,5 +173,91 @@ describe('messageIdsFromResults', () => {
       { to: 'b@example.com', success: true },
     ]);
     expect(ids).toEqual({});
+  });
+});
+
+describe('computeAnalyticsStats', () => {
+  function recipient(overrides: Partial<CampaignRecipient> = {}): CampaignRecipient {
+    return { email: 'a@example.com', artistName: 'Nova', managerName: 'Sam', avatarUrl: '', genres: [], instagramHandle: '', spotifyFollowers: 0, ...overrides };
+  }
+
+  function campaign(overrides: Partial<Campaign> = {}): Campaign {
+    return { id: '1', trackTitle: 'Track', date: new Date().toISOString(), type: 'demos', emails: [], ...overrides };
+  }
+
+  it('returns all-zero stats for no campaigns', () => {
+    const stats = computeAnalyticsStats([]);
+    expect(stats.totalCampaigns).toBe(0);
+    expect(stats.totalEmailsSent).toBe(0);
+    expect(stats.replyRate).toBe(0);
+    expect(stats.bounceRate).toBe(0);
+    expect(stats.lastCampaignDate).toBeNull();
+    expect(stats.byType).toEqual([]);
+  });
+
+  it('totals emails sent and reply/bounce rates across campaigns', () => {
+    const stats = computeAnalyticsStats([
+      campaign({ id: '1', emails: ['a@x.com', 'b@x.com'], responded: ['a@x.com'] }),
+      campaign({ id: '2', type: 'radio', emails: ['c@x.com', 'd@x.com'], bounced: ['c@x.com'] }),
+    ]);
+    expect(stats.totalCampaigns).toBe(2);
+    expect(stats.totalEmailsSent).toBe(4);
+    expect(stats.totalResponded).toBe(1);
+    expect(stats.totalBounced).toBe(1);
+    expect(stats.replyRate).toBe(0.25);
+    expect(stats.bounceRate).toBe(0.25);
+  });
+
+  it('breaks reply rate down by campaign type, excluding types with no sends', () => {
+    const stats = computeAnalyticsStats([
+      campaign({ id: '1', type: 'demos', emails: ['a@x.com', 'b@x.com'], responded: ['a@x.com'] }),
+    ]);
+    expect(stats.byType).toEqual([{ label: 'Song Demos', sent: 2, responded: 1, replyRate: 0.5 }]);
+  });
+
+  it('picks the most recent campaign date', () => {
+    const stats = computeAnalyticsStats([
+      campaign({ id: '1', date: '2026-01-01T00:00:00.000Z' }),
+      campaign({ id: '2', date: '2026-06-15T00:00:00.000Z' }),
+      campaign({ id: '3', date: '2026-03-01T00:00:00.000Z' }),
+    ]);
+    expect(stats.lastCampaignDate).toBe('2026-06-15T00:00:00.000Z');
+  });
+
+  it('counts reply classifications across campaigns', () => {
+    const stats = computeAnalyticsStats([
+      campaign({ id: '1', classifications: { 'a@x.com': 'interested', 'b@x.com': 'pass' } }),
+      campaign({ id: '2', classifications: { 'c@x.com': 'auto-reply', 'd@x.com': 'unclassified' } }),
+    ]);
+    expect(stats.classificationCounts).toEqual({ interested: 1, pass: 1, autoReply: 1, unclassified: 1 });
+  });
+
+  it('breaks reply rate down by genre and follower tier, using Demos recipient metadata only', () => {
+    const stats = computeAnalyticsStats([
+      campaign({
+        id: '1', type: 'demos',
+        emails: ['a@x.com', 'b@x.com'],
+        responded: ['a@x.com'],
+        recipients: [
+          recipient({ email: 'a@x.com', genres: ['Pop'], spotifyFollowers: 5_000 }),
+          recipient({ email: 'b@x.com', genres: ['Pop', 'Indie'], spotifyFollowers: 500_000 }),
+        ],
+      }),
+    ]);
+    expect(stats.byGenre).toEqual(expect.arrayContaining([
+      { label: 'Pop', sent: 2, responded: 1, replyRate: 0.5 },
+      { label: 'Indie', sent: 1, responded: 0, replyRate: 0 },
+    ]));
+    expect(stats.byFollowerTier).toEqual(expect.arrayContaining([
+      { label: 'Under 10K', sent: 1, responded: 1, replyRate: 1 },
+      { label: '100K–1M', sent: 1, responded: 0, replyRate: 0 },
+    ]));
+  });
+
+  it('ignores recipient metadata from non-Demos campaigns for genre/follower-tier breakdowns', () => {
+    const stats = computeAnalyticsStats([
+      campaign({ id: '1', type: 'radio', emails: ['a@x.com'], recipients: [recipient({ email: 'a@x.com', genres: ['Rock'] })] }),
+    ]);
+    expect(stats.byGenre).toEqual([]);
   });
 });

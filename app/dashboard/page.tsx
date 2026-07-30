@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { hydrateFromRemote, syncStorage } from '@/lib/remoteSync';
 import type {
   Artist, RadioStation, PlaylistCurator, EmailAccount, NewAccountForm,
-  CampaignRecipient, Campaign, CustomContact, DeliverabilityResult, ReplyClassification, RateBreakdown,
+  CampaignRecipient, CustomContact, DeliverabilityResult,
   DemosFilterPreset, SavedTemplate,
 } from './types';
 import {
@@ -13,10 +13,12 @@ import {
   DEFAULT_SIGN_OFF, BLANK_ACCOUNT,
 } from './constants';
 import {
-  sendInBatches, downloadCsv, parseContactsCsv, shuffle, countUniqueRecipients,
+  sendInBatches, parseContactsCsv, shuffle, countUniqueRecipients,
   renderTemplateClient, pronounForClient, findDuplicateRecipients, messageIdsFromResults, checkRecipientsValidity,
+  computeAnalyticsStats,
 } from './utils';
 import { usePromotionChannel } from './hooks/usePromotionChannel';
+import { useCampaignHistory } from './hooks/useCampaignHistory';
 import { OverviewSection } from './sections/OverviewSection';
 import { DemosSection } from './sections/DemosSection';
 import { PromotionSection } from './sections/PromotionSection';
@@ -120,14 +122,6 @@ export default function Dashboard() {
   const [newCustomContact, setNewCustomContact] = useState({ artistName: '', managerName: '', managerEmail: '' });
   const [showAddCustomContact, setShowAddCustomContact] = useState(false);
 
-  // Campaigns
-  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [expandedCampaignId, setExpandedCampaignId] = useState<string | null>(null);
-  const [historySearch, setHistorySearch] = useState('');
-  const [historyTypeFilter, setHistoryTypeFilter] = useState<'all' | Campaign['type']>('all');
-  const [historyDateFrom, setHistoryDateFrom] = useState('');
-  const [historyDateTo, setHistoryDateTo] = useState('');
-
   // Deliverability
   const [deliverabilityResult, setDeliverabilityResult] = useState<DeliverabilityResult | null>(null);
   const [deliverabilityLoading, setDeliverabilityLoading] = useState(false);
@@ -160,9 +154,14 @@ export default function Dashboard() {
     } catch {}
   }
 
+  // Owns campaigns state itself (fetched once on mount) plus everything History-tab
+  // specific — the single source of truth the send flows below write through via
+  // history.upsertCampaign, instead of duplicating campaign-state ownership.
+  const history = useCampaignHistory({ emailAccounts, customContacts, addFailedToBlacklist, refreshSendsToday });
+
   const pitchedEmailMap = useMemo(() => {
     const map = new Map<string, string[]>();
-    for (const campaign of campaigns) {
+    for (const campaign of history.campaigns) {
       for (const email of campaign.emails) {
         const key = email.toLowerCase();
         const existing = map.get(key) ?? [];
@@ -172,7 +171,7 @@ export default function Dashboard() {
       }
     }
     return map;
-  }, [campaigns]);
+  }, [history.campaigns]);
 
   // Radio and Playlists were near-exact duplicates of each other (genre/secondary-filter
   // selection, preview, send, presets, template library) — one hook, instantiated twice,
@@ -191,7 +190,7 @@ export default function Dashboard() {
     trackTitle, driveLink, senderName,
     template: radioTemplate, subject: radioSubject, setTemplate: setRadioTemplate, setSubject: setRadioSubject,
     signOff, signOffImage, selectedAccountId, sendDelay, blacklist, dailySendCap, sendsToday,
-    accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap, upsertCampaign,
+    accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap, upsertCampaign: history.upsertCampaign,
   });
 
   const playlists = usePromotionChannel<PlaylistCurator>({
@@ -205,13 +204,12 @@ export default function Dashboard() {
     trackTitle, driveLink, senderName,
     template: playlistTemplate, subject: playlistSubject, setTemplate: setPlaylistTemplate, setSubject: setPlaylistSubject,
     signOff, signOffImage, selectedAccountId, sendDelay, blacklist, dailySendCap, sendsToday,
-    accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap, upsertCampaign,
+    accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap, upsertCampaign: history.upsertCampaign,
   });
 
   useEffect(() => {
     fetch('/api/genres').then(r => r.json()).then(d => { setAllGenres(d.genres || []); setTopGenres(d.topGenres || []); });
     fetch('/api/send-quota').then(r => r.json()).then(d => { setSendsToday(d.count ?? 0); setSendsTodayByAccount(d.byAccount ?? {}); }).catch(() => {});
-    fetch('/api/campaigns').then(r => r.json()).then(d => setCampaigns(d.campaigns || [])).catch(() => {});
     (async () => {
     await hydrateFromRemote(); // pull latest settings from the server so a second device picks up what was saved elsewhere
     try {
@@ -305,157 +303,28 @@ export default function Dashboard() {
   const demosPitchCount = useMemo(() => {
     const title = trackTitle.trim().toLowerCase();
     if (!title) return 0;
-    return campaigns
+    return history.campaigns
       .filter(c => c.type === 'demos' && c.trackTitle.trim().toLowerCase() === title)
       .reduce((sum, c) => sum + c.emails.length, 0);
-  }, [campaigns, trackTitle]);
+  }, [history.campaigns, trackTitle]);
 
   const radioPitchCount = useMemo(() => {
     const title = trackTitle.trim().toLowerCase();
     if (!title) return 0;
-    return campaigns
+    return history.campaigns
       .filter(c => c.type === 'radio' && c.trackTitle.trim().toLowerCase() === title)
       .reduce((sum, c) => sum + c.emails.length, 0);
-  }, [campaigns, trackTitle]);
+  }, [history.campaigns, trackTitle]);
 
   const playlistPitchCount = useMemo(() => {
     const title = trackTitle.trim().toLowerCase();
     if (!title) return 0;
-    return campaigns
+    return history.campaigns
       .filter(c => c.type === 'playlists' && c.trackTitle.trim().toLowerCase() === title)
       .reduce((sum, c) => sum + c.emails.length, 0);
-  }, [campaigns, trackTitle]);
+  }, [history.campaigns, trackTitle]);
 
-  const analyticsStats = useMemo(() => {
-    const totalCampaigns = campaigns.length;
-    const totalEmailsSent = campaigns.reduce((s, c) => s + c.emails.length, 0);
-    const demosCampaigns = campaigns.filter(c => c.type === 'demos');
-    const radioCampaigns = campaigns.filter(c => c.type === 'radio');
-    const playlistCampaigns = campaigns.filter(c => c.type === 'playlists');
-    const demosEmailsSent = demosCampaigns.reduce((s, c) => s + c.emails.length, 0);
-    const radioEmailsSent = radioCampaigns.reduce((s, c) => s + c.emails.length, 0);
-    const playlistEmailsSent = playlistCampaigns.reduce((s, c) => s + c.emails.length, 0);
-
-    const trackCounts = new Map<string, number>();
-    campaigns.forEach(c => trackCounts.set(c.trackTitle, (trackCounts.get(c.trackTitle) ?? 0) + c.emails.length));
-    const topTracks = Array.from(trackCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 5);
-
-    const dayCounts = new Map<string, number>();
-    campaigns.forEach(c => {
-      const day = c.date.slice(0, 10);
-      dayCounts.set(day, (dayCounts.get(day) ?? 0) + c.emails.length);
-    });
-    const today = new Date();
-    const last14Days = Array.from({ length: 14 }, (_, i) => {
-      const d = new Date(today);
-      d.setDate(d.getDate() - (13 - i));
-      const key = d.toISOString().slice(0, 10);
-      return { date: key, count: dayCounts.get(key) ?? 0 };
-    });
-    const maxDayCount = Math.max(1, ...last14Days.map(d => d.count));
-
-    const totalResponded = campaigns.reduce((s, c) => s + (c.responded?.length ?? 0), 0);
-    const totalBounced = campaigns.reduce((s, c) => s + (c.bounced?.length ?? 0), 0);
-    const replyRate = totalEmailsSent > 0 ? totalResponded / totalEmailsSent : 0;
-    const bounceRate = totalEmailsSent > 0 ? totalBounced / totalEmailsSent : 0;
-
-    const classificationCounts = { interested: 0, pass: 0, autoReply: 0, unclassified: 0 };
-    campaigns.forEach(c => {
-      Object.values(c.classifications ?? {}).forEach(cls => {
-        if (cls === 'interested') classificationCounts.interested++;
-        else if (cls === 'pass') classificationCounts.pass++;
-        else if (cls === 'auto-reply') classificationCounts.autoReply++;
-        else classificationCounts.unclassified++;
-      });
-    });
-
-    const rate = (sent: number, responded: number): number => (sent > 0 ? responded / sent : 0);
-
-    const byType: RateBreakdown[] = ([
-      ['Song Demos', demosCampaigns], ['Track Promotion (Radio)', radioCampaigns], ['Playlist Curators', playlistCampaigns],
-    ] as const).map(([label, list]) => {
-      const sent = list.reduce((s, c) => s + c.emails.length, 0);
-      const responded = list.reduce((s, c) => s + (c.responded?.length ?? 0), 0);
-      return { label, sent, responded, replyRate: rate(sent, responded) };
-    }).filter(b => b.sent > 0);
-
-    // Genre and follower-tier breakdowns only make sense against recipient metadata
-    // (genres, spotifyFollowers), which currently only Demos sends record.
-    const genreTotals = new Map<string, { sent: number; responded: number }>();
-    const FOLLOWER_TIERS: [string, (n: number) => boolean][] = [
-      ['Under 10K', n => n < 10_000],
-      ['10K–100K', n => n >= 10_000 && n < 100_000],
-      ['100K–1M', n => n >= 100_000 && n < 1_000_000],
-      ['1M+', n => n >= 1_000_000],
-    ];
-    const tierTotals = new Map<string, { sent: number; responded: number }>(FOLLOWER_TIERS.map(([label]) => [label, { sent: 0, responded: 0 }]));
-
-    demosCampaigns.forEach(c => {
-      const respondedSet = new Set((c.responded ?? []).map(e => e.toLowerCase()));
-      (c.recipients ?? []).forEach(r => {
-        const didRespond = respondedSet.has(r.email.toLowerCase());
-        r.genres.forEach(genre => {
-          const entry = genreTotals.get(genre) ?? { sent: 0, responded: 0 };
-          entry.sent++;
-          if (didRespond) entry.responded++;
-          genreTotals.set(genre, entry);
-        });
-        const tierLabel = FOLLOWER_TIERS.find(([, test]) => test(r.spotifyFollowers))?.[0];
-        if (tierLabel) {
-          const entry = tierTotals.get(tierLabel)!;
-          entry.sent++;
-          if (didRespond) entry.responded++;
-        }
-      });
-    });
-
-    const byGenre: RateBreakdown[] = Array.from(genreTotals.entries())
-      .map(([label, { sent, responded }]) => ({ label, sent, responded, replyRate: rate(sent, responded) }))
-      .sort((a, b) => b.sent - a.sent)
-      .slice(0, 10);
-
-    const byFollowerTier: RateBreakdown[] = FOLLOWER_TIERS
-      .map(([label]) => ({ label, ...tierTotals.get(label)! }))
-      .filter(b => b.sent > 0)
-      .map(b => ({ ...b, replyRate: rate(b.sent, b.responded) }));
-
-    return {
-      totalCampaigns, totalEmailsSent,
-      demosCampaignCount: demosCampaigns.length, radioCampaignCount: radioCampaigns.length, playlistCampaignCount: playlistCampaigns.length,
-      demosEmailsSent, radioEmailsSent, playlistEmailsSent,
-      topTracks, last14Days, maxDayCount,
-      lastCampaignDate: campaigns.length ? campaigns.slice().sort((a, b) => b.date.localeCompare(a.date))[0].date : null,
-      totalResponded, totalBounced, replyRate, bounceRate, classificationCounts,
-      byType, byGenre, byFollowerTier,
-    };
-  }, [campaigns]);
-
-  const filteredCampaigns = useMemo(() => {
-    const search = historySearch.trim().toLowerCase();
-    return campaigns.filter(c => {
-      if (historyTypeFilter !== 'all' && c.type !== historyTypeFilter) return false;
-      if (search && !c.trackTitle.toLowerCase().includes(search)) return false;
-      const day = c.date.slice(0, 10);
-      if (historyDateFrom && day < historyDateFrom) return false;
-      if (historyDateTo && day > historyDateTo) return false;
-      return true;
-    });
-  }, [campaigns, historySearch, historyTypeFilter, historyDateFrom, historyDateTo]);
-
-  // Groups Demos campaigns by song (case-insensitive title match) in send order,
-  // so each one can be labeled "Sendout 1", "Sendout 2", etc.
-  const demosSendoutGroups = useMemo(() => {
-    const groups = new Map<string, Campaign[]>();
-    campaigns
-      .filter(c => c.type === 'demos')
-      .sort((a, b) => a.date.localeCompare(b.date))
-      .forEach(c => {
-        const key = c.trackTitle.trim().toLowerCase();
-        const group = groups.get(key);
-        if (group) group.push(c); else groups.set(key, [c]);
-      });
-    return groups;
-  }, [campaigns]);
+  const analyticsStats = useMemo(() => computeAnalyticsStats(history.campaigns), [history.campaigns]);
 
   const isDirty =
     demosTemplate !== lastSavedDemosTemplate ||
@@ -614,196 +483,6 @@ export default function Dashboard() {
     const updated = [...customContacts, ...additions];
     setCustomContacts(updated);
     syncStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
-  }
-
-  /**
-   * Creates or updates a single campaign record. Campaign history lives server-side
-   * as one record per campaign (see lib/campaigns.ts), so this only ever writes the
-   * one record that changed — cheap enough to call after every batch of a long send,
-   * which is what makes mid-send persistence (see handleSend et al.) practical.
-   */
-  function upsertCampaign(campaign: Campaign) {
-    setCampaigns(prev => {
-      const idx = prev.findIndex(c => c.id === campaign.id);
-      if (idx >= 0) { const copy = [...prev]; copy[idx] = campaign; return copy; }
-      return [...prev, campaign];
-    });
-    fetch('/api/campaigns', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(campaign),
-    }).catch(() => {});
-  }
-
-  /** Looks up the Message-ID each address was originally pitched under, for the same track,
-   *  so a follow-up threads onto it instead of landing as an unrelated new email. */
-  function threadIdsFor(type: Campaign['type'], title: string): Record<string, string> {
-    const key = title.trim().toLowerCase();
-    const ids: Record<string, string> = {};
-    campaigns
-      .filter(c => c.type === type && c.trackTitle.trim().toLowerCase() === key)
-      .forEach(c => Object.entries(c.messageIds ?? {}).forEach(([email, id]) => { ids[email] = id; }));
-    return ids;
-  }
-
-  const [checkingRepliesId, setCheckingRepliesId] = useState<string | null>(null);
-  const [replyCheckError, setReplyCheckError] = useState('');
-  const [replyCheckResult, setReplyCheckResult] = useState<{ campaignId: string; newCount: number; totalCount: number; newBounceCount: number } | null>(null);
-
-  async function checkReplies(c: Campaign) {
-    if (!c.accountId || !emailAccounts.some(a => a.id === c.accountId)) {
-      setReplyCheckError('The account this was sent from is no longer available.');
-      return;
-    }
-    setCheckingRepliesId(c.id);
-    setReplyCheckError('');
-    setReplyCheckResult(null);
-    try {
-      const res = await fetch('/api/check-replies', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          emails: c.emails,
-          since: new Date(c.date).getTime(),
-          accountId: c.accountId,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setReplyCheckError(data.error || 'Could not check replies.'); return; }
-
-      const before = new Set(c.responded ?? []);
-      const found = data.responded as string[];
-      const newCount = found.filter(e => !before.has(e)).length;
-      const responded = Array.from(new Set([...(c.responded ?? []), ...found]));
-
-      // A bounce means the address is dead, not "no reply yet" — repeatedly re-pitching
-      // it just burns sender reputation, so a confirmed bounce is auto-blacklisted the
-      // same way a hard send failure already is (see addFailedToBlacklist).
-      const beforeBounced = new Set(c.bounced ?? []);
-      const foundBounced = (data.bounced as string[] | undefined) ?? [];
-      const newBounceCount = foundBounced.filter(e => !beforeBounced.has(e)).length;
-      const bounced = Array.from(new Set([...(c.bounced ?? []), ...foundBounced]));
-      if (foundBounced.length) addFailedToBlacklist(foundBounced);
-
-      // Best-effort keyword classification of what each reply actually said
-      // (lib/checkReplies.ts's classifyReply) — keyed lowercase, since that's how
-      // the check-replies route derives it from inbox envelopes.
-      const foundClassifications = (data.classifications as Record<string, ReplyClassification> | undefined) ?? {};
-      const classifications = { ...(c.classifications ?? {}), ...foundClassifications };
-
-      // checkReplies only ever runs from a button's onClick (passed down to
-      // HistorySection), never during render, so Date.now() here is safe — this is
-      // the react-compiler plugin flagging a callback-prop function's body more
-      // strictly than the many identical Date.now()/inline-object patterns used in
-      // page.tsx's own onClick handlers, which it doesn't scrutinize the same way.
-      // eslint-disable-next-line react-hooks/purity
-      const checkedAt = Date.now();
-      upsertCampaign({ ...c, responded, bounced, classifications, lastChecked: checkedAt });
-      setReplyCheckResult({ campaignId: c.id, newCount, totalCount: responded.length, newBounceCount });
-    } catch (err) {
-      setReplyCheckError(`Could not check replies: ${String(err)}`);
-    } finally {
-      setCheckingRepliesId(null);
-    }
-  }
-
-  function formatCheckedAt(ts: number) {
-    return new Date(ts).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-  }
-
-  const [backfillingId, setBackfillingId] = useState<string | null>(null);
-  const [backfillError, setBackfillError] = useState('');
-
-  async function backfillRecipients(c: Campaign) {
-    setBackfillingId(c.id);
-    setBackfillError('');
-    try {
-      const res = await fetch('/api/campaign-recipients', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ emails: c.emails }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setBackfillError(data.error || 'Could not load artist details.'); return; }
-      const recipients: CampaignRecipient[] = (data.recipients as CampaignRecipient[]).map(r => {
-        if (r.artistName) return r;
-        const contact = customContacts.find(cc => cc.managerEmail.toLowerCase() === r.email.toLowerCase());
-        return contact ? { ...r, artistName: contact.artistName, managerName: contact.managerName } : r;
-      });
-      upsertCampaign({ ...c, recipients });
-    } catch (err) {
-      setBackfillError(`Could not load artist details: ${String(err)}`);
-    } finally {
-      setBackfillingId(null);
-    }
-  }
-
-  const [resumingCampaignId, setResumingCampaignId] = useState<string | null>(null);
-  const [resumeError, setResumeError] = useState('');
-  const [resumeProgress, setResumeProgress] = useState<{ campaignId: string; sent: number; total: number } | null>(null);
-
-  /**
-   * Continues a send that was interrupted (tab closed, network drop, crash) partway
-   * through, from the offset it last got to — c.pendingSend was written by the batch
-   * loop in handleSend and usePromotionChannel's handleSend after every batch, so
-   * at most the one in-flight batch when the interruption happened gets re-sent.
-   *
-   * New recipients picked up here don't have artist metadata to attach (the roster
-   * lookup that built it lived in the original send's closure, long gone by now) —
-   * they land with blank fields, same as a custom contact with no name. "Show
-   * artists sent to" already exists to backfill exactly this from just the address.
-   */
-  async function resumeSend(c: Campaign) {
-    const pending = c.pendingSend;
-    if (!pending) return;
-    setResumingCampaignId(c.id);
-    setResumeError('');
-    setResumeProgress({ campaignId: c.id, sent: 0, total: 0 });
-    try {
-      const outcome = await sendInBatches(pending.endpoint, pending.payload, (progress, resultsSoFar, nextOffset) => {
-        setResumeProgress({ campaignId: c.id, sent: progress.sent, total: progress.total });
-        const newlySent = resultsSoFar.filter(r => r.success).map(r => r.to);
-        const emails = Array.from(new Set([...c.emails, ...newlySent]));
-        const existingRecipientEmails = new Set((c.recipients ?? []).map(r => r.email.toLowerCase()));
-        const recipients = c.recipients
-          ? [
-              ...c.recipients,
-              ...newlySent
-                .filter(email => !existingRecipientEmails.has(email.toLowerCase()))
-                .map(email => ({ email, artistName: '', managerName: '', avatarUrl: '', genres: [], instagramHandle: '', spotifyFollowers: 0 })),
-            ]
-          : undefined;
-        upsertCampaign({
-          ...c,
-          emails,
-          recipients,
-          messageIds: { ...(c.messageIds ?? {}), ...messageIdsFromResults(resultsSoFar) },
-          pendingSend: nextOffset != null ? { ...pending, offset: nextOffset } : undefined,
-        });
-      }, pending.offset);
-      if (!outcome.ok) setResumeError(outcome.error);
-      else if (outcome.results.some(r => r.success)) refreshSendsToday();
-    } catch (err) {
-      setResumeError(`Could not resume send: ${String(err)}`);
-    } finally {
-      setResumingCampaignId(null);
-    }
-  }
-
-  function clearCampaignHistory() {
-    setCampaigns([]);
-    fetch('/api/campaigns?all=true', { method: 'DELETE' }).catch(() => {});
-  }
-
-  function exportCampaignsCsv(list: Campaign[] = campaigns) {
-    const rows = [
-      ['Date', 'Type', 'Track', 'Recipients', 'Emails'],
-      ...list
-        .slice()
-        .sort((a, b) => b.date.localeCompare(a.date))
-        .map(c => [new Date(c.date).toLocaleString(), c.type, c.trackTitle, String(c.emails.length), c.emails.join('; ')]),
-    ];
-    downloadCsv('campaign-history.csv', rows);
   }
 
   function setDailyCap(value: number) {
@@ -1110,7 +789,7 @@ export default function Dashboard() {
           ? customContacts.map(c => ({ artistName: c.artistName, managerName: c.managerName, managerEmail: c.managerEmail }))
           : undefined,
         accountId: selectedAccountId || undefined,
-        threadIds: useFollowUp ? threadIdsFor('demos', trackTitle) : undefined,
+        threadIds: useFollowUp ? history.threadIdsFor('demos', trackTitle) : undefined,
       };
 
       const outcome = await sendInBatches(sendEndpoint, sendPayload, (progress, resultsSoFar, nextOffset) => {
@@ -1125,7 +804,7 @@ export default function Dashboard() {
             artistName: '', managerName: '', avatarUrl: '', genres: [], instagramHandle: '', spotifyFollowers: 0,
           }),
         }));
-        upsertCampaign({
+        history.upsertCampaign({
           id: campaignId, trackTitle, date: campaignDate, type: 'demos',
           emails: sentEmails, accountId: selectedAccountId, recipients,
           messageIds: messageIdsFromResults(resultsSoFar),
@@ -1429,18 +1108,7 @@ export default function Dashboard() {
             )}
 
             {/* ── History ── */}
-            {activeSection === 'history' && (
-              <HistorySection
-                campaigns={campaigns} filteredCampaigns={filteredCampaigns} exportCampaignsCsv={exportCampaignsCsv} clearCampaignHistory={clearCampaignHistory}
-                historySearch={historySearch} setHistorySearch={setHistorySearch} historyTypeFilter={historyTypeFilter} setHistoryTypeFilter={setHistoryTypeFilter}
-                historyDateFrom={historyDateFrom} setHistoryDateFrom={setHistoryDateFrom} historyDateTo={historyDateTo} setHistoryDateTo={setHistoryDateTo}
-                demosSendoutGroups={demosSendoutGroups} expandedCampaignId={expandedCampaignId} setExpandedCampaignId={setExpandedCampaignId}
-                checkingRepliesId={checkingRepliesId} checkReplies={checkReplies} replyCheckResult={replyCheckResult} replyCheckError={replyCheckError}
-                formatCheckedAt={formatCheckedAt}
-                backfillingId={backfillingId} backfillRecipients={backfillRecipients} backfillError={backfillError}
-                resumingCampaignId={resumingCampaignId} resumeSend={resumeSend} resumeError={resumeError} resumeProgress={resumeProgress}
-              />
-            )}
+            {activeSection === 'history' && <HistorySection {...history} />}
 
           </div>
         </main>
