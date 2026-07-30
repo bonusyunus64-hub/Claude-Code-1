@@ -20,10 +20,22 @@ const FIXTURE_ARTISTS: Artist[] = [
     managementCompany: '', agencies: '', labels: '', publishers: '',
     managerNames: [], managerEmails: [], instagramHandle: '', avatarUrl: '',
   },
+  {
+    // Mirrors a real data slip (e.g. Kygo in data/roster.json): the same manager
+    // email listed twice, which used to reach a React list keyed by email and
+    // collide. 'Indie' is otherwise unused by this fixture so it can't skew any
+    // of the getArtistsByGenres assertions above.
+    name: 'Duplicate Manager Artist', rostrUrl: '', genres: ['Indie'], type: 'Solo', gender: '',
+    spotifyFollowers: 1000, instagramFollowers: 500, youtubeSubscribers: 0,
+    managementCompany: '', agencies: '', labels: '', publishers: '',
+    managerNames: ['Myles', 'Mike', 'Myles'],
+    managerEmails: ['myles@example.com', 'mike@example.com', 'Myles@Example.com'],
+    instagramHandle: '', avatarUrl: '',
+  },
 ];
 
 vi.mock('fs', () => ({
-  readFileSync: () => JSON.stringify({ artists: FIXTURE_ARTISTS, genres: ['Pop', 'Rock'] }),
+  readFileSync: () => JSON.stringify({ artists: FIXTURE_ARTISTS, genres: ['Pop', 'Rock', 'Indie'] }),
 }));
 
 const { getArtistsByGenres, getTopGenres, searchArtistsByName } = await import('./roster');
@@ -84,8 +96,9 @@ describe('getArtistsByGenres', () => {
 });
 
 describe('getTopGenres', () => {
-  it('orders genres by frequency', () => {
-    expect(getTopGenres()).toEqual(['Pop', 'Rock']);
+  it('orders genres by frequency, ties broken alphabetically', () => {
+    // Pop: 3 artists. Rock and Indie: 1 artist each — tie broken alphabetically.
+    expect(getTopGenres()).toEqual(['Pop', 'Indie', 'Rock']);
   });
 });
 
@@ -97,5 +110,11 @@ describe('searchArtistsByName', () => {
 
   it('returns an empty array for a blank query', () => {
     expect(searchArtistsByName('  ')).toEqual([]);
+  });
+
+  it('dedupes a manager email listed twice for the same artist, case-insensitively, keeping names in sync', () => {
+    const [artist] = searchArtistsByName('Duplicate Manager Artist');
+    expect(artist.managerEmails).toEqual(['myles@example.com', 'mike@example.com']);
+    expect(artist.managerNames).toEqual(['Myles', 'Mike']);
   });
 });
