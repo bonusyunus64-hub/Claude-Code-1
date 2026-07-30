@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { syncStorage } from '@/lib/remoteSync';
 import type { Artist, Campaign, CampaignRecipient, CustomContact, DemosFilterPreset, SavedTemplate } from '../types';
-import { sendInBatches, countUniqueRecipients, findDuplicateRecipients, messageIdsFromResults, checkRecipientsValidity, shuffle } from '../utils';
+import { sendInBatches, countUniqueRecipients, findDuplicateRecipients, messageIdsFromResults, checkRecipientsValidity, shuffle, payloadForPendingSend } from '../utils';
 
 export type SortOrder = 'followers-desc' | 'followers-asc' | 'alpha-asc' | 'alpha-desc' | 'random';
 
@@ -239,7 +239,9 @@ export function useDemosFlow(config: DemosFlowConfig) {
           id: campaignId, trackTitle, date: campaignDate, type: 'demos',
           emails: sentEmails, accountId: selectedAccountId, recipients,
           messageIds: messageIdsFromResults(resultsSoFar),
-          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: sendPayload } : undefined,
+          // Persisted without signOffImage — see payloadForPendingSend — while sendPayload
+          // itself (with the image intact) keeps driving sendInBatches above.
+          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: payloadForPendingSend(sendPayload) } : undefined,
           driveLink, senderName,
         });
       });

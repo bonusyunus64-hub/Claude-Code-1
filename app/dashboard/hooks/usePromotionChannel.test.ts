@@ -174,6 +174,33 @@ describe('usePromotionChannel', () => {
       expect(result.current.sendFailedEmails).toEqual(['a@x.com']);
     });
 
+    it('POSTs the signature image but strips it from the pendingSend payload written to campaign history', async () => {
+      const previewFetch = vi.fn(async () => ({ json: async () => ({ stations: [{ name: 'S', emails: ['a@x.com'] }] }) }));
+      vi.stubGlobal('fetch', previewFetch);
+      const upsertCampaign = vi.fn();
+      const { result } = renderChannel({ upsertCampaign, signOffImage: 'data:image/png;base64,AAAA' });
+      await act(async () => { await result.current.handlePreview(); });
+
+      // Round 1 reports more work remaining, so a pendingSend gets written; round 2
+      // finishes the send.
+      let call = 0;
+      const sendFetch = vi.fn<(url: string, init?: RequestInit) => Promise<{ ok: boolean; json: () => Promise<unknown> }>>()
+        .mockImplementation(async () => {
+          call++;
+          if (call === 1) return { ok: true, json: async () => ({ results: [{ to: 'a@x.com', success: true }], total: 2, nextOffset: 1 }) };
+          return { ok: true, json: async () => ({ results: [], total: 2, nextOffset: null }) };
+        });
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      const firstRequestBody = JSON.parse((sendFetch.mock.calls[0][1] as RequestInit).body as string);
+      expect(firstRequestBody.signOffImage).toBe('data:image/png;base64,AAAA');
+
+      const firstUpsert = upsertCampaign.mock.calls[0][0] as Campaign;
+      expect(firstUpsert.pendingSend).toBeDefined();
+      expect('signOffImage' in (firstUpsert.pendingSend?.payload ?? {})).toBe(false);
+    });
+
     it('upserts a campaign record on send progress', async () => {
       const previewFetch = vi.fn(async () => ({ json: async () => ({ stations: [{ name: 'S', emails: ['a@x.com'] }] }) }));
       vi.stubGlobal('fetch', previewFetch);

@@ -14,11 +14,11 @@ function campaign(overrides: Partial<Campaign> = {}): Campaign {
   return { id: '1', trackTitle: 'Track', date: '2026-01-01T00:00:00.000Z', type: 'demos', emails: ['a@example.com'], ...overrides };
 }
 
-function renderHistory(overrides: { emailAccounts?: EmailAccount[]; customContacts?: CustomContact[]; addFailedToBlacklist?: (e: string[]) => void; refreshSendsToday?: () => void } = {}) {
+function renderHistory(overrides: { emailAccounts?: EmailAccount[]; customContacts?: CustomContact[]; addFailedToBlacklist?: (e: string[]) => void; refreshSendsToday?: () => void; signOffImage?: string | null } = {}) {
   const addFailedToBlacklist = vi.fn();
   const refreshSendsToday = vi.fn();
   const hook = renderHook(() => useCampaignHistory({
-    emailAccounts: [], customContacts: [], addFailedToBlacklist, refreshSendsToday, ...overrides,
+    emailAccounts: [], customContacts: [], addFailedToBlacklist, refreshSendsToday, signOffImage: null, ...overrides,
   }));
   return { ...hook, mocks: { addFailedToBlacklist, refreshSendsToday } };
 }
@@ -262,6 +262,73 @@ describe('useCampaignHistory', () => {
       expect(mocks.refreshSendsToday).toHaveBeenCalled();
       expect(result.current.campaigns[0].pendingSend).toBeUndefined();
       expect(result.current.campaigns[0].messageIds).toEqual({ 'b@example.com': '<m1>' });
+    });
+
+    it('injects the current signature image into the resumed send, even though pendingSend.payload never carries one', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ campaigns: [] }) })));
+      const { result } = renderHistory({ signOffImage: 'data:image/png;base64,CURRENT' });
+      await waitFor(() => expect(result.current.campaigns).toEqual([]));
+
+      const sendFetch = vi.fn(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse((init as RequestInit).body as string);
+        expect(body.signOffImage).toBe('data:image/png;base64,CURRENT');
+        expect(body.trackTitle).toBe('Track');
+        return { ok: true, json: async () => ({ results: [{ to: 'b@example.com', success: true }], total: 1, nextOffset: null }) };
+      });
+      vi.stubGlobal('fetch', sendFetch);
+
+      const pending = campaign({
+        emails: ['a@example.com'],
+        pendingSend: { endpoint: '/api/send', payload: { trackTitle: 'Track' } },
+      });
+      await act(async () => { await result.current.resumeSend(pending); });
+      expect(sendFetch).toHaveBeenCalled();
+    });
+
+    it('omits signOffImage from the resumed request entirely when there is no current image', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ campaigns: [] }) })));
+      const { result } = renderHistory({ signOffImage: null });
+      await waitFor(() => expect(result.current.campaigns).toEqual([]));
+
+      const sendFetch = vi.fn(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse((init as RequestInit).body as string);
+        // JSON.stringify drops keys whose value is undefined, so an absent signature
+        // must mean the key itself is gone — not present-but-null.
+        expect('signOffImage' in body).toBe(false);
+        return { ok: true, json: async () => ({ results: [{ to: 'b@example.com', success: true }], total: 1, nextOffset: null }) };
+      });
+      vi.stubGlobal('fetch', sendFetch);
+
+      const pending = campaign({
+        emails: ['a@example.com'],
+        pendingSend: { endpoint: '/api/send', payload: { trackTitle: 'Track' } },
+      });
+      await act(async () => { await result.current.resumeSend(pending); });
+      expect(sendFetch).toHaveBeenCalled();
+    });
+
+    it('overrides a legacy record\'s embedded signOffImage with the current setting rather than resending the stale one', async () => {
+      // Simulates a CampaignRecord written before this change, whose pendingSend.payload
+      // still has the full base64 image baked in from the original send.
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ campaigns: [] }) })));
+      const { result } = renderHistory({ signOffImage: 'data:image/png;base64,CURRENT' });
+      await waitFor(() => expect(result.current.campaigns).toEqual([]));
+
+      const sendFetch = vi.fn(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse((init as RequestInit).body as string);
+        expect(body.signOffImage).toBe('data:image/png;base64,CURRENT');
+        return { ok: true, json: async () => ({ results: [{ to: 'b@example.com', success: true }], total: 1, nextOffset: null }) };
+      });
+      vi.stubGlobal('fetch', sendFetch);
+
+      const pending = campaign({
+        emails: ['a@example.com'],
+        pendingSend: { endpoint: '/api/send', payload: { trackTitle: 'Track', signOffImage: 'data:image/png;base64,STALE' } },
+      });
+      await act(async () => { await result.current.resumeSend(pending); });
+      expect(sendFetch).toHaveBeenCalled();
+      // Resolved, so no pendingSend is left around carrying the stale image forward.
+      expect(result.current.campaigns[0].pendingSend).toBeUndefined();
     });
 
     it('still works from an old-shaped pendingSend record left over from before the offset field was dropped', async () => {

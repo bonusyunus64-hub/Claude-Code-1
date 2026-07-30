@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import { sendInBatches, downloadCsv, messageIdsFromResults } from '../utils';
+import { sendInBatches, downloadCsv, messageIdsFromResults, payloadForPendingSend } from '../utils';
 import type { Campaign, CampaignRecipient, EmailAccount, CustomContact, ReplyClassification } from '../types';
 
 export interface CampaignHistoryConfig {
@@ -9,6 +9,9 @@ export interface CampaignHistoryConfig {
   customContacts: CustomContact[];
   addFailedToBlacklist: (emails: string[]) => void;
   refreshSendsToday: () => void;
+  /** Current signature image (Account tab) — pendingSend.payload never carries one (see
+   *  payloadForPendingSend), so resumeSend injects whatever's configured now instead. */
+  signOffImage: string | null;
 }
 
 /**
@@ -21,7 +24,7 @@ export interface CampaignHistoryConfig {
  * through, instead of duplicating campaign state ownership.
  */
 export function useCampaignHistory(config: CampaignHistoryConfig) {
-  const { emailAccounts, customContacts, addFailedToBlacklist, refreshSendsToday } = config;
+  const { emailAccounts, customContacts, addFailedToBlacklist, refreshSendsToday, signOffImage } = config;
 
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   useEffect(() => {
@@ -215,6 +218,18 @@ export function useCampaignHistory(config: CampaignHistoryConfig) {
    * lookup that built it lived in the original send's closure, long gone by now) —
    * they land with blank fields, same as a custom contact with no name. "Show
    * artists sent to" already exists to backfill exactly this from just the address.
+   *
+   * pending.payload never carries a signature image (see payloadForPendingSend) —
+   * the outgoing request needs one regardless, so it's injected here from whatever
+   * the Account tab currently has configured, which is also the behavior we want:
+   * a resumed send should reflect the user's current signature, not a stale one.
+   * Assigning `undefined` rather than `null` when there's no current image means
+   * JSON.stringify drops the key entirely (see sendInBatches), so the send just
+   * goes out unsigned, matching current settings. This also self-heals records
+   * from before this change, whose stored payload may still have an embedded
+   * image: it's overwritten here rather than sent alongside a second copy, and
+   * payloadForPendingSend below strips it back out before the next persist so it
+   * doesn't linger in Redis either.
    */
   async function resumeSend(c: Campaign) {
     const pending = c.pendingSend;
@@ -223,7 +238,9 @@ export function useCampaignHistory(config: CampaignHistoryConfig) {
     setResumeError('');
     setResumeProgress({ campaignId: c.id, sent: 0, total: 0 });
     try {
-      const outcome = await sendInBatches(pending.endpoint, pending.payload, (progress, resultsSoFar, nextOffset) => {
+      const sendPayload = { ...pending.payload, signOffImage: signOffImage ?? undefined };
+      const persistedPending = { endpoint: pending.endpoint, payload: payloadForPendingSend(pending.payload) };
+      const outcome = await sendInBatches(pending.endpoint, sendPayload, (progress, resultsSoFar, nextOffset) => {
         setResumeProgress({ campaignId: c.id, sent: progress.sent, total: progress.total });
         const newlySent = resultsSoFar.filter(r => r.success).map(r => r.to);
         const emails = Array.from(new Set([...c.emails, ...newlySent]));
@@ -241,7 +258,7 @@ export function useCampaignHistory(config: CampaignHistoryConfig) {
           emails,
           recipients,
           messageIds: { ...(c.messageIds ?? {}), ...messageIdsFromResults(resultsSoFar) },
-          pendingSend: nextOffset != null ? pending : undefined,
+          pendingSend: nextOffset != null ? persistedPending : undefined,
         });
       }, c.emails);
       if (!outcome.ok) setResumeError(outcome.error);

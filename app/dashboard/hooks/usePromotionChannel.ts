@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { syncStorage } from '@/lib/remoteSync';
 import type { Campaign, SavedTemplate } from '../types';
-import { sendInBatches, countUniqueRecipients, findDuplicateRecipients, messageIdsFromResults, checkRecipientsValidity } from '../utils';
+import { sendInBatches, countUniqueRecipients, findDuplicateRecipients, messageIdsFromResults, checkRecipientsValidity, payloadForPendingSend } from '../utils';
 
 export type SendOutcome = { sent: number; failed: number; total: number };
 
@@ -176,7 +176,9 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
         upsertCampaign({
           id: campaignId, trackTitle, date: campaignDate, type: campaignType,
           emails: sentEmails, accountId: selectedAccountId, messageIds: messageIdsFromResults(resultsSoFar),
-          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: sendPayload } : undefined,
+          // Persisted without signOffImage — see payloadForPendingSend — while sendPayload
+          // itself (with the image intact) keeps driving sendInBatches above.
+          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: payloadForPendingSend(sendPayload) } : undefined,
           driveLink, senderName,
         });
       });

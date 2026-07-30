@@ -106,6 +106,7 @@ export default function Dashboard() {
   const history = useCampaignHistory({
     emailAccounts: account.emailAccounts, customContacts,
     addFailedToBlacklist: account.addFailedToBlacklist, refreshSendsToday: account.refreshSendsToday,
+    signOffImage: account.signOffImage,
   });
 
   const pitchedEmailMap = useMemo(() => {

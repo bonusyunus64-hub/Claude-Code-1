@@ -98,6 +98,27 @@ export async function sendInBatches(
   return { ok: true, results: allResults, total: total ?? 0 };
 }
 
+/**
+ * pendingSend.payload only exists so a resumed send can redrive sendInBatches
+ * from scratch (see useCampaignHistory's resumeSend), but it's POSTed to
+ * /api/campaigns and written to Redis after every batch of a send (see
+ * upsertCampaign in the progress callbacks of useDemosFlow/usePromotionChannel).
+ * signOffImage is a base64 data URL of the user's signature — up to ~200KB even
+ * after the upload-time cap — so persisting it inside pendingSend multiplies
+ * that weight by every batch of a long send: the same class of problem the
+ * image cap was fixing, just on a different write path. It's also the only
+ * field worth evicting here — resumeSend re-supplies it from current settings,
+ * so nothing is lost — while templates/subjects (a couple of KB) stay so a
+ * resumed send keeps using the template as it stood at send time rather than
+ * silently picking up an edit made in between, and customContacts stay so
+ * resuming can't change the recipient set out from under a still-running send.
+ */
+export function payloadForPendingSend(payload: Record<string, unknown>): Record<string, unknown> {
+  const stripped = { ...payload };
+  delete stripped.signOffImage;
+  return stripped;
+}
+
 export function csvEscape(value: string): string {
   if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
   return value;

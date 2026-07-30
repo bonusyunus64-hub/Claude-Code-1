@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, sendInBatches, findDuplicateRecipients, messageIdsFromResults, computeAnalyticsStats } from './utils';
+import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, sendInBatches, findDuplicateRecipients, messageIdsFromResults, computeAnalyticsStats, payloadForPendingSend } from './utils';
 import type { Campaign, CampaignRecipient } from './types';
 
 describe('shuffle', () => {
@@ -26,6 +26,30 @@ describe('shuffle', () => {
       shuffle(input).forEach((value, idx) => seenAtIndex[idx].add(value));
     }
     seenAtIndex.forEach(seen => expect(seen.size).toBe(input.length));
+  });
+});
+
+describe('payloadForPendingSend', () => {
+  it('drops signOffImage but keeps every other field', () => {
+    const payload = {
+      trackTitle: 'Track', emailTemplate: 'Hi {{managerName}}', signOff: 'Best', signOffImage: 'data:image/png;base64,AAAA',
+      customContacts: [{ artistName: 'A', managerName: 'M', managerEmail: 'm@x.com' }],
+    };
+    expect(payloadForPendingSend(payload)).toEqual({
+      trackTitle: 'Track', emailTemplate: 'Hi {{managerName}}', signOff: 'Best',
+      customContacts: [{ artistName: 'A', managerName: 'M', managerEmail: 'm@x.com' }],
+    });
+  });
+
+  it('does not mutate the payload passed in', () => {
+    const payload = { signOffImage: 'data:image/png;base64,AAAA' };
+    payloadForPendingSend(payload);
+    expect(payload.signOffImage).toBe('data:image/png;base64,AAAA');
+  });
+
+  it('is a no-op when the payload has no signOffImage', () => {
+    const payload = { trackTitle: 'Track' };
+    expect(payloadForPendingSend(payload)).toEqual({ trackTitle: 'Track' });
   });
 });
 
