@@ -3,13 +3,13 @@
 import { useState, useEffect, useMemo } from 'react';
 import { hydrateFromRemote, syncStorage } from '@/lib/remoteSync';
 import type {
-  Artist, RadioStation, PlaylistCurator, EmailAccount, NewAccountForm,
-  CustomContact, DeliverabilityResult,
+  Artist, RadioStation, PlaylistCurator, EmailAccount,
+  CustomContact,
 } from './types';
 import {
   DEFAULT_DEMOS_TEMPLATE, DEFAULT_FOLLOWUP_TEMPLATE, DEFAULT_RADIO_TEMPLATE, DEFAULT_PLAYLIST_TEMPLATE,
   DEFAULT_DEMOS_SUBJECT, DEFAULT_FOLLOWUP_SUBJECT, DEFAULT_RADIO_SUBJECT, DEFAULT_PLAYLIST_SUBJECT,
-  DEFAULT_SIGN_OFF, BLANK_ACCOUNT,
+  DEFAULT_SIGN_OFF,
 } from './constants';
 import {
   parseContactsCsv, renderTemplateClient, pronounForClient, computeAnalyticsStats,
@@ -17,6 +17,7 @@ import {
 import { usePromotionChannel } from './hooks/usePromotionChannel';
 import { useCampaignHistory } from './hooks/useCampaignHistory';
 import { useDemosFlow } from './hooks/useDemosFlow';
+import { useAccountSettings } from './hooks/useAccountSettings';
 import { OverviewSection } from './sections/OverviewSection';
 import { DemosSection } from './sections/DemosSection';
 import { PromotionSection } from './sections/PromotionSection';
@@ -51,16 +52,9 @@ export default function Dashboard() {
   const [playlistTemplate, setPlaylistTemplate] = useState(DEFAULT_PLAYLIST_TEMPLATE);
   const [playlistSubject, setPlaylistSubject] = useState(DEFAULT_PLAYLIST_SUBJECT);
 
-  // Account state — accounts (and their SMTP passwords) live server-side behind
-  // /api/accounts; the client only ever holds the password transiently in the add-account form.
-  const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
-  const [selectedAccountId, setSelectedAccountId] = useState('');
-  const [showAddAccount, setShowAddAccount] = useState(false);
-  const [newAccount, setNewAccount] = useState<NewAccountForm>({ ...BLANK_ACCOUNT });
-  const [savingAccount, setSavingAccount] = useState(false);
-  const [accountError, setAccountError] = useState('');
-  const [signOff, setSignOff] = useState(DEFAULT_SIGN_OFF);
-  const [signOffImage, setSignOffImage] = useState<string | null>(null);
+  // Test email — stays here (not in useAccountSettings) since it needs a sample
+  // artist from useDemosFlow's preview list; see useAccountSettings's own comment
+  // for why that would otherwise be a circular hook dependency.
   const [testEmailTo, setTestEmailTo] = useState('');
   const [testEmailSending, setTestEmailSending] = useState(false);
   const [testEmailResult, setTestEmailResult] = useState<'success' | 'error' | null>(null);
@@ -68,29 +62,11 @@ export default function Dashboard() {
   const [showTestEmailOptions, setShowTestEmailOptions] = useState(false);
   const [testEmailSubject, setTestEmailSubject] = useState('');
   const [testEmailMessage, setTestEmailMessage] = useState('');
-  const [sendDelay, setSendDelay] = useState(0);
-  const [dailySendCap, setDailySendCap] = useState(0);
-  const [autoFollowUpEnabled, setAutoFollowUpEnabled] = useState(false);
-  const [autoFollowUpDays, setAutoFollowUpDays] = useState(5);
-  const [sendsToday, setSendsToday] = useState(0);
-  const [sendsTodayByAccount, setSendsTodayByAccount] = useState<Record<string, number>>({});
-
-  // Blacklist
-  const [blacklist, setBlacklist] = useState<string[]>([]);
-  const [newBlacklistEmail, setNewBlacklistEmail] = useState('');
-
-  // Emails that bounced/failed on a send — kept separate from the blacklist so they can
-  // be reviewed (a failure can be a fluke) rather than silently blocked forever.
-  const [failedEmails, setFailedEmails] = useState<string[]>([]);
 
   // Custom contacts
   const [customContacts, setCustomContacts] = useState<CustomContact[]>([]);
   const [newCustomContact, setNewCustomContact] = useState({ artistName: '', managerName: '', managerEmail: '' });
   const [showAddCustomContact, setShowAddCustomContact] = useState(false);
-
-  // Deliverability
-  const [deliverabilityResult, setDeliverabilityResult] = useState<DeliverabilityResult | null>(null);
-  const [deliverabilityLoading, setDeliverabilityLoading] = useState(false);
 
   // Email preview modal
   const [previewModalType, setPreviewModalType] = useState<'demos' | 'radio' | 'playlists' | null>(null);
@@ -108,22 +84,18 @@ export default function Dashboard() {
   const [lastSavedSignOff, setLastSavedSignOff] = useState(DEFAULT_SIGN_OFF);
   const [lastSavedSignOffImage, setLastSavedSignOffImage] = useState<string | null>(null);
 
-  // The cap is enforced server-side (see checkCapAllows in the send routes) against a
-  // Redis counter, so after any send this just re-reads that counter rather than
-  // keeping its own running total — one source of truth, no drift across tabs/devices.
-  async function refreshSendsToday() {
-    try {
-      const res = await fetch('/api/send-quota');
-      const data = await res.json();
-      setSendsToday(data.count ?? 0);
-      setSendsTodayByAccount(data.byAccount ?? {});
-    } catch {}
-  }
+  // Accounts, sign-off, blacklist, failed-sends, send-pacing settings, deliverability —
+  // instantiated first since history/radio/playlists/demos below all read config
+  // from it (account.signOff, account.blacklist, account.accountCapError, etc.).
+  const account = useAccountSettings();
 
   // Owns campaigns state itself (fetched once on mount) plus everything History-tab
   // specific — the single source of truth the send flows below write through via
   // history.upsertCampaign, instead of duplicating campaign-state ownership.
-  const history = useCampaignHistory({ emailAccounts, customContacts, addFailedToBlacklist, refreshSendsToday });
+  const history = useCampaignHistory({
+    emailAccounts: account.emailAccounts, customContacts,
+    addFailedToBlacklist: account.addFailedToBlacklist, refreshSendsToday: account.refreshSendsToday,
+  });
 
   const pitchedEmailMap = useMemo(() => {
     const map = new Map<string, string[]>();
@@ -155,8 +127,10 @@ export default function Dashboard() {
     nameVar: 'stationName',
     trackTitle, driveLink, senderName,
     template: radioTemplate, subject: radioSubject, setTemplate: setRadioTemplate, setSubject: setRadioSubject,
-    signOff, signOffImage, selectedAccountId, sendDelay, blacklist, dailySendCap, sendsToday,
-    accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap, upsertCampaign: history.upsertCampaign,
+    signOff: account.signOff, signOffImage: account.signOffImage, selectedAccountId: account.selectedAccountId,
+    sendDelay: account.sendDelay, blacklist: account.blacklist, dailySendCap: account.dailySendCap, sendsToday: account.sendsToday,
+    accountCapError: account.accountCapError, refreshSendsToday: account.refreshSendsToday, recordFailedEmails: account.recordFailedEmails,
+    pitchedEmailMap, upsertCampaign: history.upsertCampaign,
   });
 
   const playlists = usePromotionChannel<PlaylistCurator>({
@@ -169,8 +143,10 @@ export default function Dashboard() {
     nameVar: 'curatorName',
     trackTitle, driveLink, senderName,
     template: playlistTemplate, subject: playlistSubject, setTemplate: setPlaylistTemplate, setSubject: setPlaylistSubject,
-    signOff, signOffImage, selectedAccountId, sendDelay, blacklist, dailySendCap, sendsToday,
-    accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap, upsertCampaign: history.upsertCampaign,
+    signOff: account.signOff, signOffImage: account.signOffImage, selectedAccountId: account.selectedAccountId,
+    sendDelay: account.sendDelay, blacklist: account.blacklist, dailySendCap: account.dailySendCap, sendsToday: account.sendsToday,
+    accountCapError: account.accountCapError, refreshSendsToday: account.refreshSendsToday, recordFailedEmails: account.recordFailedEmails,
+    pitchedEmailMap, upsertCampaign: history.upsertCampaign,
   });
 
   // No twin to share an implementation with (unlike Radio/Playlists) — this is the
@@ -182,30 +158,32 @@ export default function Dashboard() {
     trackTitle, driveLink, senderName,
     demosTemplate, demosSubject, setDemosTemplate, setDemosSubject,
     demosFollowUpTemplate, demosFollowUpSubject, setDemosFollowUpTemplate, setDemosFollowUpSubject,
-    signOff, signOffImage, selectedAccountId, sendDelay, blacklist, dailySendCap, sendsToday,
-    accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap,
+    signOff: account.signOff, signOffImage: account.signOffImage, selectedAccountId: account.selectedAccountId,
+    sendDelay: account.sendDelay, blacklist: account.blacklist, dailySendCap: account.dailySendCap, sendsToday: account.sendsToday,
+    accountCapError: account.accountCapError, refreshSendsToday: account.refreshSendsToday, recordFailedEmails: account.recordFailedEmails,
+    pitchedEmailMap,
     upsertCampaign: history.upsertCampaign, threadIdsFor: history.threadIdsFor,
     customContacts,
   });
 
   useEffect(() => {
-    fetch('/api/send-quota').then(r => r.json()).then(d => { setSendsToday(d.count ?? 0); setSendsTodayByAccount(d.byAccount ?? {}); }).catch(() => {});
+    fetch('/api/send-quota').then(r => r.json()).then(d => { account.setSendsToday(d.count ?? 0); account.setSendsTodayByAccount(d.byAccount ?? {}); }).catch(() => {});
     (async () => {
     await hydrateFromRemote(); // pull latest settings from the server so a second device picks up what was saved elsewhere
     try {
       const accountsRes = await fetch('/api/accounts');
       const accountsData = await accountsRes.json();
       const accounts = (accountsData.accounts ?? []) as EmailAccount[];
-      setEmailAccounts(accounts);
+      account.setEmailAccounts(accounts);
       const savedId = localStorage.getItem('tp_selected_account');
-      if (savedId && accounts.find(a => a.id === savedId)) setSelectedAccountId(savedId);
-      else if (accounts.length > 0) setSelectedAccountId(accounts[0].id);
+      if (savedId && accounts.find(a => a.id === savedId)) account.setSelectedAccountId(savedId);
+      else if (accounts.length > 0) account.setSelectedAccountId(accounts[0].id);
 
       const savedSignOff = localStorage.getItem('tp_sign_off');
-      if (savedSignOff !== null) { setSignOff(savedSignOff); setLastSavedSignOff(savedSignOff); }
+      if (savedSignOff !== null) { account.setSignOff(savedSignOff); setLastSavedSignOff(savedSignOff); }
 
       const savedImage = localStorage.getItem('tp_sign_off_image');
-      if (savedImage) { setSignOffImage(savedImage); setLastSavedSignOffImage(savedImage); }
+      if (savedImage) { account.setSignOffImage(savedImage); setLastSavedSignOffImage(savedImage); }
 
       const savedDemosTemplate = localStorage.getItem('tp_email_template');
       if (savedDemosTemplate !== null) { setDemosTemplate(savedDemosTemplate); setLastSavedDemosTemplate(savedDemosTemplate); }
@@ -232,16 +210,16 @@ export default function Dashboard() {
       if (savedPlaylistSubject !== null) { setPlaylistSubject(savedPlaylistSubject); setLastSavedPlaylistSubject(savedPlaylistSubject); }
 
       const savedBlacklist = localStorage.getItem('tp_blacklist');
-      if (savedBlacklist) setBlacklist(JSON.parse(savedBlacklist));
+      if (savedBlacklist) account.setBlacklist(JSON.parse(savedBlacklist));
 
       const savedFailedEmails = localStorage.getItem('tp_failed_emails');
-      if (savedFailedEmails) setFailedEmails(JSON.parse(savedFailedEmails));
+      if (savedFailedEmails) account.setFailedEmails(JSON.parse(savedFailedEmails));
 
       const savedCustomContacts = localStorage.getItem('tp_custom_contacts');
       if (savedCustomContacts) setCustomContacts(JSON.parse(savedCustomContacts));
 
       const savedSendDelay = localStorage.getItem('tp_send_delay');
-      if (savedSendDelay !== null) setSendDelay(Number(savedSendDelay));
+      if (savedSendDelay !== null) account.setSendDelay(Number(savedSendDelay));
 
       const savedDemosPresets = localStorage.getItem('tp_demos_presets');
       if (savedDemosPresets) demos.setDemosPresets(JSON.parse(savedDemosPresets));
@@ -265,19 +243,18 @@ export default function Dashboard() {
       if (savedPlaylistTemplates) playlists.setTemplateLibrary(JSON.parse(savedPlaylistTemplates));
 
       const savedDailyCap = localStorage.getItem('tp_daily_cap');
-      if (savedDailyCap !== null) setDailySendCap(Number(savedDailyCap));
+      if (savedDailyCap !== null) account.setDailySendCap(Number(savedDailyCap));
 
       const savedAutoFollowUpEnabled = localStorage.getItem('tp_auto_followup_enabled');
-      if (savedAutoFollowUpEnabled !== null) setAutoFollowUpEnabled(savedAutoFollowUpEnabled === 'true');
+      if (savedAutoFollowUpEnabled !== null) account.setAutoFollowUpEnabled(savedAutoFollowUpEnabled === 'true');
 
       const savedAutoFollowUpDays = localStorage.getItem('tp_auto_followup_days');
-      if (savedAutoFollowUpDays !== null) setAutoFollowUpDays(Number(savedAutoFollowUpDays));
+      if (savedAutoFollowUpDays !== null) account.setAutoFollowUpDays(Number(savedAutoFollowUpDays));
     } catch {}
     })();
-    // radio/playlists/demos are plain objects rebuilt every render, so listing them
-    // here would re-run this mount-only hydration on every render; only their
-    // setPresets/setTemplateLibrary-family setters (stable, from useState) are
-    // actually called below.
+    // account/radio/playlists/demos are plain objects rebuilt every render, so
+    // listing them here would re-run this mount-only hydration on every render;
+    // only their setX setters (stable, from useState) are actually called below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -316,8 +293,8 @@ export default function Dashboard() {
     radioSubject !== lastSavedRadioSubject ||
     playlistTemplate !== lastSavedPlaylistTemplate ||
     playlistSubject !== lastSavedPlaylistSubject ||
-    signOff !== lastSavedSignOff ||
-    signOffImage !== lastSavedSignOffImage;
+    account.signOff !== lastSavedSignOff ||
+    account.signOffImage !== lastSavedSignOffImage;
 
   function saveAll() {
     syncStorage.setItem('tp_email_template', demosTemplate);
@@ -328,8 +305,8 @@ export default function Dashboard() {
     syncStorage.setItem('tp_radio_subject', radioSubject);
     syncStorage.setItem('tp_playlist_template', playlistTemplate);
     syncStorage.setItem('tp_playlist_subject', playlistSubject);
-    syncStorage.setItem('tp_sign_off', signOff);
-    if (signOffImage) syncStorage.setItem('tp_sign_off_image', signOffImage);
+    syncStorage.setItem('tp_sign_off', account.signOff);
+    if (account.signOffImage) syncStorage.setItem('tp_sign_off_image', account.signOffImage);
     else syncStorage.removeItem('tp_sign_off_image');
     setLastSavedDemosTemplate(demosTemplate);
     setLastSavedDemosSubject(demosSubject);
@@ -339,8 +316,8 @@ export default function Dashboard() {
     setLastSavedRadioSubject(radioSubject);
     setLastSavedPlaylistTemplate(playlistTemplate);
     setLastSavedPlaylistSubject(playlistSubject);
-    setLastSavedSignOff(signOff);
-    setLastSavedSignOffImage(signOffImage);
+    setLastSavedSignOff(account.signOff);
+    setLastSavedSignOffImage(account.signOffImage);
   }
 
   function discardChanges() {
@@ -352,72 +329,8 @@ export default function Dashboard() {
     setRadioSubject(lastSavedRadioSubject);
     setPlaylistTemplate(lastSavedPlaylistTemplate);
     setPlaylistSubject(lastSavedPlaylistSubject);
-    setSignOff(lastSavedSignOff);
-    setSignOffImage(lastSavedSignOffImage);
-  }
-
-  function handleSignOffImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setSignOffImage(reader.result as string);
-    reader.readAsDataURL(file);
-  }
-
-  async function addAccount() {
-    if (!newAccount.name || !newAccount.smtpUser || !newAccount.smtpPass) return;
-    setSavingAccount(true);
-    setAccountError('');
-    try {
-      const res = await fetch('/api/accounts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newAccount),
-      });
-      const data = await res.json();
-      if (!res.ok) { setAccountError(data.error || 'Could not save account.'); return; }
-      const account = data.account as EmailAccount;
-      setEmailAccounts(prev => [...prev, account]);
-      setSelectedAccountId(account.id);
-      syncStorage.setItem('tp_selected_account', account.id);
-      setShowAddAccount(false);
-      setNewAccount({ ...BLANK_ACCOUNT });
-    } catch {
-      setAccountError('Network error. Please try again.');
-    } finally {
-      setSavingAccount(false);
-    }
-  }
-
-  async function removeAccount(id: string) {
-    const updated = emailAccounts.filter(a => a.id !== id);
-    setEmailAccounts(updated);
-    if (selectedAccountId === id) {
-      const next = updated[0]?.id ?? '';
-      setSelectedAccountId(next);
-      syncStorage.setItem('tp_selected_account', next);
-    }
-    await fetch(`/api/accounts?id=${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
-  }
-
-  function selectAccount(id: string) {
-    setSelectedAccountId(id);
-    syncStorage.setItem('tp_selected_account', id);
-  }
-
-  function addToBlacklist() {
-    const email = newBlacklistEmail.trim().toLowerCase();
-    if (!email || blacklist.includes(email)) return;
-    const updated = [...blacklist, email];
-    setBlacklist(updated);
-    syncStorage.setItem('tp_blacklist', JSON.stringify(updated));
-    setNewBlacklistEmail('');
-  }
-
-  function removeFromBlacklist(email: string) {
-    const updated = blacklist.filter(e => e !== email);
-    setBlacklist(updated);
-    syncStorage.setItem('tp_blacklist', JSON.stringify(updated));
+    account.setSignOff(lastSavedSignOff);
+    account.setSignOffImage(lastSavedSignOffImage);
   }
 
   function addCustomContact() {
@@ -452,21 +365,6 @@ export default function Dashboard() {
     syncStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
   }
 
-  function setDailyCap(value: number) {
-    setDailySendCap(value);
-    syncStorage.setItem('tp_daily_cap', String(value));
-  }
-
-  function setAutoFollowUp(enabled: boolean) {
-    setAutoFollowUpEnabled(enabled);
-    syncStorage.setItem('tp_auto_followup_enabled', String(enabled));
-  }
-
-  function setAutoFollowUpDaysValue(days: number) {
-    setAutoFollowUpDays(days);
-    syncStorage.setItem('tp_auto_followup_days', String(days));
-  }
-
   function handleCustomContactsCsv(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -485,50 +383,6 @@ export default function Dashboard() {
     e.target.value = '';
   }
 
-  function addFailedToBlacklist(emails: string[]) {
-    const lower = emails.map(e => e.toLowerCase());
-    const merged = [...new Set([...blacklist, ...lower])];
-    setBlacklist(merged);
-    syncStorage.setItem('tp_blacklist', JSON.stringify(merged));
-  }
-
-  /**
-   * Client-side mirror of the per-account check in lib/sendQuota.ts's
-   * checkCapAllows — lets a send be blocked before any network request instead of
-   * only after the server rejects the first batch. The server still enforces this
-   * independently, since sendsTodayByAccount here can be stale.
-   */
-  function accountCapError(accountId: string, additionalSends: number): string | null {
-    const account = emailAccounts.find(a => a.id === accountId);
-    const cap = account?.dailyCap ?? 0;
-    if (cap <= 0) return null;
-    const sentSoFar = sendsTodayByAccount[accountId] ?? 0;
-    if (sentSoFar + additionalSends <= cap) return null;
-    return `This account has reached its daily limit (${sentSoFar}/${cap} sent today). Switch accounts, wait until tomorrow, or raise its limit in Account settings.`;
-  }
-
-  function recordFailedEmails(emails: string[]) {
-    if (!emails.length) return;
-    setFailedEmails(prev => {
-      const merged = [...new Set([...prev, ...emails.map(e => e.toLowerCase())])];
-      syncStorage.setItem('tp_failed_emails', JSON.stringify(merged));
-      return merged;
-    });
-  }
-
-  function removeFromFailedEmails(email: string) {
-    setFailedEmails(prev => {
-      const updated = prev.filter(e => e !== email);
-      syncStorage.setItem('tp_failed_emails', JSON.stringify(updated));
-      return updated;
-    });
-  }
-
-  function moveFailedToDoNotContact(email: string) {
-    addFailedToBlacklist([email]);
-    removeFromFailedEmails(email);
-  }
-
   async function handleTestEmail() {
     if (!testEmailTo) return;
     setTestEmailSending(true); setTestEmailResult(null); setTestEmailError('');
@@ -543,11 +397,11 @@ export default function Dashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           to: testEmailTo,
-          accountId: selectedAccountId || undefined,
+          accountId: account.selectedAccountId || undefined,
           emailTemplate: testEmailMessage.trim() || (demos.useFollowUp ? demosFollowUpTemplate : demosTemplate),
           subjectTemplate: testEmailSubject.trim() || (demos.useFollowUp ? demosFollowUpSubject : demosSubject),
-          signOff,
-          signOffImage,
+          signOff: account.signOff,
+          signOffImage: account.signOffImage,
           senderName,
           trackTitle,
           driveLink,
@@ -564,27 +418,6 @@ export default function Dashboard() {
     finally { setTestEmailSending(false); }
   }
 
-  async function handleDeliverabilityCheck() {
-    const acc = emailAccounts.find(a => a.id === selectedAccountId);
-    const emailAddr = acc?.email || acc?.smtpUser;
-    if (!emailAddr) return;
-    const domain = emailAddr.split('@')[1];
-    if (!domain) return;
-    setDeliverabilityLoading(true); setDeliverabilityResult(null);
-    try {
-      const res = await fetch('/api/deliverability', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ domain }),
-      });
-      const data = await res.json();
-      setDeliverabilityResult(data);
-    } catch {}
-    finally { setDeliverabilityLoading(false); }
-  }
-
-  const selectedAccount = emailAccounts.find(a => a.id === selectedAccountId);
-
   // Build email preview modal entries
   type PreviewEntry = { label: string; to: string; subject: string; body: string };
   const previewModalEntries = useMemo((): PreviewEntry[] => {
@@ -597,7 +430,7 @@ export default function Dashboard() {
           const tpl = demos.useFollowUp ? demosFollowUpTemplate : demosTemplate;
           const subjectTpl = demos.useFollowUp ? demosFollowUpSubject : demosSubject;
           const bodyParts = [renderTemplateClient(tpl, vars)];
-          if (signOff?.trim()) bodyParts.push(renderTemplateClient(signOff, vars));
+          if (account.signOff?.trim()) bodyParts.push(renderTemplateClient(account.signOff, vars));
           entries.push({
             label: `${a.name}${a.managerNames[idx] ? ` (${a.managerNames[idx]})` : ''} <${email}>`,
             to: email,
@@ -611,7 +444,7 @@ export default function Dashboard() {
         const tpl = demos.useFollowUp ? demosFollowUpTemplate : demosTemplate;
         const subjectTpl = demos.useFollowUp ? demosFollowUpSubject : demosSubject;
         const bodyParts = [renderTemplateClient(tpl, vars)];
-        if (signOff?.trim()) bodyParts.push(renderTemplateClient(signOff, vars));
+        if (account.signOff?.trim()) bodyParts.push(renderTemplateClient(account.signOff, vars));
         entries.push({
           label: `${cc.artistName}${cc.managerName ? ` (${cc.managerName})` : ''} <${cc.managerEmail}> [Custom]`,
           to: cc.managerEmail,
@@ -627,7 +460,7 @@ export default function Dashboard() {
         c.emails.forEach(email => {
           const vars = { curatorName: c.name, trackTitle, driveLink, senderName };
           const bodyParts = [renderTemplateClient(playlists.template, vars)];
-          if (signOff?.trim()) bodyParts.push(renderTemplateClient(signOff, vars));
+          if (account.signOff?.trim()) bodyParts.push(renderTemplateClient(account.signOff, vars));
           entries.push({
             label: `${c.name} <${email}>`,
             to: email,
@@ -643,7 +476,7 @@ export default function Dashboard() {
       s.emails.forEach(email => {
         const vars = { stationName: s.name, trackTitle, driveLink, senderName };
         const bodyParts = [renderTemplateClient(radio.template, vars)];
-        if (signOff?.trim()) bodyParts.push(renderTemplateClient(signOff, vars));
+        if (account.signOff?.trim()) bodyParts.push(renderTemplateClient(account.signOff, vars));
         entries.push({
           label: `${s.name} <${email}>`,
           to: email,
@@ -653,7 +486,7 @@ export default function Dashboard() {
       });
     });
     return entries;
-  }, [previewModalType, demos.includedArtists, radio.results, playlists.results, demosTemplate, demosSubject, demosFollowUpTemplate, demosFollowUpSubject, demos.useFollowUp, radio.template, radio.subject, playlists.template, playlists.subject, signOff, trackTitle, driveLink, senderName, customContacts]);
+  }, [previewModalType, demos.includedArtists, radio.results, playlists.results, demosTemplate, demosSubject, demosFollowUpTemplate, demosFollowUpSubject, demos.useFollowUp, radio.template, radio.subject, playlists.template, playlists.subject, account.signOff, trackTitle, driveLink, senderName, customContacts]);
 
   const NAV_ITEMS = [
     {
@@ -767,10 +600,10 @@ export default function Dashboard() {
                 newCustomContact={newCustomContact} setNewCustomContact={setNewCustomContact} addCustomContact={addCustomContact} handleCustomContactsCsv={handleCustomContactsCsv}
                 addOutsideArtistToContacts={addOutsideArtistToContacts} pitchedEmailMap={pitchedEmailMap}
                 setPreviewModalType={setPreviewModalType} setPreviewModalIdx={setPreviewModalIdx}
-                addFailedToBlacklist={addFailedToBlacklist}
-                selectedAccount={selectedAccount} setActiveSection={setActiveSection}
+                addFailedToBlacklist={account.addFailedToBlacklist}
+                selectedAccount={account.selectedAccount} setActiveSection={setActiveSection}
                 testEmailTo={testEmailTo} setTestEmailTo={setTestEmailTo} setTestEmailResult={setTestEmailResult} handleTestEmail={handleTestEmail}
-                testEmailSending={testEmailSending} selectedAccountId={selectedAccountId} testEmailResult={testEmailResult} testEmailError={testEmailError}
+                testEmailSending={testEmailSending} selectedAccountId={account.selectedAccountId} testEmailResult={testEmailResult} testEmailError={testEmailError}
               />
             )}
 
@@ -780,8 +613,8 @@ export default function Dashboard() {
                 promotionTab={promotionTab} setPromotionTab={setPromotionTab} promotionSection={promotionSection} setPromotionSection={setPromotionSection}
                 senderName={senderName} setSenderName={setSenderName} trackTitle={trackTitle} setTrackTitle={setTrackTitle}
                 driveLink={driveLink} setDriveLink={setDriveLink}
-                pitchedEmailMap={pitchedEmailMap} selectedAccount={selectedAccount} setActiveSection={setActiveSection}
-                addFailedToBlacklist={addFailedToBlacklist} setPreviewModalType={setPreviewModalType} setPreviewModalIdx={setPreviewModalIdx}
+                pitchedEmailMap={pitchedEmailMap} selectedAccount={account.selectedAccount} setActiveSection={setActiveSection}
+                addFailedToBlacklist={account.addFailedToBlacklist} setPreviewModalType={setPreviewModalType} setPreviewModalIdx={setPreviewModalIdx}
                 radio={radio} radioPitchCount={radioPitchCount}
                 playlists={playlists} playlistPitchCount={playlistPitchCount}
               />
@@ -790,18 +623,7 @@ export default function Dashboard() {
             {/* ── Account ── */}
             {activeSection === 'account' && (
               <AccountSection
-                emailAccounts={emailAccounts} selectedAccountId={selectedAccountId} selectAccount={selectAccount} removeAccount={removeAccount}
-                showAddAccount={showAddAccount} setShowAddAccount={setShowAddAccount} newAccount={newAccount} setNewAccount={setNewAccount}
-                addAccount={addAccount} savingAccount={savingAccount} accountError={accountError} setAccountError={setAccountError}
-                signOff={signOff} setSignOff={setSignOff} signOffImage={signOffImage} setSignOffImage={setSignOffImage}
-                handleSignOffImageUpload={handleSignOffImageUpload}
-                blacklist={blacklist} newBlacklistEmail={newBlacklistEmail} setNewBlacklistEmail={setNewBlacklistEmail}
-                addToBlacklist={addToBlacklist} removeFromBlacklist={removeFromBlacklist}
-                failedEmails={failedEmails} moveFailedToDoNotContact={moveFailedToDoNotContact} removeFromFailedEmails={removeFromFailedEmails}
-                sendDelay={sendDelay} setSendDelay={setSendDelay}
-                dailySendCap={dailySendCap} setDailyCap={setDailyCap} sendsToday={sendsToday} sendsTodayByAccount={sendsTodayByAccount}
-                autoFollowUpEnabled={autoFollowUpEnabled} setAutoFollowUp={setAutoFollowUp}
-                autoFollowUpDays={autoFollowUpDays} setAutoFollowUpDaysValue={setAutoFollowUpDaysValue}
+                {...account}
                 demosFollowUpTemplate={demosFollowUpTemplate}
                 testEmailTo={testEmailTo} setTestEmailTo={setTestEmailTo} testEmailSending={testEmailSending} handleTestEmail={handleTestEmail}
                 showTestEmailOptions={showTestEmailOptions} setShowTestEmailOptions={setShowTestEmailOptions}
@@ -809,8 +631,6 @@ export default function Dashboard() {
                 testEmailMessage={testEmailMessage} setTestEmailMessage={setTestEmailMessage}
                 demosSubject={demosSubject} demosTemplate={demosTemplate}
                 testEmailResult={testEmailResult} setTestEmailResult={setTestEmailResult} testEmailError={testEmailError}
-                selectedAccount={selectedAccount} deliverabilityLoading={deliverabilityLoading}
-                handleDeliverabilityCheck={handleDeliverabilityCheck} deliverabilityResult={deliverabilityResult}
               />
             )}
 
@@ -859,8 +679,8 @@ export default function Dashboard() {
                   </div>
                   <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg px-4 py-3 space-y-3">
                     <pre className="text-sm text-zinc-200 whitespace-pre-wrap font-sans leading-relaxed">{previewModalEntries[previewModalIdx].body}</pre>
-                    {signOffImage && (
-                      <img src={signOffImage} alt="Signature" className="max-h-24 max-w-xs rounded border border-zinc-700 object-contain bg-zinc-800" />
+                    {account.signOffImage && (
+                      <img src={account.signOffImage} alt="Signature" className="max-h-24 max-w-xs rounded border border-zinc-700 object-contain bg-zinc-800" />
                     )}
                   </div>
                 </div>
