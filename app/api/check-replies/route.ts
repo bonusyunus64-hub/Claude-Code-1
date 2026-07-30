@@ -3,6 +3,11 @@ import { resolveSmtpConfig } from '@/lib/mailSend';
 import { resolveImapConfig, findResponders } from '@/lib/checkReplies';
 import { resolveAccount } from '@/lib/accounts';
 
+// findResponders opens an IMAP connection and walks the inbox once per recipient
+// address being checked — a campaign with dozens of recipients can take well past
+// Vercel's 10s default, so this raises the ceiling to 60s (the Hobby-plan max).
+export const maxDuration = 60;
+
 interface CheckRepliesPayload {
   emails: string[];
   since: number;

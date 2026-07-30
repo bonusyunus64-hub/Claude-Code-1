@@ -9,6 +9,12 @@ import { resolveAccount } from '@/lib/accounts';
 import { checkCapAllows, recordSends } from '@/lib/sendQuota';
 import { getBlacklist } from '@/lib/unsubscribe';
 
+// A batch of DEFAULT_SEND_BATCH_SIZE emails with SMTP retries (up to 2, ~1-2s each)
+// and a configurable inter-message sendDelay stacked on top can comfortably exceed
+// Vercel's 10s default — this raises the ceiling to 60s, the max the Hobby plan
+// allows, rather than risk the function getting killed mid-batch.
+export const maxDuration = 60;
+
 interface SendPayload {
   trackTitle: string;
   driveLink: string;

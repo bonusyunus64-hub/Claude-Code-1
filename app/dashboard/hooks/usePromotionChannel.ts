@@ -176,7 +176,7 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
         upsertCampaign({
           id: campaignId, trackTitle, date: campaignDate, type: campaignType,
           emails: sentEmails, accountId: selectedAccountId, messageIds: messageIdsFromResults(resultsSoFar),
-          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: sendPayload, offset: nextOffset } : undefined,
+          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: sendPayload } : undefined,
           driveLink, senderName,
         });
       });

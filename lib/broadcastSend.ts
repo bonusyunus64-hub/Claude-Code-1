@@ -25,6 +25,10 @@ export interface BroadcastSendPayload {
   accountId?: string;
   sendDelay?: number;
   blacklist?: string[];
+  /** Session-local exclusions the client already knows about (e.g. addresses attempted
+   *  in an earlier round of this same batched send) — see sendInBatches in
+   *  app/dashboard/utils.ts. Unioned into the server blacklist the same way `blacklist` is. */
+  excludeEmails?: string[];
   threadIds?: Record<string, string>;
   offset?: number;
   limit?: number;
@@ -42,7 +46,7 @@ export async function sendBroadcast(
 ): Promise<NextResponse> {
   const {
     trackTitle, driveLink, emailTemplate, subjectTemplate, senderName,
-    signOff, signOffImage, accountId, sendDelay, blacklist, threadIds, offset, limit,
+    signOff, signOffImage, accountId, sendDelay, blacklist, excludeEmails, threadIds, offset, limit,
   } = payload;
 
   if (!trackTitle || !driveLink || !emailTemplate) {
@@ -62,11 +66,12 @@ export async function sendBroadcast(
     );
   }
 
-  // The client-supplied list covers session-local exclusions (e.g. "just sent to
-  // this address"); the server list is the authoritative Do Not Contact record
+  // The client-supplied lists cover session-local exclusions (e.g. "just sent to
+  // this address", or every address a batched send has already attempted — see
+  // sendInBatches); the server list is the authoritative Do Not Contact record
   // from unsubscribes, which a stale client tab can't be trusted to know about.
   const serverBlacklist = await getBlacklist();
-  const bl = new Set([...(blacklist ?? []).map(e => e.toLowerCase()), ...serverBlacklist]);
+  const bl = new Set([...(blacklist ?? []), ...(excludeEmails ?? []), ...serverBlacklist].map(e => e.toLowerCase()));
 
   const builtMessages: OutboundMessage[] = targets.flatMap(target =>
     target.emails

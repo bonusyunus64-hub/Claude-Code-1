@@ -64,46 +64,127 @@ describe('countUniqueRecipients', () => {
 describe('sendInBatches', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  /** A fake /api/send-shaped server: 10 recipients total, 4 per batch. */
-  function stubPaginatedServer() {
-    const totalRecipients = 10;
-    const batchSize = 4;
+  type StubResult = { to: string; success: boolean; messageId?: string };
+
+  /**
+   * A fake /api/send-shaped server that mimics the real route's behavior: it
+   * rebuilds `fullList` fresh on every call, unions the request's `excludeEmails`
+   * into exclusion, and slices the first `batchSize` of what's left starting at
+   * offset 0 — same semantics as paginate() in lib/mailSend.ts. `hardFail` marks
+   * addresses that "send" but come back as a permanent failure, the way a 5xx SMTP
+   * rejection would.
+   */
+  function stubExclusionServer(fullList: string[], batchSize: number, hardFail: Set<string> = new Set()) {
     const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
-      const body = JSON.parse(init.body as string) as { offset: number };
-      const offset = body.offset ?? 0;
-      const batch = Array.from({ length: Math.min(batchSize, totalRecipients - offset) }, (_, i) => offset + i);
-      const results = batch.map(i => ({ to: `r${i}@example.com`, success: true, messageId: `m${i}` }));
-      const nextOffset = offset + batch.length < totalRecipients ? offset + batch.length : null;
-      return { ok: true, json: async () => ({ results, total: totalRecipients, nextOffset }) };
+      const body = JSON.parse(init.body as string) as { offset: number; excludeEmails?: string[] };
+      const exclude = new Set((body.excludeEmails ?? []).map(e => e.toLowerCase()));
+      const remaining = fullList.filter(e => !exclude.has(e.toLowerCase()));
+      const batch = remaining.slice(0, batchSize);
+      const results: StubResult[] = batch.map(to => ({ to, success: !hardFail.has(to), messageId: hardFail.has(to) ? undefined : `<${to}>` }));
+      const nextOffset = batch.length < remaining.length ? batch.length : null;
+      return { ok: true, json: async () => ({ results, total: remaining.length, nextOffset }) };
     });
     vi.stubGlobal('fetch', fetchMock);
     return fetchMock;
   }
 
-  it('pages through every batch starting from offset 0 by default', async () => {
-    stubPaginatedServer();
-    const ticks: number[] = [];
-    const outcome = await sendInBatches('/api/send', {}, (progress) => { ticks.push(progress.sent); });
+  it('pages through every recipient across multiple rounds and terminates, always requesting offset 0', async () => {
+    const list = Array.from({ length: 10 }, (_, i) => `r${i}@example.com`);
+    const fetchMock = stubExclusionServer(list, 4);
+    const outcome = await sendInBatches('/api/send', {}, () => {});
     expect(outcome.ok).toBe(true);
-    if (outcome.ok) expect(outcome.results).toHaveLength(10);
-    expect(ticks).toEqual([4, 8, 10]);
-  });
-
-  it('reports the offset the next batch would start from, and null once done', async () => {
-    stubPaginatedServer();
-    const nextOffsets: (number | null)[] = [];
-    await sendInBatches('/api/send', {}, (_progress, _results, nextOffset) => { nextOffsets.push(nextOffset); });
-    expect(nextOffsets).toEqual([4, 8, null]);
-  });
-
-  it('resumes from a given startOffset instead of restarting at 0', async () => {
-    const fetchMock = stubPaginatedServer();
-    const outcome = await sendInBatches('/api/send', {}, () => {}, 8);
-    expect(outcome.ok).toBe(true);
-    if (outcome.ok) expect(outcome.results.map(r => r.to)).toEqual(['r8@example.com', 'r9@example.com']);
-    // Never re-requests the already-sent offset=0 batch.
+    if (outcome.ok) expect(outcome.results.map(r => r.to).sort()).toEqual(list.slice().sort());
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     const requestedOffsets = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string).offset);
-    expect(requestedOffsets).toEqual([8]);
+    expect(requestedOffsets).toEqual([0, 0, 0]);
+  });
+
+  it('carries every address attempted so far — not just successes — into the next round\'s excludeEmails', async () => {
+    const list = Array.from({ length: 6 }, (_, i) => `r${i}@example.com`);
+    const fetchMock = stubExclusionServer(list, 3, new Set(['r0@example.com']));
+    const outcome = await sendInBatches('/api/send', {}, () => {});
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    // r0 failed in round 1 — if it weren't excluded from round 2's request it would
+    // be re-sent forever and the loop would never terminate.
+    const roundExcludes = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string).excludeEmails.sort());
+    expect(roundExcludes[0]).toEqual([]);
+    expect(roundExcludes[1]).toEqual(['r0@example.com', 'r1@example.com', 'r2@example.com']);
+    // r0 shows up exactly once overall, marked failed, never retried.
+    expect(outcome.results.filter(r => r.to === 'r0@example.com')).toHaveLength(1);
+    expect(outcome.results.find(r => r.to === 'r0@example.com')?.success).toBe(false);
+    expect(outcome.results).toHaveLength(6);
+  });
+
+  it('keeps the first round\'s total as the progress denominator even as the server-reported total shrinks', async () => {
+    const list = Array.from({ length: 10 }, (_, i) => `r${i}@example.com`);
+    stubExclusionServer(list, 4);
+    const totals: number[] = [];
+    await sendInBatches('/api/send', {}, (progress) => { totals.push(progress.total); });
+    // The server's own total each round is 10, then 6, then 2 (post-exclusion) — the
+    // callback must still report 10 every time, or the progress bar counts down.
+    expect(totals).toEqual([10, 10, 10]);
+  });
+
+  it('still reaches every remaining recipient exactly once when the list shrinks mid-flight (simulated blacklist drift)', async () => {
+    const list = Array.from({ length: 10 }, (_, i) => `r${i}@example.com`);
+    let call = 0;
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      call++;
+      const body = JSON.parse(init.body as string) as { excludeEmails?: string[] };
+      const exclude = new Set((body.excludeEmails ?? []).map(e => e.toLowerCase()));
+      // After the first round lands, someone unsubscribes r9 (still un-attempted) —
+      // the server's rebuilt list no longer contains it from here on, same as a
+      // real mid-send unsubscribe/bounce.
+      const serverList = call > 1 ? list.filter(e => e !== 'r9@example.com') : list;
+      const remaining = serverList.filter(e => !exclude.has(e.toLowerCase()));
+      const batch = remaining.slice(0, 4);
+      const results: StubResult[] = batch.map(to => ({ to, success: true }));
+      const nextOffset = batch.length < remaining.length ? batch.length : null;
+      return { ok: true, json: async () => ({ results, total: remaining.length, nextOffset }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcome = await sendInBatches('/api/send', {}, () => {});
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    const sentTo = outcome.results.map(r => r.to).sort();
+    // Every recipient except the one that unsubscribed mid-send — none skipped,
+    // none duplicated. (The old offset-based bug would have silently dropped a
+    // *different*, still-eligible recipient here instead.)
+    expect(sentTo).toEqual(list.filter(e => e !== 'r9@example.com').sort());
+  });
+
+  it('seeds the exclusion set from alreadyAttempted, so a resumed send never re-requests addresses already sent', async () => {
+    const list = Array.from({ length: 5 }, (_, i) => `r${i}@example.com`);
+    const fetchMock = stubExclusionServer(list, 5);
+    const outcome = await sendInBatches('/api/send', {}, () => {}, ['r0@example.com', 'r1@example.com']);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.results.map(r => r.to).sort()).toEqual(['r2@example.com', 'r3@example.com', 'r4@example.com']);
+    const firstExclude = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string).excludeEmails.sort();
+    expect(firstExclude).toEqual(['r0@example.com', 'r1@example.com']);
+  });
+
+  it('merges a payload-level excludeEmails (e.g. manually excluded artists) with attempted addresses', async () => {
+    const list = Array.from({ length: 4 }, (_, i) => `r${i}@example.com`);
+    const fetchMock = stubExclusionServer(list, 4);
+    await sendInBatches('/api/send', { excludeEmails: ['r0@example.com'] }, () => {});
+    const firstExclude = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string).excludeEmails;
+    expect(firstExclude).toEqual(['r0@example.com']);
+  });
+
+  it('bails out instead of looping forever when a round reports more work but returns no recipients', async () => {
+    // A 200 response with no `results` (an edge/proxy error answering in place of the
+    // route) leaves the exclusion set unchanged, so the next request would be
+    // byte-for-byte identical — an infinite loop, since there's no longer a numeric
+    // offset advancing on its own to break out of it.
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ nextOffset: 10, total: 40 }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcome = await sendInBatches('/api/send', {}, () => {});
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.error).toMatch(/stopped returning recipients/i);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

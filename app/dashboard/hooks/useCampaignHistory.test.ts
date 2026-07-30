@@ -237,26 +237,53 @@ describe('useCampaignHistory', () => {
       expect(sendFetch).not.toHaveBeenCalled();
     });
 
-    it('resumes from the recorded offset and refreshes the send counter on success', async () => {
+    it('resumes by excluding addresses already recorded as sent, and refreshes the send counter on success', async () => {
       vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ campaigns: [] }) })));
       const { result, mocks } = renderHistory();
       await waitFor(() => expect(result.current.campaigns).toEqual([]));
 
       const sendFetch = vi.fn(async (_url: string, init?: RequestInit) => {
         const body = JSON.parse((init as RequestInit).body as string);
-        expect(body.offset).toBe(5);
-        return { ok: true, json: async () => ({ results: [{ to: 'a@example.com', success: true, messageId: '<m1>' }], total: 1, nextOffset: null }) };
+        expect(body.offset).toBe(0);
+        expect(body.excludeEmails).toEqual(['a@example.com']);
+        return { ok: true, json: async () => ({ results: [{ to: 'b@example.com', success: true, messageId: '<m1>' }], total: 1, nextOffset: null }) };
       });
       vi.stubGlobal('fetch', sendFetch);
 
+      // c.emails ('a@example.com') is what a pre-existing record already has to go
+      // on — no offset survives an interruption any more, so resume derives its
+      // exclusion set from there instead.
       const pending = campaign({
-        pendingSend: { endpoint: '/api/send', payload: {}, offset: 5 },
+        emails: ['a@example.com'],
+        pendingSend: { endpoint: '/api/send', payload: {} },
       });
       await act(async () => { await result.current.resumeSend(pending); });
 
       expect(mocks.refreshSendsToday).toHaveBeenCalled();
       expect(result.current.campaigns[0].pendingSend).toBeUndefined();
-      expect(result.current.campaigns[0].messageIds).toEqual({ 'a@example.com': '<m1>' });
+      expect(result.current.campaigns[0].messageIds).toEqual({ 'b@example.com': '<m1>' });
+    });
+
+    it('still works from an old-shaped pendingSend record left over from before the offset field was dropped', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ campaigns: [] }) })));
+      const { result } = renderHistory();
+      await waitFor(() => expect(result.current.campaigns).toEqual([]));
+
+      const sendFetch = vi.fn(async () => ({
+        ok: true, json: async () => ({ results: [{ to: 'b@example.com', success: true }], total: 1, nextOffset: null }),
+      }));
+      vi.stubGlobal('fetch', sendFetch);
+
+      // Simulates a CampaignRecord fetched from Redis before this change shipped —
+      // pendingSend still carries a leftover `offset`. resumeSend never reads it, so
+      // it's harmless.
+      const pending = campaign({
+        emails: ['a@example.com'],
+        pendingSend: { endpoint: '/api/send', payload: {}, offset: 5 } as unknown as Campaign['pendingSend'],
+      });
+      await act(async () => { await result.current.resumeSend(pending); });
+
+      expect(result.current.campaigns[0].pendingSend).toBeUndefined();
     });
   });
 });

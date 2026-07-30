@@ -89,10 +89,16 @@ export interface Campaign {
   followUpSentAt?: number;
 }
 
+/**
+ * Enough to redrive a batch loop from `endpoint`/`payload` alone — no numeric offset,
+ * since paging is now done by excluding already-attempted addresses (see
+ * app/dashboard/utils.ts's sendInBatches) rather than by index into a recipient
+ * list that can shrink mid-send. Resume derives its exclusion set from the
+ * campaign's own `emails` instead of anything stored here.
+ */
 export interface PendingSend {
   endpoint: string;
   payload: Record<string, unknown>;
-  offset: number;
 }
 
 export interface CustomContact {

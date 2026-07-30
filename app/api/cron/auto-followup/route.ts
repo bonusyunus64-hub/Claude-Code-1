@@ -7,6 +7,12 @@ import { checkCapAllows, recordSends } from '@/lib/sendQuota';
 import { DEFAULT_FOLLOWUP_DAYS, isCampaignDueForFollowUp, nonRespondedRecipients, buildFollowUpMessage } from '@/lib/autoFollowUp';
 import { getBlacklist } from '@/lib/unsubscribe';
 
+// This can send a full unbatched round of follow-ups (via sendMessages, with SMTP
+// retries and sendDelay) for up to MAX_CAMPAIGNS_PER_RUN campaigns in one invocation
+// — comfortably past Vercel's 10s default, so this raises the ceiling to 60s (the
+// Hobby-plan max) the same way the interactive send routes do.
+export const maxDuration = 60;
+
 // Vercel Cron (see vercel.json) hits this once a day. No browser session is
 // involved, so it can't reuse proxy.ts's cookie auth — Vercel signs cron requests
 // with `Authorization: Bearer $CRON_SECRET` instead, matching the platform's own

@@ -239,7 +239,7 @@ export function useDemosFlow(config: DemosFlowConfig) {
           id: campaignId, trackTitle, date: campaignDate, type: 'demos',
           emails: sentEmails, accountId: selectedAccountId, recipients,
           messageIds: messageIdsFromResults(resultsSoFar),
-          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: sendPayload, offset: nextOffset } : undefined,
+          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: sendPayload } : undefined,
           driveLink, senderName,
         });
       });

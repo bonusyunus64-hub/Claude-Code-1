@@ -202,9 +202,14 @@ export function useCampaignHistory(config: CampaignHistoryConfig) {
 
   /**
    * Continues a send that was interrupted (tab closed, network drop, crash) partway
-   * through, from the offset it last got to — c.pendingSend was written by the batch
-   * loop in handleSend and usePromotionChannel's handleSend after every batch, so
-   * at most the one in-flight batch when the interruption happened gets re-sent.
+   * through. c.pendingSend was written by the batch loop in handleSend and
+   * usePromotionChannel's handleSend after every batch; there's no offset to pick up
+   * from any more (paging is by exclusion set now, not index — see sendInBatches),
+   * so this seeds the exclusion set from c.emails, the addresses already recorded as
+   * successfully sent. That's also what makes this backward compatible with campaign
+   * records written before this change: they never had anything but `emails` to go
+   * on anyway. A transient failure from the interrupted run isn't in `emails` (only
+   * successes are), so it gets retried here — that's the desired behavior, not a bug.
    *
    * New recipients picked up here don't have artist metadata to attach (the roster
    * lookup that built it lived in the original send's closure, long gone by now) —
@@ -236,9 +241,9 @@ export function useCampaignHistory(config: CampaignHistoryConfig) {
           emails,
           recipients,
           messageIds: { ...(c.messageIds ?? {}), ...messageIdsFromResults(resultsSoFar) },
-          pendingSend: nextOffset != null ? { ...pending, offset: nextOffset } : undefined,
+          pendingSend: nextOffset != null ? pending : undefined,
         });
-      }, pending.offset);
+      }, c.emails);
       if (!outcome.ok) setResumeError(outcome.error);
       else if (outcome.results.some(r => r.success)) refreshSendsToday();
     } catch (err) {

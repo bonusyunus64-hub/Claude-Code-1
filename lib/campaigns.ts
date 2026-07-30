@@ -28,8 +28,15 @@ export interface CampaignRecord {
   lastChecked?: number;
   recipients?: CampaignRecipient[];
   messageIds?: Record<string, string>;
-  /** Present while a send is still in progress (or was interrupted before finishing) — lets it be resumed from where it left off instead of restarted. */
-  pendingSend?: { endpoint: string; payload: Record<string, unknown>; offset: number };
+  /**
+   * Present while a send is still in progress (or was interrupted before finishing) —
+   * lets it be resumed instead of restarted. No numeric offset: resume re-derives its
+   * exclusion set from `emails` (see app/dashboard/hooks/useCampaignHistory.ts's
+   * resumeSend), which every record — including ones written before this field
+   * changed shape — already has. A record persisted by an older build may still have
+   * a leftover `offset` property in Redis; it's simply ignored on read.
+   */
+  pendingSend?: { endpoint: string; payload: Record<string, unknown> };
   /** Needed to re-render the follow-up template later (lib/emailTemplate.ts's {{driveLink}}/{{senderName}}) — not used for anything at send time itself. */
   driveLink?: string;
   senderName?: string;

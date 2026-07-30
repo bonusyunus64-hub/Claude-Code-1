@@ -31,7 +31,7 @@ describe('isCampaignDueForFollowUp', () => {
   });
 
   it('is not due while a send is still in progress', () => {
-    expect(isCampaignDueForFollowUp(baseCampaign({ pendingSend: { endpoint: '/api/send', payload: {}, offset: 10 } }), CUTOFF)).toBe(false);
+    expect(isCampaignDueForFollowUp(baseCampaign({ pendingSend: { endpoint: '/api/send', payload: {} } }), CUTOFF)).toBe(false);
   });
 
   it('is not due without an account or drive link on record', () => {

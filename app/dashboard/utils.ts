@@ -20,27 +20,47 @@ export function getTodayDateStr(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-// Send routes page through recipients (offset/limit) instead of one long request, so a
-// large batch can't hit a serverless function timeout. This loops until the server
-// reports no more pages, reporting live progress as each page comes back.
+// Send routes rebuild their recipient list from scratch on every request — including
+// a fresh read of the server-side Do Not Contact blacklist (see getBlacklist in
+// app/api/send/route.ts and lib/broadcastSend.ts). If an address gets blacklisted
+// mid-send (an unsubscribe click, an auto-blacklisted bounce) while paging by a plain
+// numeric offset, the rebuilt list shrinks and every index after the removed one
+// shifts down — the batch that follows silently skips whoever moved into the gap.
+//
+// So this doesn't page by index at all: every request asks for offset 0, plus the
+// full set of addresses already attempted this run (successes AND failures — a
+// hard-rejected address has to be excluded too, or it just gets retried forever and
+// the loop never ends). The server unions that into its blacklist and rebuilds the
+// list without any of them, so each round naturally sends the next `limit` addresses
+// regardless of what shifted underneath. The list shrinks by `limit` every round
+// (paginate in lib/mailSend.ts returns nextOffset: null once what's left fits in one
+// page, or an empty batch with nextOffset: null once nothing is left), so this still
+// terminates in the same number of rounds as before.
 //
 // onProgress also receives the cumulative results-so-far (not just counts) so a
 // caller can persist campaign history as each batch lands, rather than only after
 // the whole send finishes — closing the tab mid-send then loses at most the
-// in-flight batch instead of the entire campaign record. It also gets the offset
-// the *next* batch would start from (null once the whole list is done), so a
-// caller can persist a resume point and pick a paused/interrupted send back up
-// later via `startOffset` instead of restarting — and, since payload/endpoint are
-// exactly what a caller already has on hand, re-sending nothing that already went out.
+// in-flight batch instead of the entire campaign record. Its third argument is the
+// server's nextOffset for the round just completed (null once nothing's left) — no
+// longer a resumable index, just a "there's more to send" signal a caller uses to
+// decide whether to keep a pendingSend record around.
+//
+// `alreadyAttempted` seeds the exclusion set before the first request, which is what
+// lets a resumed send (see useCampaignHistory's resumeSend) pick up cleanly from a
+// campaign's recorded `emails` — no offset needs to have survived the interruption.
 export async function sendInBatches(
   endpoint: string,
   payload: Record<string, unknown>,
   onProgress: (progress: BatchProgress, resultsSoFar: SendResultEntry[], nextOffset: number | null) => void,
-  startOffset = 0
+  alreadyAttempted: string[] = []
 ): Promise<{ ok: true; results: SendResultEntry[]; total: number } | { ok: false; error: string }> {
-  let offset = startOffset;
+  const payloadExclude = Array.isArray(payload.excludeEmails) ? (payload.excludeEmails as string[]) : [];
+  const attempted = new Set([...payloadExclude, ...alreadyAttempted].map(e => e.toLowerCase()));
   const allResults: SendResultEntry[] = [];
-  let total = 0;
+  // Set from the first round only: the server's own `total` shrinks every round
+  // after that (it reflects the post-exclusion list), so re-reading it each time
+  // would make the progress bar count down instead of up.
+  let total: number | null = null;
   for (;;) {
     let res: Response;
     let data: { error?: string; results?: SendResultEntry[]; total?: number; nextOffset?: number | null };
@@ -48,15 +68,17 @@ export async function sendInBatches(
       res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...payload, offset }),
+        body: JSON.stringify({ ...payload, offset: 0, excludeEmails: Array.from(attempted) }),
       });
       data = await res.json();
     } catch {
       return { ok: false, error: 'Network error. Please try again.' };
     }
     if (!res.ok) return { ok: false, error: data.error || 'Failed to send.' };
-    allResults.push(...(data.results ?? []));
-    total = data.total ?? allResults.length;
+    const batch = data.results ?? [];
+    allResults.push(...batch);
+    batch.forEach(r => attempted.add(r.to.toLowerCase()));
+    if (total === null) total = data.total ?? allResults.length;
     const nextOffset = data.nextOffset ?? null;
     onProgress({
       sent: allResults.filter(r => r.success).length,
@@ -64,9 +86,16 @@ export async function sendInBatches(
       total,
     }, allResults, nextOffset);
     if (nextOffset == null) break;
-    offset = nextOffset;
+    // Every round has to grow the exclusion set, or the next request is byte-for-byte
+    // identical to this one and the loop spins forever — the old numeric offset used
+    // to guarantee forward progress by itself and no longer does. A round that claims
+    // more work remains but reports no attempted recipients (a proxy or edge error
+    // answering 200 with a body that has no `results`) is that case, so stop instead.
+    if (batch.length === 0) {
+      return { ok: false, error: 'The server stopped returning recipients mid-send. Some may not have been emailed — check History before resending.' };
+    }
   }
-  return { ok: true, results: allResults, total };
+  return { ok: true, results: allResults, total: total ?? 0 };
 }
 
 export function csvEscape(value: string): string {

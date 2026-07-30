@@ -172,4 +172,7 @@ export function paginate<T>(items: T[], offset: number, limit: number) {
   return { batch, total: items.length, nextOffset };
 }
 
-export const DEFAULT_SEND_BATCH_SIZE = 25;
+// Sized so a batch comfortably finishes inside the send routes' maxDuration=60s
+// even with SMTP retries (up to 2, ~1-2s each) stacked on top of the largest
+// realistic inter-message sendDelay — 25 ran too close to that ceiling in practice.
+export const DEFAULT_SEND_BATCH_SIZE = 10;
