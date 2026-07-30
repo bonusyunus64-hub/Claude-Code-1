@@ -1,11 +1,10 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { hydrateFromRemote, syncStorage } from '@/lib/remoteSync';
 import type {
   Artist, RadioStation, PlaylistCurator, EmailAccount, NewAccountForm,
-  CampaignRecipient, CustomContact, DeliverabilityResult,
-  DemosFilterPreset, SavedTemplate,
+  CustomContact, DeliverabilityResult,
 } from './types';
 import {
   DEFAULT_DEMOS_TEMPLATE, DEFAULT_FOLLOWUP_TEMPLATE, DEFAULT_RADIO_TEMPLATE, DEFAULT_PLAYLIST_TEMPLATE,
@@ -13,12 +12,11 @@ import {
   DEFAULT_SIGN_OFF, BLANK_ACCOUNT,
 } from './constants';
 import {
-  sendInBatches, parseContactsCsv, shuffle, countUniqueRecipients,
-  renderTemplateClient, pronounForClient, findDuplicateRecipients, messageIdsFromResults, checkRecipientsValidity,
-  computeAnalyticsStats,
+  parseContactsCsv, renderTemplateClient, pronounForClient, computeAnalyticsStats,
 } from './utils';
 import { usePromotionChannel } from './hooks/usePromotionChannel';
 import { useCampaignHistory } from './hooks/useCampaignHistory';
+import { useDemosFlow } from './hooks/useDemosFlow';
 import { OverviewSection } from './sections/OverviewSection';
 import { DemosSection } from './sections/DemosSection';
 import { PromotionSection } from './sections/PromotionSection';
@@ -30,51 +28,19 @@ export default function Dashboard() {
   const [demosTab, setDemosTab] = useState<'compose' | 'template'>('compose');
   const [promotionTab, setPromotionTab] = useState<'compose' | 'template'>('compose');
   const [promotionSection, setPromotionSection] = useState<'radio' | 'playlists'>('radio');
-  const [demosMatchMode, setDemosMatchMode] = useState<'any' | 'all'>('any');
 
   // Shared track details
   const [trackTitle, setTrackTitle] = useState('');
   const [driveLink, setDriveLink] = useState('');
   const [senderName, setSenderName] = useState('');
 
-  // Song Demos state
-  const [allGenres, setAllGenres] = useState<string[]>([]);
-  const [topGenres, setTopGenres] = useState<string[]>([]);
-  const [genreSearch, setGenreSearch] = useState('');
-  const [selectedGenres, setSelectedGenres] = useState<string[]>([]);
-  const [showGenreDropdown, setShowGenreDropdown] = useState(false);
-  const [minAudience, setMinAudience] = useState(0);
-  const [maxAudience, setMaxAudience] = useState(0);
-  const [gender, setGender] = useState('');
-  const [artistType, setArtistType] = useState('');
-  const [minInstagram, setMinInstagram] = useState(0);
-  const [maxInstagram, setMaxInstagram] = useState(0);
-  const [showInstagram, setShowInstagram] = useState(false);
+  // Song Demos — template/subject text (both the initial-pitch and follow-up pair)
+  // stays here since it participates in the shared dirty-tracking/save-all below;
+  // everything else is owned by useDemosFlow, instantiated further down.
   const [demosTemplate, setDemosTemplate] = useState(DEFAULT_DEMOS_TEMPLATE);
   const [demosSubject, setDemosSubject] = useState(DEFAULT_DEMOS_SUBJECT);
   const [demosFollowUpTemplate, setDemosFollowUpTemplate] = useState(DEFAULT_FOLLOWUP_TEMPLATE);
   const [demosFollowUpSubject, setDemosFollowUpSubject] = useState(DEFAULT_FOLLOWUP_SUBJECT);
-  const [useFollowUp, setUseFollowUp] = useState(false);
-  const [previewArtists, setPreviewArtists] = useState<Artist[]>([]);
-  const [excludedArtistNames, setExcludedArtistNames] = useState<Set<string>>(new Set());
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewDone, setPreviewDone] = useState(false);
-  const [demosInvalidEmails, setDemosInvalidEmails] = useState<string[]>([]);
-  const [sortOrder, setSortOrder] = useState<'followers-desc' | 'followers-asc' | 'alpha-asc' | 'alpha-desc' | 'random'>('followers-desc');
-  const [recipientSearch, setRecipientSearch] = useState('');
-  const [outsideResults, setOutsideResults] = useState<Artist[]>([]);
-  const [outsideResultsQuery, setOutsideResultsQuery] = useState('');
-  const [outsideSearchLoading, setOutsideSearchLoading] = useState(false);
-  const [sending, setSending] = useState(false);
-  const [sendResult, setSendResult] = useState<{ sent: number; failed: number; total: number } | null>(null);
-  const [sendError, setSendError] = useState('');
-  const [sendFailedEmails, setSendFailedEmails] = useState<string[]>([]);
-  const [demosPresets, setDemosPresets] = useState<DemosFilterPreset[]>([]);
-  const [newDemosPresetName, setNewDemosPresetName] = useState('');
-  const [demosTemplateLibrary, setDemosTemplateLibrary] = useState<SavedTemplate[]>([]);
-  const [newDemosTemplateName, setNewDemosTemplateName] = useState('');
-  const [followUpTemplateLibrary, setFollowUpTemplateLibrary] = useState<SavedTemplate[]>([]);
-  const [newFollowUpTemplateName, setNewFollowUpTemplateName] = useState('');
 
   // Track Promotion (Radio/Playlists) — template/subject text stays here since it
   // participates in the shared dirty-tracking/save-all below; everything else
@@ -207,8 +173,22 @@ export default function Dashboard() {
     accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap, upsertCampaign: history.upsertCampaign,
   });
 
+  // No twin to share an implementation with (unlike Radio/Playlists) — this is the
+  // one place page.tsx's Demos-tab complexity (audience/Instagram/gender filters,
+  // exclusions, outside-artist search, sort/search, both template libraries) lives
+  // now instead of inline. Declared before the initial-load effect below for the
+  // same reason as radio/playlists above.
+  const demos = useDemosFlow({
+    trackTitle, driveLink, senderName,
+    demosTemplate, demosSubject, setDemosTemplate, setDemosSubject,
+    demosFollowUpTemplate, demosFollowUpSubject, setDemosFollowUpTemplate, setDemosFollowUpSubject,
+    signOff, signOffImage, selectedAccountId, sendDelay, blacklist, dailySendCap, sendsToday,
+    accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap,
+    upsertCampaign: history.upsertCampaign, threadIdsFor: history.threadIdsFor,
+    customContacts,
+  });
+
   useEffect(() => {
-    fetch('/api/genres').then(r => r.json()).then(d => { setAllGenres(d.genres || []); setTopGenres(d.topGenres || []); });
     fetch('/api/send-quota').then(r => r.json()).then(d => { setSendsToday(d.count ?? 0); setSendsTodayByAccount(d.byAccount ?? {}); }).catch(() => {});
     (async () => {
     await hydrateFromRemote(); // pull latest settings from the server so a second device picks up what was saved elsewhere
@@ -264,7 +244,7 @@ export default function Dashboard() {
       if (savedSendDelay !== null) setSendDelay(Number(savedSendDelay));
 
       const savedDemosPresets = localStorage.getItem('tp_demos_presets');
-      if (savedDemosPresets) setDemosPresets(JSON.parse(savedDemosPresets));
+      if (savedDemosPresets) demos.setDemosPresets(JSON.parse(savedDemosPresets));
 
       const savedRadioPresets = localStorage.getItem('tp_radio_presets');
       if (savedRadioPresets) radio.setPresets(JSON.parse(savedRadioPresets));
@@ -273,10 +253,10 @@ export default function Dashboard() {
       if (savedPlaylistPresets) playlists.setPresets(JSON.parse(savedPlaylistPresets));
 
       const savedDemosTemplates = localStorage.getItem('tp_demos_templates');
-      if (savedDemosTemplates) setDemosTemplateLibrary(JSON.parse(savedDemosTemplates));
+      if (savedDemosTemplates) demos.setDemosTemplateLibrary(JSON.parse(savedDemosTemplates));
 
       const savedFollowUpTemplates = localStorage.getItem('tp_followup_templates');
-      if (savedFollowUpTemplates) setFollowUpTemplateLibrary(JSON.parse(savedFollowUpTemplates));
+      if (savedFollowUpTemplates) demos.setFollowUpTemplateLibrary(JSON.parse(savedFollowUpTemplates));
 
       const savedRadioTemplates = localStorage.getItem('tp_radio_templates');
       if (savedRadioTemplates) radio.setTemplateLibrary(JSON.parse(savedRadioTemplates));
@@ -294,9 +274,10 @@ export default function Dashboard() {
       if (savedAutoFollowUpDays !== null) setAutoFollowUpDays(Number(savedAutoFollowUpDays));
     } catch {}
     })();
-    // radio/playlists are plain objects rebuilt every render, so listing them here
-    // would re-run this mount-only hydration on every render; only their setPresets/
-    // setTemplateLibrary setters (stable, from useState) are actually called below.
+    // radio/playlists/demos are plain objects rebuilt every render, so listing them
+    // here would re-run this mount-only hydration on every render; only their
+    // setPresets/setTemplateLibrary-family setters (stable, from useState) are
+    // actually called below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -455,20 +436,6 @@ export default function Dashboard() {
     syncStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
   }
 
-  async function handleOutsideSearch(query: string) {
-    setOutsideSearchLoading(true);
-    try {
-      const res = await fetch('/api/artist-search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query }),
-      });
-      const data = await res.json();
-      setOutsideResults(data.artists || []);
-      setOutsideResultsQuery(query);
-    } finally { setOutsideSearchLoading(false); }
-  }
-
   function addOutsideArtistToContacts(a: Artist) {
     const existingEmails = new Set(customContacts.map(c => c.managerEmail.toLowerCase()));
     const additions: CustomContact[] = a.managerEmails
@@ -498,80 +465,6 @@ export default function Dashboard() {
   function setAutoFollowUpDaysValue(days: number) {
     setAutoFollowUpDays(days);
     syncStorage.setItem('tp_auto_followup_days', String(days));
-  }
-
-  function saveDemosPreset() {
-    const name = newDemosPresetName.trim();
-    if (!name) return;
-    const preset: DemosFilterPreset = {
-      id: Date.now().toString(), name, genres: selectedGenres, minAudience, maxAudience,
-      gender, artistType, minInstagram, maxInstagram, matchMode: demosMatchMode,
-    };
-    const updated = [...demosPresets, preset];
-    setDemosPresets(updated);
-    syncStorage.setItem('tp_demos_presets', JSON.stringify(updated));
-    setNewDemosPresetName('');
-  }
-
-  function loadDemosPreset(preset: DemosFilterPreset) {
-    setSelectedGenres(preset.genres);
-    setMinAudience(preset.minAudience);
-    setMaxAudience(preset.maxAudience);
-    setGender(preset.gender);
-    setArtistType(preset.artistType);
-    setMinInstagram(preset.minInstagram);
-    setMaxInstagram(preset.maxInstagram);
-    setDemosMatchMode(preset.matchMode);
-    setPreviewDone(false);
-    setSendResult(null);
-  }
-
-  function deleteDemosPreset(id: string) {
-    const updated = demosPresets.filter(p => p.id !== id);
-    setDemosPresets(updated);
-    syncStorage.setItem('tp_demos_presets', JSON.stringify(updated));
-  }
-
-  function saveDemosTemplateToLibrary() {
-    const name = newDemosTemplateName.trim();
-    if (!name) return;
-    const template: SavedTemplate = { id: Date.now().toString(), name, body: demosTemplate, subject: demosSubject };
-    const updated = [...demosTemplateLibrary, template];
-    setDemosTemplateLibrary(updated);
-    syncStorage.setItem('tp_demos_templates', JSON.stringify(updated));
-    setNewDemosTemplateName('');
-  }
-
-  function loadDemosTemplateFromLibrary(template: SavedTemplate) {
-    setDemosTemplate(template.body);
-    if (template.subject !== undefined) setDemosSubject(template.subject);
-  }
-
-  function deleteDemosTemplateFromLibrary(id: string) {
-    const updated = demosTemplateLibrary.filter(t => t.id !== id);
-    setDemosTemplateLibrary(updated);
-    syncStorage.setItem('tp_demos_templates', JSON.stringify(updated));
-  }
-
-  function saveFollowUpTemplateToLibrary() {
-    const name = newFollowUpTemplateName.trim();
-    if (!name) return;
-    const template: SavedTemplate = { id: Date.now().toString(), name, body: demosFollowUpTemplate, subject: demosFollowUpSubject };
-    const updated = [...followUpTemplateLibrary, template];
-    setFollowUpTemplateLibrary(updated);
-    syncStorage.setItem('tp_followup_templates', JSON.stringify(updated));
-    setNewFollowUpTemplateName('');
-  }
-
-  function loadFollowUpTemplateFromLibrary(template: SavedTemplate) {
-    setDemosFollowUpTemplate(template.body);
-    if (template.subject !== undefined) setDemosFollowUpSubject(template.subject);
-  }
-
-  function deleteFollowUpTemplateFromLibrary(id: string) {
-    const updated = followUpTemplateLibrary.filter(t => t.id !== id);
-    setFollowUpTemplateLibrary(updated);
-    syncStorage.setItem('tp_followup_templates', JSON.stringify(updated));
   }
 
   function handleCustomContactsCsv(e: React.ChangeEvent<HTMLInputElement>) {
@@ -643,7 +536,7 @@ export default function Dashboard() {
       // Use a real matched artist's data when one is available, so the test
       // reflects exactly how {{managerName}}, {{pronoun}}, etc. will resolve
       // for an actual recipient rather than generic placeholders.
-      const sampleArtist = sortedArtists[0];
+      const sampleArtist = demos.sortedArtists[0];
       const sampleContact = customContacts[0];
       const res = await fetch('/api/test-email', {
         method: 'POST',
@@ -651,8 +544,8 @@ export default function Dashboard() {
         body: JSON.stringify({
           to: testEmailTo,
           accountId: selectedAccountId || undefined,
-          emailTemplate: testEmailMessage.trim() || (useFollowUp ? demosFollowUpTemplate : demosTemplate),
-          subjectTemplate: testEmailSubject.trim() || (useFollowUp ? demosFollowUpSubject : demosSubject),
+          emailTemplate: testEmailMessage.trim() || (demos.useFollowUp ? demosFollowUpTemplate : demosTemplate),
+          subjectTemplate: testEmailSubject.trim() || (demos.useFollowUp ? demosFollowUpSubject : demosSubject),
           signOff,
           signOffImage,
           senderName,
@@ -690,172 +583,6 @@ export default function Dashboard() {
     finally { setDeliverabilityLoading(false); }
   }
 
-  const resetFilters = () => { setPreviewDone(false); setSendResult(null); };
-
-  const filteredGenres = useMemo(() =>
-    allGenres.filter(g => g.toLowerCase().includes(genreSearch.toLowerCase()) && !selectedGenres.includes(g)).slice(0, 50),
-    [allGenres, genreSearch, selectedGenres]
-  );
-
-  const toggleGenre = useCallback((genre: string) => {
-    setSelectedGenres(prev => prev.includes(genre) ? prev.filter(g => g !== genre) : [...prev, genre]);
-    setPreviewDone(false); setSendResult(null);
-  }, []);
-
-  async function handlePreview(genresOverride?: string[], matchModeOverride?: 'any' | 'all') {
-    setPreviewLoading(true);
-    setDemosInvalidEmails([]);
-    try {
-      const res = await fetch('/api/preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ genres: genresOverride ?? selectedGenres, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode: matchModeOverride ?? demosMatchMode }),
-      });
-      const data = await res.json();
-      const artists = data.artists || [];
-      setPreviewArtists(artists);
-      setPreviewDone(true);
-      setExcludedArtistNames(new Set());
-      checkRecipientsValidity((artists as Artist[]).flatMap(a => a.managerEmails)).then(setDemosInvalidEmails);
-    } finally { setPreviewLoading(false); }
-  }
-
-  // Clicking a genre chip on a preview card toggles it in the active filters
-  // and immediately re-runs the preview with the updated genre list, instead
-  // of just clearing the results like toggleGenre does. Adding a genre this way
-  // also switches match mode to "all" — otherwise the artist that chip came from
-  // could drop out of an "any" match once a second genre they don't have is added.
-  function toggleGenreFromPreview(genre: string) {
-    const adding = !selectedGenres.includes(genre);
-    const updated = adding ? [...selectedGenres, genre] : selectedGenres.filter(g => g !== genre);
-    setSelectedGenres(updated);
-    const nextMatchMode = adding ? 'all' : demosMatchMode;
-    if (adding) setDemosMatchMode('all');
-    handlePreview(updated, nextMatchMode);
-  }
-
-  function toggleArtistExclusion(name: string) {
-    setExcludedArtistNames(prev => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name); else next.add(name);
-      return next;
-    });
-  }
-
-  async function handleSend() {
-    if (!trackTitle || !driveLink) return;
-    if (dailySendCap > 0 && sendsToday + totalEmails > dailySendCap) {
-      setSendError(`Daily send limit reached (${sendsToday}/${dailySendCap} sent today). Wait until tomorrow or raise the limit in Account settings.`);
-      return;
-    }
-    const accountCapErr = selectedAccountId && accountCapError(selectedAccountId, totalEmails);
-    if (accountCapErr) { setSendError(accountCapErr); return; }
-    setSending(true); setSendError(''); setSendResult(null); setSendFailedEmails([]);
-    try {
-      // Built once up front — it depends only on the current preview/contacts, not on
-      // anything the send returns — so every progress tick below can reuse it to
-      // attach recipient details to whatever's been sent so far.
-      const artistByEmail = new Map<string, Omit<CampaignRecipient, 'email'>>();
-      previewArtists.filter(a => !excludedArtistNames.has(a.name)).forEach(a => {
-        a.managerEmails.forEach((email, i) => {
-          artistByEmail.set(email.toLowerCase(), {
-            artistName: a.name, managerName: a.managerNames[i] || '', avatarUrl: a.avatarUrl,
-            genres: a.genres, instagramHandle: a.instagramHandle, spotifyFollowers: a.spotifyFollowers,
-          });
-        });
-      });
-      customContacts.forEach(c => {
-        artistByEmail.set(c.managerEmail.toLowerCase(), {
-          artistName: c.artistName, managerName: c.managerName, avatarUrl: '',
-          genres: [], instagramHandle: '', spotifyFollowers: 0,
-        });
-      });
-
-      const campaignId = Date.now().toString();
-      const campaignDate = new Date().toISOString();
-      const sendEndpoint = '/api/send';
-      const sendPayload = {
-        trackTitle, driveLink, genres: selectedGenres,
-        emailTemplate: useFollowUp ? demosFollowUpTemplate : demosTemplate,
-        subjectTemplate: useFollowUp ? demosFollowUpSubject : demosSubject,
-        senderName, signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram,
-        matchMode: demosMatchMode,
-        sendDelay: sendDelay > 0 ? sendDelay : undefined,
-        blacklist: blacklist.length > 0 ? blacklist : undefined,
-        excludeEmails: excludedArtistNames.size > 0
-          ? previewArtists.filter(a => excludedArtistNames.has(a.name)).flatMap(a => a.managerEmails)
-          : undefined,
-        customContacts: customContacts.length > 0
-          ? customContacts.map(c => ({ artistName: c.artistName, managerName: c.managerName, managerEmail: c.managerEmail }))
-          : undefined,
-        accountId: selectedAccountId || undefined,
-        threadIds: useFollowUp ? history.threadIdsFor('demos', trackTitle) : undefined,
-      };
-
-      const outcome = await sendInBatches(sendEndpoint, sendPayload, (progress, resultsSoFar, nextOffset) => {
-        setSendResult(progress);
-        // Persisted as each batch lands: closing the tab mid-send loses at most the
-        // in-flight batch, not the whole campaign record. pendingSend carries enough
-        // to resume the remaining recipients later instead of restarting from scratch.
-        const sentEmails = resultsSoFar.filter(r => r.success).map(r => r.to);
-        const recipients: CampaignRecipient[] = sentEmails.map(email => ({
-          email,
-          ...(artistByEmail.get(email.toLowerCase()) ?? {
-            artistName: '', managerName: '', avatarUrl: '', genres: [], instagramHandle: '', spotifyFollowers: 0,
-          }),
-        }));
-        history.upsertCampaign({
-          id: campaignId, trackTitle, date: campaignDate, type: 'demos',
-          emails: sentEmails, accountId: selectedAccountId, recipients,
-          messageIds: messageIdsFromResults(resultsSoFar),
-          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: sendPayload, offset: nextOffset } : undefined,
-          driveLink, senderName,
-        });
-      });
-      if (!outcome.ok) { setSendError(outcome.error); }
-      else {
-        const failed = outcome.results.filter(r => !r.success).map(r => r.to);
-        setSendFailedEmails(failed);
-        recordFailedEmails(failed);
-        if (outcome.results.some(r => r.success)) refreshSendsToday();
-      }
-    } finally { setSending(false); }
-  }
-
-  const sortedArtists = useMemo(() => {
-    const arr = [...previewArtists];
-    switch (sortOrder) {
-      case 'followers-desc': return arr.sort((a, b) => b.spotifyFollowers - a.spotifyFollowers);
-      case 'followers-asc':  return arr.sort((a, b) => a.spotifyFollowers - b.spotifyFollowers);
-      case 'alpha-asc':      return arr.sort((a, b) => a.name.localeCompare(b.name));
-      case 'alpha-desc':     return arr.sort((a, b) => b.name.localeCompare(a.name));
-      case 'random':         return shuffle(arr);
-    }
-  }, [previewArtists, sortOrder]);
-
-  const visibleArtists = useMemo(() => {
-    const q = recipientSearch.trim().toLowerCase();
-    if (!q) return sortedArtists;
-    return sortedArtists.filter(a => a.name.toLowerCase().includes(q));
-  }, [sortedArtists, recipientSearch]);
-
-  const includedArtists = useMemo(
-    () => previewArtists.filter(a => !excludedArtistNames.has(a.name)),
-    [previewArtists, excludedArtistNames]
-  );
-
-  const totalEmails = countUniqueRecipients(
-    includedArtists.flatMap(a => a.managerEmails),
-    customContacts.map(c => c.managerEmail)
-  );
-  const canSend = !!trackTitle && !!driveLink && (selectedGenres.length > 0 || customContacts.length > 0) &&
-    (previewDone || selectedGenres.length === 0) && totalEmails > 0;
-
-  const demosDuplicateRecipients = useMemo(
-    () => findDuplicateRecipients(pitchedEmailMap, trackTitle, [...includedArtists.flatMap(a => a.managerEmails), ...customContacts.map(c => c.managerEmail)]),
-    [includedArtists, customContacts, trackTitle, pitchedEmailMap]
-  );
-
   const selectedAccount = emailAccounts.find(a => a.id === selectedAccountId);
 
   // Build email preview modal entries
@@ -864,11 +591,11 @@ export default function Dashboard() {
     if (!previewModalType) return [];
     if (previewModalType === 'demos') {
       const entries: PreviewEntry[] = [];
-      includedArtists.slice(0, 20).forEach(a => {
+      demos.includedArtists.slice(0, 20).forEach(a => {
         a.managerEmails.forEach((email, idx) => {
           const vars = { managerName: a.managerNames[idx] || 'there', artistName: a.name, trackTitle, driveLink, senderName, managementCompany: a.managementCompany, pronoun: pronounForClient(a.gender, a.type) };
-          const tpl = useFollowUp ? demosFollowUpTemplate : demosTemplate;
-          const subjectTpl = useFollowUp ? demosFollowUpSubject : demosSubject;
+          const tpl = demos.useFollowUp ? demosFollowUpTemplate : demosTemplate;
+          const subjectTpl = demos.useFollowUp ? demosFollowUpSubject : demosSubject;
           const bodyParts = [renderTemplateClient(tpl, vars)];
           if (signOff?.trim()) bodyParts.push(renderTemplateClient(signOff, vars));
           entries.push({
@@ -881,8 +608,8 @@ export default function Dashboard() {
       });
       customContacts.forEach(cc => {
         const vars = { managerName: cc.managerName || 'there', artistName: cc.artistName, trackTitle, driveLink, senderName, managementCompany: '', pronoun: 'they' };
-        const tpl = useFollowUp ? demosFollowUpTemplate : demosTemplate;
-        const subjectTpl = useFollowUp ? demosFollowUpSubject : demosSubject;
+        const tpl = demos.useFollowUp ? demosFollowUpTemplate : demosTemplate;
+        const subjectTpl = demos.useFollowUp ? demosFollowUpSubject : demosSubject;
         const bodyParts = [renderTemplateClient(tpl, vars)];
         if (signOff?.trim()) bodyParts.push(renderTemplateClient(signOff, vars));
         entries.push({
@@ -926,7 +653,7 @@ export default function Dashboard() {
       });
     });
     return entries;
-  }, [previewModalType, includedArtists, radio.results, playlists.results, demosTemplate, demosSubject, demosFollowUpTemplate, demosFollowUpSubject, useFollowUp, radio.template, radio.subject, playlists.template, playlists.subject, signOff, trackTitle, driveLink, senderName, customContacts]);
+  }, [previewModalType, demos.includedArtists, radio.results, playlists.results, demosTemplate, demosSubject, demosFollowUpTemplate, demosFollowUpSubject, demos.useFollowUp, radio.template, radio.subject, playlists.template, playlists.subject, signOff, trackTitle, driveLink, senderName, customContacts]);
 
   const NAV_ITEMS = [
     {
@@ -1032,35 +759,15 @@ export default function Dashboard() {
             {/* ── Song Demos ── */}
             {activeSection === 'demos' && (
               <DemosSection
+                {...demos}
                 demosTab={demosTab} setDemosTab={setDemosTab}
-                demosSubject={demosSubject} setDemosSubject={setDemosSubject} demosTemplate={demosTemplate} setDemosTemplate={setDemosTemplate}
-                demosTemplateLibrary={demosTemplateLibrary} newDemosTemplateName={newDemosTemplateName} setNewDemosTemplateName={setNewDemosTemplateName}
-                saveDemosTemplateToLibrary={saveDemosTemplateToLibrary} loadDemosTemplateFromLibrary={loadDemosTemplateFromLibrary} deleteDemosTemplateFromLibrary={deleteDemosTemplateFromLibrary}
-                demosFollowUpSubject={demosFollowUpSubject} setDemosFollowUpSubject={setDemosFollowUpSubject} demosFollowUpTemplate={demosFollowUpTemplate} setDemosFollowUpTemplate={setDemosFollowUpTemplate}
-                followUpTemplateLibrary={followUpTemplateLibrary} newFollowUpTemplateName={newFollowUpTemplateName} setNewFollowUpTemplateName={setNewFollowUpTemplateName}
-                saveFollowUpTemplateToLibrary={saveFollowUpTemplateToLibrary} loadFollowUpTemplateFromLibrary={loadFollowUpTemplateFromLibrary} deleteFollowUpTemplateFromLibrary={deleteFollowUpTemplateFromLibrary}
                 senderName={senderName} setSenderName={setSenderName} trackTitle={trackTitle} setTrackTitle={setTrackTitle} demosPitchCount={demosPitchCount}
                 driveLink={driveLink} setDriveLink={setDriveLink}
-                demosPresets={demosPresets} newDemosPresetName={newDemosPresetName} setNewDemosPresetName={setNewDemosPresetName}
-                saveDemosPreset={saveDemosPreset} loadDemosPreset={loadDemosPreset} deleteDemosPreset={deleteDemosPreset}
-                demosMatchMode={demosMatchMode} setDemosMatchMode={setDemosMatchMode} selectedGenres={selectedGenres} setSelectedGenres={setSelectedGenres} toggleGenre={toggleGenre}
-                genreSearch={genreSearch} setGenreSearch={setGenreSearch} showGenreDropdown={showGenreDropdown} setShowGenreDropdown={setShowGenreDropdown}
-                topGenres={topGenres} filteredGenres={filteredGenres} resetFilters={resetFilters} setPreviewDone={setPreviewDone} setSendResult={setSendResult}
-                minAudience={minAudience} setMinAudience={setMinAudience} maxAudience={maxAudience} setMaxAudience={setMaxAudience}
-                showInstagram={showInstagram} setShowInstagram={setShowInstagram} minInstagram={minInstagram} setMinInstagram={setMinInstagram}
-                maxInstagram={maxInstagram} setMaxInstagram={setMaxInstagram} gender={gender} setGender={setGender} artistType={artistType} setArtistType={setArtistType}
                 customContacts={customContacts} removeCustomContact={removeCustomContact} showAddCustomContact={showAddCustomContact} setShowAddCustomContact={setShowAddCustomContact}
                 newCustomContact={newCustomContact} setNewCustomContact={setNewCustomContact} addCustomContact={addCustomContact} handleCustomContactsCsv={handleCustomContactsCsv}
-                handlePreview={handlePreview} previewDone={previewDone} previewLoading={previewLoading} previewArtists={previewArtists}
-                includedArtists={includedArtists} visibleArtists={visibleArtists} totalEmails={totalEmails}
-                setExcludedArtistNames={setExcludedArtistNames} excludedArtistNames={excludedArtistNames} toggleArtistExclusion={toggleArtistExclusion} toggleGenreFromPreview={toggleGenreFromPreview}
-                recipientSearch={recipientSearch} setRecipientSearch={setRecipientSearch} sortOrder={sortOrder} setSortOrder={setSortOrder}
-                outsideResults={outsideResults} outsideResultsQuery={outsideResultsQuery} outsideSearchLoading={outsideSearchLoading}
-                handleOutsideSearch={handleOutsideSearch} addOutsideArtistToContacts={addOutsideArtistToContacts} pitchedEmailMap={pitchedEmailMap}
+                addOutsideArtistToContacts={addOutsideArtistToContacts} pitchedEmailMap={pitchedEmailMap}
                 setPreviewModalType={setPreviewModalType} setPreviewModalIdx={setPreviewModalIdx}
-                demosDuplicateRecipients={demosDuplicateRecipients} demosInvalidEmails={demosInvalidEmails} setDemosInvalidEmails={setDemosInvalidEmails} addFailedToBlacklist={addFailedToBlacklist}
-                sendResult={sendResult} sendFailedEmails={sendFailedEmails} setSendFailedEmails={setSendFailedEmails} sendError={sendError}
-                useFollowUp={useFollowUp} setUseFollowUp={setUseFollowUp} handleSend={handleSend} canSend={canSend} sending={sending}
+                addFailedToBlacklist={addFailedToBlacklist}
                 selectedAccount={selectedAccount} setActiveSection={setActiveSection}
                 testEmailTo={testEmailTo} setTestEmailTo={setTestEmailTo} setTestEmailResult={setTestEmailResult} handleTestEmail={handleTestEmail}
                 testEmailSending={testEmailSending} selectedAccountId={selectedAccountId} testEmailResult={testEmailResult} testEmailError={testEmailError}
