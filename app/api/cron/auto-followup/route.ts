@@ -5,6 +5,7 @@ import { getAccount } from '@/lib/accounts';
 import { resolveSmtpConfig, createTransport, sendMessages } from '@/lib/mailSend';
 import { checkCapAllows, recordSends } from '@/lib/sendQuota';
 import { DEFAULT_FOLLOWUP_DAYS, isCampaignDueForFollowUp, nonRespondedRecipients, buildFollowUpMessage } from '@/lib/autoFollowUp';
+import { getBlacklist } from '@/lib/unsubscribe';
 
 // Vercel Cron (see vercel.json) hits this once a day. No browser session is
 // involved, so it can't reuse proxy.ts's cookie auth — Vercel signs cron requests
@@ -48,11 +49,12 @@ export async function GET(req: NextRequest) {
 
   const campaigns = await listCampaigns();
   const due = campaigns.filter(c => isCampaignDueForFollowUp(c, cutoffMs)).slice(0, MAX_CAMPAIGNS_PER_RUN);
+  const blacklist = await getBlacklist();
 
   const results: { campaignId: string; trackTitle: string; sent: number; skipped?: string }[] = [];
 
   for (const campaign of due) {
-    const targets = nonRespondedRecipients(campaign);
+    const targets = nonRespondedRecipients(campaign, blacklist);
     if (!targets.length) {
       // Everyone on it already replied or bounced — nothing left to nudge, done.
       await saveCampaign({ ...campaign, followUpSentAt: Date.now() });

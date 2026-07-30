@@ -63,6 +63,16 @@ describe('nonRespondedRecipients', () => {
     const campaign = baseCampaign({ emails: ['a@example.com', 'b@example.com'] });
     expect(nonRespondedRecipients(campaign)).toEqual(['a@example.com', 'b@example.com']);
   });
+
+  it('excludes blacklisted addresses', () => {
+    const campaign = baseCampaign({ emails: ['a@example.com', 'b@example.com'] });
+    expect(nonRespondedRecipients(campaign, new Set(['a@example.com']))).toEqual(['b@example.com']);
+  });
+
+  it('is case-insensitive on the blacklist', () => {
+    const campaign = baseCampaign({ emails: ['A@Example.com'] });
+    expect(nonRespondedRecipients(campaign, new Set(['a@example.com']))).toEqual([]);
+  });
 });
 
 describe('buildFollowUpMessage', () => {

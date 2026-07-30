@@ -53,6 +53,15 @@ export function buildUnsubscribeApiUrl(baseUrl: string, email: string): string |
   return buildUrl(baseUrl, '/api/unsubscribe', email);
 }
 
+async function readBlacklist(): Promise<string[]> {
+  if (!isKvConfigured()) return [];
+  const raw = await getRedis().hget<unknown>(STATE_KEY, BLACKLIST_FIELD);
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw); } catch { return []; }
+  }
+  return Array.isArray(raw) ? (raw as string[]) : [];
+}
+
 /**
  * Adds an address to the shared Do Not Contact list directly in Redis. The
  * unsubscribe page has no browser session to push the change through
@@ -62,19 +71,24 @@ export function buildUnsubscribeApiUrl(baseUrl: string, email: string): string |
  */
 export async function addToBlacklistServerSide(email: string): Promise<void> {
   if (!isKvConfigured()) return;
-  const redis = getRedis();
-  const raw = await redis.hget<unknown>(STATE_KEY, BLACKLIST_FIELD);
-
-  let list: string[] = [];
-  if (typeof raw === 'string') {
-    try { list = JSON.parse(raw); } catch { list = []; }
-  } else if (Array.isArray(raw)) {
-    list = raw as string[];
-  }
+  const list = await readBlacklist();
 
   const lower = email.trim().toLowerCase();
   if (!list.some(e => String(e).toLowerCase() === lower)) {
     list.push(lower);
-    await redis.hset(STATE_KEY, { [BLACKLIST_FIELD]: JSON.stringify(list) });
+    await getRedis().hset(STATE_KEY, { [BLACKLIST_FIELD]: JSON.stringify(list) });
   }
+}
+
+/**
+ * The authoritative Do Not Contact list, read straight from Redis rather than
+ * trusting whatever a client posts — a stale dashboard tab only syncs this on
+ * load, so anything unsubscribed since then would otherwise still get mailed.
+ * Every send path (manual sends and the auto-follow-up cron) unions this with
+ * whatever blacklist the caller passed, so an opt-out is honored the moment
+ * it's recorded rather than on the client's next sync.
+ */
+export async function getBlacklist(): Promise<Set<string>> {
+  const list = await readBlacklist();
+  return new Set(list.map(e => String(e).trim().toLowerCase()));
 }

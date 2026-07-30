@@ -18,11 +18,19 @@ export function isCampaignDueForFollowUp(campaign: CampaignRecord, cutoffMs: num
   return new Date(campaign.date).getTime() <= cutoffMs;
 }
 
-/** Recipients who neither replied nor bounced — the ones still worth a nudge. */
-export function nonRespondedRecipients(campaign: CampaignRecord): string[] {
+/**
+ * Recipients who neither replied nor bounced nor unsubscribed — the ones still
+ * worth a nudge. `blacklist` should be the Do Not Contact list (lowercased);
+ * skipping it isn't optional, since following up with someone who opted out
+ * defeats the point of having an unsubscribe link at all.
+ */
+export function nonRespondedRecipients(campaign: CampaignRecord, blacklist: Set<string> = new Set()): string[] {
   const responded = new Set((campaign.responded ?? []).map(e => e.toLowerCase()));
   const bounced = new Set((campaign.bounced ?? []).map(e => e.toLowerCase()));
-  return campaign.emails.filter(e => !responded.has(e.toLowerCase()) && !bounced.has(e.toLowerCase()));
+  return campaign.emails.filter(e => {
+    const lower = e.toLowerCase();
+    return !responded.has(lower) && !bounced.has(lower) && !blacklist.has(lower);
+  });
 }
 
 /**

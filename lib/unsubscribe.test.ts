@@ -20,7 +20,7 @@ vi.mock('@/lib/kv', () => ({
   getRedis: () => ({ hget, hset }),
 }));
 
-import { unsubscribeToken, verifyUnsubscribeToken, buildUnsubscribeUrl, buildUnsubscribeApiUrl, addToBlacklistServerSide } from './unsubscribe';
+import { unsubscribeToken, verifyUnsubscribeToken, buildUnsubscribeUrl, buildUnsubscribeApiUrl, addToBlacklistServerSide, getBlacklist } from './unsubscribe';
 
 describe('unsubscribeToken / verifyUnsubscribeToken', () => {
   beforeEach(() => {
@@ -108,5 +108,26 @@ describe('addToBlacklistServerSide', () => {
     kvConfigured = false;
     await addToBlacklistServerSide('manager@example.com');
     expect(await hget('trackpitch:settings', 'tp_blacklist')).toBeUndefined();
+  });
+});
+
+describe('getBlacklist', () => {
+  beforeEach(() => {
+    store.clear();
+    kvConfigured = true;
+  });
+
+  it('returns a lowercased set of the stored list', async () => {
+    await hset('trackpitch:settings', { tp_blacklist: JSON.stringify(['Manager@Example.com']) });
+    expect(await getBlacklist()).toEqual(new Set(['manager@example.com']));
+  });
+
+  it('returns an empty set when nothing is stored', async () => {
+    expect(await getBlacklist()).toEqual(new Set());
+  });
+
+  it('returns an empty set when KV is not configured', async () => {
+    kvConfigured = false;
+    expect(await getBlacklist()).toEqual(new Set());
   });
 });
