@@ -40,7 +40,26 @@ export interface CampaignRecord {
   /** Needed to re-render the follow-up template later (lib/emailTemplate.ts's {{driveLink}}/{{senderName}}) — not used for anything at send time itself. */
   driveLink?: string;
   senderName?: string;
-  /** Set once the automatic follow-up cron (app/api/cron/auto-followup) has sent a follow-up for this campaign, so it isn't sent again on the next run. */
+  /**
+   * Addresses (lowercased) that have already received an automatic follow-up for
+   * this campaign. A campaign whose non-responded recipient count exceeds one cron
+   * run's message budget (lib/autoFollowUp.ts's computeFollowUpBudget) or the daily
+   * send cap gets worked through a batch at a time across several days'
+   * app/api/cron/auto-followup runs; this is what lets nonRespondedRecipients()
+   * skip whoever a previous partial run already reached, instead of re-sending the
+   * whole campaign. Missing on records saved before this field existed — treated
+   * as an empty list, so old records behave exactly as before.
+   */
+  followUpSent?: string[];
+  /**
+   * Set once every non-responded/non-bounced/non-blacklisted recipient in `emails`
+   * has an entry in `followUpSent` — i.e. this campaign needs no further automatic
+   * follow-up work, ever. A campaign still partway through (some, but not all,
+   * recipients in `followUpSent`) has no followUpSentAt yet, so
+   * isCampaignDueForFollowUp keeps returning it on future runs until it's finished.
+   * Records saved under the old all-or-nothing behaviour already have this set
+   * from a single unbatched send — they're left alone and stay done.
+   */
   followUpSentAt?: number;
 }
 

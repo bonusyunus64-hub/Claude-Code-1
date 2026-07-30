@@ -85,7 +85,14 @@ export interface Campaign {
   /** Needed to re-render the follow-up template later. */
   driveLink?: string;
   senderName?: string;
-  /** Set once the automatic follow-up cron has sent a follow-up for this campaign. */
+  /** Lowercased addresses that already received an automatic follow-up — lets a
+   *  campaign too large for one cron run's message budget or the daily cap be
+   *  worked through in batches across several days without re-mailing anyone.
+   *  Missing on older records; treated as an empty list. */
+  followUpSent?: string[];
+  /** Set once every recipient has an entry in `followUpSent` (or, for records from
+   *  before this field existed, from the old all-or-nothing send) — i.e. this
+   *  campaign needs no further automatic follow-up work. */
   followUpSentAt?: number;
 }
 
