@@ -34,5 +34,11 @@
     "typescript": "^5",
     "vitest": "^4.1.10",
     "xlsx": "^0.18.5"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "8.5.25",
+      "sharp": "0.35.3"
+    }
   }
 }
