@@ -6,15 +6,15 @@ import { resolveSmtpConfig, createTransport, sendMessages } from '@/lib/mailSend
 import { checkCapAllows, recordSends } from '@/lib/sendQuota';
 import {
   DEFAULT_FOLLOWUP_DAYS, isCampaignDueForFollowUp, nonRespondedRecipients, buildFollowUpMessage,
-  computeFollowUpBudget, mergeEmailList,
+  computeFollowUpBudget, mergeEmailList, MAX_CAMPAIGNS_TOUCHED_PER_RUN, followUpStopReason,
 } from '@/lib/autoFollowUp';
 import { getBlacklist } from '@/lib/unsubscribe';
 
-// Even with the per-run message budget below keeping total SMTP work bounded, this
-// still does up to MAX_CAMPAIGNS_PER_RUN campaigns' worth of Redis reads/writes and
-// account lookups in one invocation — comfortably past Vercel's 10s default, so this
-// raises the ceiling to 60s (the Hobby-plan max) the same way the interactive send
-// routes do.
+// Even with the per-run budgets below keeping total SMTP and Redis work bounded,
+// this can still do up to MAX_CAMPAIGNS_TOUCHED_PER_RUN campaigns' worth of Redis
+// reads/writes and account lookups in one invocation — comfortably past Vercel's
+// 10s default, so this raises the ceiling to 60s (the Hobby-plan max) the same way
+// the interactive send routes do.
 export const maxDuration = 60;
 
 // Vercel Cron (see vercel.json) hits this once a day. No browser session is
@@ -27,12 +27,6 @@ function isAuthorizedCronRequest(req: NextRequest): boolean {
   if (!secret) return false;
   return req.headers.get('authorization') === `Bearer ${secret}`;
 }
-
-// Bounds how many campaigns one invocation processes, so a large history can't
-// run past a serverless function's time limit. Anything left over is simply
-// picked up by tomorrow's run — followUpSentAt is only set for campaigns this
-// run actually finished.
-const MAX_CAMPAIGNS_PER_RUN = 20;
 
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCronRequest(req)) {
@@ -58,7 +52,12 @@ export async function GET(req: NextRequest) {
   const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
 
   const campaigns = await listCampaigns();
-  const due = campaigns.filter(c => isCampaignDueForFollowUp(c, cutoffMs)).slice(0, MAX_CAMPAIGNS_PER_RUN);
+  // Every campaign due today, unsliced — the response below needs the true count
+  // to report honestly, and both budgets in the loop (not a slice taken up front)
+  // are what actually keep this bounded. isCampaignDueForFollowUp only ever skips
+  // campaigns that are fully done, so nothing found due here is at risk of being
+  // silently dropped — it's either handled this run or picked up next.
+  const due = campaigns.filter(c => isCampaignDueForFollowUp(c, cutoffMs));
   const blacklist = await getBlacklist();
 
   // Total messages this invocation may send, across every campaign below — not a
@@ -66,14 +65,21 @@ export async function GET(req: NextRequest) {
   // it's what actually keeps this run's combined sendMessages() calls inside
   // maxDuration=60 regardless of how many campaigns are due today or how large any
   // one of them is.
-  let remainingBudget = computeFollowUpBudget(sendDelay);
-  const initialBudget = remainingBudget;
+  let remainingMessageBudget = computeFollowUpBudget(sendDelay);
+  const initialMessageBudget = remainingMessageBudget;
 
-  // Set once a campaign's cap check blocks even a reduced, budget-sized batch, or
-  // once the message budget itself runs out. Either way, every campaign not yet
+  // How many due campaigns this run has read from and written back to Redis so
+  // far, counted regardless of whether the campaign turned out to have anyone
+  // left to send to. Bounded by MAX_CAMPAIGNS_TOUCHED_PER_RUN — see its doc
+  // comment in lib/autoFollowUp.ts for why this needs a limit of its own, separate
+  // from the message budget above.
+  let campaignsTouched = 0;
+
+  // Set once either per-run budget is exhausted, or a campaign's cap check blocks
+  // even a reduced, budget-sized batch. Whichever it is, every campaign not yet
   // reached this run is simply picked up again by tomorrow's — see
   // isCampaignDueForFollowUp, which only skips campaigns that are fully done.
-  let stopReason: 'budget' | 'cap' | null = null;
+  let stopReason: 'messageBudget' | 'campaignBudget' | 'cap' | null = null;
 
   const results: {
     campaignId: string; trackTitle: string; sent: number;
@@ -81,7 +87,17 @@ export async function GET(req: NextRequest) {
   }[] = [];
 
   for (const campaign of due) {
+    // Pure and Redis-free, so computing it before either budget check below costs
+    // nothing — nonRespondedRecipients only touches campaign data already loaded.
     const targets = nonRespondedRecipients(campaign, blacklist);
+
+    const stop = followUpStopReason(campaignsTouched, MAX_CAMPAIGNS_TOUCHED_PER_RUN, remainingMessageBudget, targets.length > 0);
+    if (stop) {
+      stopReason = stop;
+      break;
+    }
+    campaignsTouched++;
+
     if (!targets.length) {
       // Everyone on it already replied, bounced, unsubscribed, or was already
       // followed up in an earlier (possibly partial) run — nothing left to nudge.
@@ -90,18 +106,13 @@ export async function GET(req: NextRequest) {
       continue;
     }
 
-    if (remainingBudget <= 0) {
-      stopReason = 'budget';
-      break;
-    }
-
     // Send at most what's left of this run's budget, not the full remaining
     // target list — a campaign bigger than one run's budget gets worked through
     // over several days instead of running long enough to blow past maxDuration.
-    const batchTargets = targets.slice(0, Math.min(targets.length, remainingBudget));
+    const batchTargets = targets.slice(0, Math.min(targets.length, remainingMessageBudget));
     // True exactly when the budget, not the target list itself, decided the batch
-    // size — used below to tell "stopped because the run ran out of budget" apart
-    // from "this batch simply had some permanent send failures in it".
+    // size — used below to tell "stopped because the run ran out of message
+    // budget" apart from "this batch simply had some permanent send failures in it".
     const budgetLimited = batchTargets.length < targets.length;
 
     // Checked against the batch actually about to go out, not targets.length: a
@@ -166,37 +177,47 @@ export async function GET(req: NextRequest) {
       ...(done ? {} : { remaining: stillRemaining.length }),
     });
 
-    remainingBudget -= batchTargets.length;
+    remainingMessageBudget -= batchTargets.length;
     if (budgetLimited) {
-      // The batch was capped by budget, not by the target list running out, so
-      // remainingBudget is now exactly 0 — stop here rather than looping into the
-      // next campaign (or, if this was the last one in `due`, falling out of the
-      // loop with nothing recording why it's still incomplete).
-      stopReason = 'budget';
+      // The batch was capped by the message budget, not by the target list running
+      // out, so remainingMessageBudget is now exactly 0 — stop here rather than
+      // looping into the next campaign (or, if this was the last one in `due`,
+      // falling out of the loop with nothing recording why it's still incomplete).
+      stopReason = 'messageBudget';
       break;
     }
   }
 
   const totalSent = results.reduce((sum, r) => sum + r.sent, 0);
-  // Every campaign that was due this run got touched, and every one of those is
-  // now fully done (no partial batches left waiting on budget, cap, or a
-  // permanently-failed send) — as opposed to `stopReason === null`, which only
-  // says the loop wasn't cut short by budget/cap and says nothing about campaigns
-  // left incomplete by send failures within a batch that did complete.
-  const allDueCampaignsComplete = results.length === due.length && results.every(r => r.done);
+  // How many of today's due campaigns are not fully caught up as of this run —
+  // either never reached at all (the run stopped on a budget or the send cap
+  // before getting to them), or reached but left with a partial batch (send
+  // failures, or the message budget cutting the batch short). Zero means every
+  // campaign due today is completely done; anything else is picked up again by
+  // tomorrow's run per isCampaignDueForFollowUp.
+  const outstandingCampaigns = due.length - results.filter(r => r.done).length;
 
   return NextResponse.json({
     ok: true,
-    processed: results.length,
+    // Total campaigns due today, independent of how many this run actually got
+    // to — `due` is no longer sliced up front, so this is the true daily figure
+    // rather than a number capped by an earlier campaign-count limit.
     dueThisRun: due.length,
+    // Campaigns this run actually read and wrote back to Redis, whether or not
+    // they had anyone left to send to.
+    campaignsReached: results.length,
     totalSent,
-    messageBudget: initialBudget,
-    // 'budget' = the per-run send budget ran out; 'cap' = the daily/account send
-    // cap blocked even a reduced batch; null = the loop went through every due
-    // campaign without either limit kicking in (see allDueCampaignsComplete for
-    // whether that also means nothing is left outstanding).
+    messageBudget: initialMessageBudget,
+    campaignTouchBudget: MAX_CAMPAIGNS_TOUCHED_PER_RUN,
+    // 'messageBudget' = the per-run send budget ran out; 'campaignBudget' = the
+    // per-run cap on how many due campaigns get touched at all ran out (guards
+    // Redis/bookkeeping time, not SMTP time — see MAX_CAMPAIGNS_TOUCHED_PER_RUN's
+    // doc comment in lib/autoFollowUp.ts); 'cap' = the daily/account send cap
+    // blocked even a reduced batch; null = the loop went through every due
+    // campaign without any of the three kicking in (see outstandingCampaigns for
+    // whether that also means nothing is left behind).
     stopReason,
-    allDueCampaignsComplete,
+    outstandingCampaigns,
     results,
   });
 }

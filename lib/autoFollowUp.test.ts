@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   isCampaignDueForFollowUp, nonRespondedRecipients, buildFollowUpMessage,
-  computeFollowUpBudget, mergeEmailList,
+  computeFollowUpBudget, mergeEmailList, MAX_CAMPAIGNS_TOUCHED_PER_RUN, followUpStopReason,
 } from './autoFollowUp';
 import type { CampaignRecord } from './campaigns';
 
@@ -235,5 +235,63 @@ describe('retiring permanently-rejected follow-up recipients', () => {
     // neither list and must still show up as work to do.
     const followUpSent = mergeEmailList(undefined, ['good@example.com']);
     expect(nonRespondedRecipients({ ...campaign, followUpSent })).toEqual(['dead@example.com']);
+  });
+});
+
+describe('MAX_CAMPAIGNS_TOUCHED_PER_RUN', () => {
+  it('is floor(10000ms bookkeeping window / (4 Redis calls * 150ms per call)) = 16', () => {
+    // Guards the arithmetic in lib/autoFollowUp.ts's doc comment for this constant
+    // directly, so a change to either input is a deliberate, visible edit here
+    // rather than a silent drift in the exported number.
+    expect(MAX_CAMPAIGNS_TOUCHED_PER_RUN).toBe(16);
+  });
+
+  it('leaves the two budgets summing to less than maxDuration, not exactly to it', () => {
+    // The send window (45s) and the bookkeeping window are additive, and the route
+    // also pays for its own settings/listCampaigns/getBlacklist reads plus response
+    // serialization outside both. If these ever add up to the full 60s ceiling
+    // again, the worst case has no slack left and can overrun.
+    const bookkeepingMs = MAX_CAMPAIGNS_TOUCHED_PER_RUN * 4 * 150;
+    expect(45_000 + bookkeepingMs).toBeLessThan(60_000);
+  });
+});
+
+describe('followUpStopReason', () => {
+  it('allows the loop to continue when both budgets have room', () => {
+    expect(followUpStopReason(0, 25, 30, true)).toBeNull();
+    expect(followUpStopReason(24, 25, 1, true)).toBeNull();
+  });
+
+  it('stops on campaignBudget once campaignsTouched reaches the touch budget, regardless of targets', () => {
+    expect(followUpStopReason(25, 25, 30, true)).toBe('campaignBudget');
+    expect(followUpStopReason(25, 25, 30, false)).toBe('campaignBudget');
+  });
+
+  it('stops on campaignBudget for a count past the budget too, not only exactly at it', () => {
+    expect(followUpStopReason(26, 25, 30, true)).toBe('campaignBudget');
+  });
+
+  it('does not stop just short of the campaign touch budget', () => {
+    expect(followUpStopReason(24, 25, 30, true)).toBeNull();
+  });
+
+  it('stops on messageBudget when the campaign has targets and no message budget is left', () => {
+    expect(followUpStopReason(0, 25, 0, true)).toBe('messageBudget');
+  });
+
+  it('lets a targetless campaign through even with zero message budget left', () => {
+    // A campaign with nothing left to send costs no SMTP time, so it should not be
+    // blocked by the message budget — only by the campaign touch budget above.
+    expect(followUpStopReason(0, 25, 0, false)).toBeNull();
+  });
+
+  it('does not stop on messageBudget while at least one message of budget remains', () => {
+    expect(followUpStopReason(0, 25, 1, true)).toBeNull();
+  });
+
+  it('prefers campaignBudget over messageBudget when both are simultaneously exhausted', () => {
+    // campaignsTouched is checked first because it applies unconditionally; this
+    // pins that priority so a future edit can't silently reorder the two checks.
+    expect(followUpStopReason(25, 25, 0, true)).toBe('campaignBudget');
   });
 });

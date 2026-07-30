@@ -128,3 +128,73 @@ export function mergeEmailList(existing: string[] | undefined, additions: string
   for (const email of additions) merged.add(email.toLowerCase());
   return Array.from(merged);
 }
+
+// Assumed cost of one Upstash Redis round trip from this Vercel function. Upstash
+// is reached over its REST API rather than a persistent connection, so every call
+// pays real network latency; 150ms is a generous per-call allowance even when the
+// function and the Redis region aren't colocated.
+const ASSUMED_REDIS_ROUNDTRIP_MS = 150;
+
+// Worst-case Redis round trips one touched due campaign can cost in the route
+// below: a campaign with nothing left to send only pays for the final
+// saveCampaign write that marks it done (1 call), but one with targets pays for
+// checkCapAllows, getAccount, recordSends, and saveCampaign (4 calls). Budgeting
+// for the more expensive shape keeps the total safe regardless of how the due
+// campaigns in a given run split between the two.
+const MAX_REDIS_CALLS_PER_TOUCHED_CAMPAIGN = 4;
+
+// How much of maxDuration=60s (app/api/cron/auto-followup/route.ts) this run's
+// per-campaign Redis/bookkeeping work — as opposed to the SMTP time
+// computeFollowUpBudget already bounds — is allowed to occupy.
+//
+// Deliberately NOT the whole 15s left over after SAFE_SEND_WINDOW_MS's 45s: these
+// two budgets are additive, and a run that exhausts both would then be at exactly
+// the 60s ceiling with nothing left for the settings/listCampaigns/getBlacklist
+// reads at the top of the route or for serializing the response. Taking 10s here
+// leaves ~5s of genuine slack for those, so the worst case lands under the ceiling
+// instead of exactly on it.
+const BOOKKEEPING_WINDOW_MS = 10_000;
+
+/**
+ * How many due campaigns one cron invocation may read from and write back to
+ * Redis this run — a bound on bookkeeping work, not on SMTP time. computeFollowUpBudget
+ * above already bounds every campaign that has recipients left to send to (a
+ * campaign can never consume more than its own batch's share of the message
+ * budget), so this exists purely for what that budget can't see: a campaign with
+ * zero remaining targets costs no SMTP time at all, just one saveCampaign write to
+ * mark it done. Without a separate bound, an account with a few hundred
+ * long-finished campaigns would pay a few hundred sequential Redis round trips
+ * every run before ever reaching one that still needs sending.
+ *
+ * floor(10000 / (4 * 150)) = 16.
+ */
+export const MAX_CAMPAIGNS_TOUCHED_PER_RUN = Math.floor(
+  BOOKKEEPING_WINDOW_MS / (MAX_REDIS_CALLS_PER_TOUCHED_CAMPAIGN * ASSUMED_REDIS_ROUNDTRIP_MS)
+);
+
+/**
+ * Whether the follow-up loop in the cron route has room to touch another due
+ * campaign this run, and if not, which limit is responsible. Meant to be checked
+ * once per due campaign, before any of that campaign's own Redis work runs:
+ *
+ * - `campaignTouchBudget` applies no matter what the campaign turns out to need —
+ *   even the "already done, just mark it" path costs a saveCampaign write — so
+ *   it's checked first and unconditionally.
+ * - `remainingMessageBudget` only matters once a campaign turns out to have
+ *   targets to send to, so a run that's already out of message budget can still
+ *   walk through and retire any number of already-finished campaigns behind it;
+ *   passing `campaignHasTargets: false` always clears this half of the check.
+ *
+ * Returns null when neither limit blocks moving on to (and finishing) this
+ * campaign this run.
+ */
+export function followUpStopReason(
+  campaignsTouched: number,
+  campaignTouchBudget: number,
+  remainingMessageBudget: number,
+  campaignHasTargets: boolean
+): 'campaignBudget' | 'messageBudget' | null {
+  if (campaignsTouched >= campaignTouchBudget) return 'campaignBudget';
+  if (campaignHasTargets && remainingMessageBudget <= 0) return 'messageBudget';
+  return null;
+}
