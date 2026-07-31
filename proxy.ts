@@ -5,21 +5,27 @@ import { isAuthed } from '@/lib/auth';
 // /api/unsubscribe must stay reachable by anyone who received a pitch email —
 // they have no dashboard session, and its own token (not a login) is what
 // authorizes the request. See lib/unsubscribe.ts.
-// /api/cron/auto-followup and /api/cron/drain-send-window are invoked by Vercel
-// Cron, which has no dashboard session either — each authenticates itself with a
-// CRON_SECRET bearer token instead (lib/cronAuth.ts), checked inside the route.
-const PUBLIC_API_PATHS = new Set(['/api/auth', '/api/logout', '/api/unsubscribe', '/api/cron/auto-followup', '/api/cron/drain-send-window']);
+// /api/cron/refresh-replies and /api/cron/drain-send-window are invoked by
+// Vercel Cron, which has no dashboard session either — each authenticates itself
+// with a CRON_SECRET bearer token instead (lib/cronAuth.ts), checked inside the
+// route.
+const PUBLIC_API_PATHS = new Set(['/api/auth', '/api/logout', '/api/unsubscribe', '/api/cron/refresh-replies', '/api/cron/drain-send-window']);
 
 // Deliberately NOT here: the three send routes (/api/send, /api/radio-send,
-// /api/playlist-send). Draining the send-window queue needs to run them without a
-// browser session, and the obvious way to allow that would be to let a CRON_SECRET
-// bearer token through to them. That's a bad trade: /api/send accepts an arbitrary
+// /api/playlist-send) or the manual follow-up send route. Draining the
+// send-window queue needs to run a send without a browser session, and the
+// obvious way to allow that would be to let a CRON_SECRET bearer token through to
+// the send routes directly. That's a bad trade: /api/send accepts an arbitrary
 // recipient list (customContacts) and an arbitrary message body, so a leaked cron
 // secret would be enough to send anything to anyone through the user's own
-// authenticated mailbox — a much larger blast radius than the follow-up cron's,
-// which can only re-mail people an existing campaign already reached. The drain
-// cron calls those send functions directly in-process instead
-// (lib/sendDispatch.ts), so nothing has to be opened up here at all.
+// authenticated mailbox. The drain cron calls those send functions directly
+// in-process instead (lib/sendDispatch.ts), so nothing has to be opened up here
+// at all — and this reasoning applies even more cleanly now that
+// /api/cron/refresh-replies can't send anything at all (it only refreshes reply/
+// bounce data over IMAP): the one cron route that IS public here has no send
+// capability to leak in the first place, and follow-ups are sent by the user
+// pressing a button in the dashboard (an authenticated session), never by a
+// bearer-token-authenticated cron.
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 

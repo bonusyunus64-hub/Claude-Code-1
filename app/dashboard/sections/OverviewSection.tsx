@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import type { AnalyticsStats, RateBreakdown, SubjectTestSummary } from '../types';
+import type { AnalyticsStats, Campaign, RateBreakdown, SubjectTestSummary } from '../types';
+import { campaignsNeedingFollowUp } from '../utils';
 
 function pct(rate: number): string {
   return `${Math.round(rate * 100)}%`;
@@ -116,7 +117,84 @@ function SubjectTestCard({ test }: { test: SubjectTestSummary }) {
   );
 }
 
-export function OverviewSection({ analyticsStats }: { analyticsStats: AnalyticsStats }) {
+/**
+ * "Needs follow-up" action panel — one row per Song Demos campaign that's old
+ * enough and still has recipients who haven't replied, per campaignsNeedingFollowUp
+ * (app/dashboard/utils.ts, which is also exactly what /api/send-followup targets —
+ * see that function's doc comment for why the count here can't disagree with what
+ * pressing the button actually sends). Rendered above the stat tiles below since
+ * this is something to act on, not just a number to read. Renders nothing when
+ * there's nothing due, or when reminders are turned off in Account settings
+ * (tp_auto_followup_enabled, repurposed by this feature to mean "show reminders",
+ * not "send automatically" — see AccountSection.tsx) — an empty heading would just
+ * be noise either way.
+ */
+function NeedsFollowUpPanel({
+  campaigns, followUpDays, blacklist, remindersEnabled,
+  sendFollowUp, followUpSendingId, followUpProgress, followUpError,
+}: {
+  campaigns: Campaign[];
+  followUpDays: number;
+  blacklist: string[];
+  remindersEnabled: boolean;
+  sendFollowUp: (campaign: Campaign, pendingCount: number) => void;
+  followUpSendingId: string | null;
+  followUpProgress: { campaignId: string; sent: number; total: number } | null;
+  followUpError: string;
+}) {
+  if (!remindersEnabled) return null;
+  const due = campaignsNeedingFollowUp(campaigns, followUpDays, blacklist);
+  if (due.length === 0) return null;
+
+  return (
+    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-3">
+      <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Needs follow-up</h3>
+      <div className="space-y-2">
+        {due.map(({ campaign, daysSinceSent, pendingCount, totalCount }) => {
+          const sending = followUpSendingId === campaign.id;
+          return (
+            <div key={campaign.id} className="flex items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-950/40 px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-sm text-zinc-200 truncate">
+                  <span className="font-medium">&ldquo;{campaign.trackTitle}&rdquo;</span>
+                  <span className="text-zinc-500"> · sent {daysSinceSent}d ago</span>
+                </p>
+                <p className="text-xs text-zinc-500 mt-0.5">{pendingCount} of {totalCount} haven&rsquo;t replied</p>
+              </div>
+              <button
+                onClick={() => sendFollowUp(campaign, pendingCount)}
+                disabled={followUpSendingId !== null}
+                className="shrink-0 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 px-3 py-2 text-xs font-semibold text-white transition whitespace-nowrap"
+              >
+                {sending
+                  ? `Sending… (${followUpProgress?.campaignId === campaign.id ? followUpProgress.sent : 0}/${followUpProgress?.campaignId === campaign.id ? followUpProgress.total : '?'})`
+                  : 'Send follow-up →'}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {followUpSendingId === null && followUpError && (
+        <p className="text-xs text-red-400">{followUpError}</p>
+      )}
+    </section>
+  );
+}
+
+export function OverviewSection({
+  analyticsStats, campaigns, followUpDays, blacklist, followUpRemindersEnabled,
+  sendFollowUp, followUpSendingId, followUpProgress, followUpError,
+}: {
+  analyticsStats: AnalyticsStats;
+  campaigns: Campaign[];
+  followUpDays: number;
+  blacklist: string[];
+  followUpRemindersEnabled: boolean;
+  sendFollowUp: (campaign: Campaign, pendingCount: number) => void;
+  followUpSendingId: string | null;
+  followUpProgress: { campaignId: string; sent: number; total: number } | null;
+  followUpError: string;
+}) {
   return (
     <div className="space-y-5 pb-6">
       <div>
@@ -124,6 +202,11 @@ export function OverviewSection({ analyticsStats }: { analyticsStats: AnalyticsS
         <p className="text-xs text-zinc-500">All-time stats derived from your campaign history on this device.</p>
         <RosterFreshnessNote />
       </div>
+
+      <NeedsFollowUpPanel
+        campaigns={campaigns} followUpDays={followUpDays} blacklist={blacklist} remindersEnabled={followUpRemindersEnabled}
+        sendFollowUp={sendFollowUp} followUpSendingId={followUpSendingId} followUpProgress={followUpProgress} followUpError={followUpError}
+      />
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">

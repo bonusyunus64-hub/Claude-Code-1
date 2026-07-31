@@ -15,11 +15,11 @@ function campaign(overrides: Partial<Campaign> = {}): Campaign {
   return { id: '1', trackTitle: 'Track', date: '2026-01-01T00:00:00.000Z', type: 'demos', emails: ['a@example.com'], ...overrides };
 }
 
-function renderHistory(overrides: { emailAccounts?: EmailAccount[]; customContacts?: CustomContact[]; addFailedToBlacklist?: (e: string[]) => void; refreshSendsToday?: () => void; signOffImage?: string | null } = {}) {
+function renderHistory(overrides: { emailAccounts?: EmailAccount[]; customContacts?: CustomContact[]; addFailedToBlacklist?: (e: string[]) => void; refreshSendsToday?: () => void; signOffImage?: string | null; signOff?: string; sendDelay?: number } = {}) {
   const addFailedToBlacklist = vi.fn();
   const refreshSendsToday = vi.fn();
   const hook = renderHook(() => useCampaignHistory({
-    emailAccounts: [], customContacts: [], addFailedToBlacklist, refreshSendsToday, signOffImage: null, ...overrides,
+    emailAccounts: [], customContacts: [], addFailedToBlacklist, refreshSendsToday, signOffImage: null, signOff: '', sendDelay: 0, ...overrides,
   }));
   return { ...hook, mocks: { addFailedToBlacklist, refreshSendsToday } };
 }

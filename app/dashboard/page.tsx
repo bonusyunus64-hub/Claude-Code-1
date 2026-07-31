@@ -109,7 +109,7 @@ export default function Dashboard() {
   const history = useCampaignHistory({
     emailAccounts: account.emailAccounts, customContacts,
     addFailedToBlacklist: account.addFailedToBlacklist, refreshSendsToday: account.refreshSendsToday,
-    signOffImage: account.signOffImage,
+    signOffImage: account.signOffImage, signOff: account.signOff, sendDelay: account.sendDelay,
   });
 
   const pitchedEmailMap = useMemo(() => {
@@ -618,7 +618,19 @@ export default function Dashboard() {
           <div className="max-w-4xl mx-auto px-4 py-5 md:px-8 md:py-10 space-y-5 md:space-y-6">
 
             {/* ── Overview ── */}
-            {activeSection === 'overview' && <OverviewSection analyticsStats={analyticsStats} />}
+            {activeSection === 'overview' && (
+              <OverviewSection
+                analyticsStats={analyticsStats}
+                campaigns={history.campaigns}
+                followUpDays={account.autoFollowUpDays}
+                blacklist={account.blacklist}
+                followUpRemindersEnabled={account.autoFollowUpEnabled}
+                sendFollowUp={history.sendFollowUp}
+                followUpSendingId={history.followUpSendingId}
+                followUpProgress={history.followUpProgress}
+                followUpError={history.followUpError}
+              />
+            )}
 
             {/* ── Song Demos ── */}
             {activeSection === 'demos' && (

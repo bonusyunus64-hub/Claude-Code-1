@@ -147,6 +147,14 @@ export function useAccountSettings() {
 
   const [sendDelay, setSendDelay] = useState(0);
   const [dailySendCap, setDailySendCap] = useState(0);
+  // Names (and localStorage keys, via setAutoFollowUp/setAutoFollowUpDaysValue below)
+  // are unchanged from when this drove an automatic daily cron send — that cron is
+  // gone. autoFollowUpEnabled now means "show a Needs-follow-up reminder in
+  // Overview" and autoFollowUpDays means "how many days to wait before showing
+  // one"; nothing is ever sent without a manual button press (see
+  // OverviewSection.tsx's NeedsFollowUpPanel / useCampaignHistory's sendFollowUp).
+  // Kept as-is rather than renamed since both keys are in remoteSync.ts's
+  // SYNCED_KEYS and renaming would break cross-device sync for existing users.
   const [autoFollowUpEnabled, setAutoFollowUpEnabled] = useState(false);
   const [autoFollowUpDays, setAutoFollowUpDays] = useState(5);
   const [sendsToday, setSendsToday] = useState(0);

@@ -1,5 +1,13 @@
 import type { SendResultEntry, BatchProgress, Campaign, RateBreakdown, AnalyticsStats, SubjectTestSummary } from './types';
 export { renderTemplate as renderTemplateClient, pronounFor as pronounForClient } from '@/lib/emailTemplate';
+// nonRespondedRecipients only pulls in lib/emailTemplate.ts at runtime (its other
+// imports — CampaignRecord from lib/campaigns, OutboundMessage from lib/mailSend —
+// are `import type`-only in lib/autoFollowUp.ts and get erased before bundling, so
+// the Node-only nodemailer/Redis chains those two modules pull in never actually
+// reach the client bundle). Confirmed safe by `npm run build` after this change —
+// see the header comment on lib/recipients.ts for why that check matters and tsc/
+// vitest alone wouldn't catch a regression here.
+import { nonRespondedRecipients } from '@/lib/autoFollowUp';
 
 /**
  * How many distinct messages a send with these email lists will actually produce.
@@ -285,6 +293,61 @@ export function subjectTestWinner(sentA: number, respondedA: number, sentB: numb
   const z = (respondedA / sentA - respondedB / sentB) / standardError;
   if (Math.abs(z) < SUBJECT_TEST_Z_THRESHOLD) return null;
   return z > 0 ? 'A' : 'B';
+}
+
+export interface FollowUpDue {
+  campaign: Campaign;
+  /** Whole days since the campaign was sent, floored — also what decides eligibility (see below). */
+  daysSinceSent: number;
+  /** How many recipients haven't replied yet — nonRespondedRecipients's count, i.e. exactly who a follow-up send would target. */
+  pendingCount: number;
+  /** How many were mailed in the original campaign. */
+  totalCount: number;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Song Demos campaigns overdue for a manual follow-up nudge — feeds the Overview
+ * tab's "Needs follow-up" panel. A campaign qualifies when: it's a Song Demos send
+ * (the only type with a follow-up template) with an account and drive link on
+ * record (the template renders {{driveLink}}, so without one there's nothing
+ * coherent to send); it hasn't already been marked followed-up
+ * (`followUpSentAt`); it isn't mid-send (`pendingSend`); it's old enough
+ * (`followUpDays`, compared in raw elapsed ms so the boundary is exact rather than
+ * calendar-day-rounded); and it still has at least one recipient who hasn't
+ * replied, bounced, unsubscribed (blacklisted), or already gotten a follow-up.
+ *
+ * That last check reuses nonRespondedRecipients from lib/autoFollowUp.ts — the
+ * same function the server uses to decide who a follow-up send actually reaches —
+ * so the count shown here can never disagree with what pressing "Send follow-up"
+ * would target. Sorted most-overdue first.
+ */
+export function campaignsNeedingFollowUp(
+  campaigns: Campaign[],
+  followUpDays: number,
+  blacklist: string[],
+  now: number = Date.now()
+): FollowUpDue[] {
+  const blacklistSet = new Set(blacklist.map(e => e.toLowerCase()));
+  const due: FollowUpDue[] = [];
+  for (const campaign of campaigns) {
+    if (campaign.type !== 'demos') continue;
+    if (!campaign.accountId || !campaign.driveLink) continue;
+    if (campaign.followUpSentAt) continue;
+    if (campaign.pendingSend) continue;
+    const elapsedMs = now - new Date(campaign.date).getTime();
+    if (elapsedMs < followUpDays * DAY_MS) continue;
+    const pending = nonRespondedRecipients(campaign, blacklistSet);
+    if (pending.length === 0) continue;
+    due.push({
+      campaign,
+      daysSinceSent: Math.floor(elapsedMs / DAY_MS),
+      pendingCount: pending.length,
+      totalCount: campaign.emails.length,
+    });
+  }
+  return due.sort((a, b) => b.daysSinceSent - a.daysSinceSent);
 }
 
 /**

@@ -408,13 +408,13 @@ export function AccountSection(props: AccountSectionProps) {
         )}
       </section>
 
-      {/* Automatic Follow-ups */}
+      {/* Follow-up Reminders */}
       <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Automatic Follow-ups</h2>
+            <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Follow-up Reminders</h2>
             <p className="text-xs text-zinc-500">
-              Send the Song Demos follow-up template to anyone who hasn&rsquo;t replied or bounced, N days after the original pitch. Runs once a day.
+              Show a &ldquo;Needs follow-up&rdquo; reminder on Overview for Song Demos campaigns nobody&rsquo;s replied to yet. Nothing is ever emailed automatically — each reminder has its own Send button, and it only goes out when you press it.
             </p>
           </div>
           <button
@@ -427,20 +427,23 @@ export function AccountSection(props: AccountSectionProps) {
         </div>
         {autoFollowUpEnabled && (
           <>
-            <div className="flex flex-wrap gap-1.5">
-              {FOLLOWUP_DAYS_OPTIONS.map(opt => (
-                <button key={opt.value}
-                  onClick={() => setAutoFollowUpDaysValue(opt.value)}
-                  className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${autoFollowUpDays === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
-                  {opt.label}
-                </button>
-              ))}
+            <div>
+              <label className="block text-xs text-zinc-400 mb-1.5">Wait this long before reminding</label>
+              <div className="flex flex-wrap gap-1.5">
+                {FOLLOWUP_DAYS_OPTIONS.map(opt => (
+                  <button key={opt.value}
+                    onClick={() => setAutoFollowUpDaysValue(opt.value)}
+                    className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${autoFollowUpDays === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
             </div>
             {!demosFollowUpTemplate.trim() && (
-              <p className="text-xs text-amber-500">Set a Follow-Up template in Song Demos → Email Template first, or automatic follow-ups won&rsquo;t send anything.</p>
+              <p className="text-xs text-amber-500">Set a Follow-Up template in Song Demos → Email Template first, or there&rsquo;ll be nothing to send when a reminder shows up.</p>
             )}
             <p className="text-xs text-zinc-600">
-              Only applies to Song Demos campaigns sent with an email account and drive link on record (anything sent before this feature was added won&rsquo;t be picked up). Respects both the daily send limit above and each account&rsquo;s own cap.
+              Only considers Song Demos campaigns sent with an email account and drive link on record (anything sent before this feature was added won&rsquo;t be picked up). A follow-up send still respects the daily send limit above and each account&rsquo;s own cap.
             </p>
           </>
         )}

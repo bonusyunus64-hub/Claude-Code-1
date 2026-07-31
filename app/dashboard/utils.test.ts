@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, sendInBatches, findDuplicateRecipients, messageIdsFromResults, computeAnalyticsStats, payloadForPendingSend, subjectTestWinner, countedResponders, deliveredCount } from './utils';
+import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, sendInBatches, findDuplicateRecipients, messageIdsFromResults, computeAnalyticsStats, payloadForPendingSend, subjectTestWinner, countedResponders, deliveredCount, campaignsNeedingFollowUp } from './utils';
 import type { Campaign, CampaignRecipient } from './types';
 
 describe('shuffle', () => {
@@ -318,6 +318,113 @@ describe('deliveredCount', () => {
 
   it('equals emails.length when nothing bounced', () => {
     expect(deliveredCount(campaign({ emails: ['a@x.com', 'b@x.com'] }))).toBe(2);
+  });
+});
+
+describe('campaignsNeedingFollowUp', () => {
+  const NOW = new Date('2026-07-31T12:00:00.000Z').getTime();
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const FOLLOW_UP_DAYS = 5;
+
+  /** A campaign that would otherwise fully qualify: Song Demos, has account+driveLink,
+   *  sent exactly FOLLOW_UP_DAYS ago, no followUpSentAt/pendingSend, two recipients
+   *  neither of whom has responded/bounced/already been followed up. */
+  function baseCampaign(overrides: Partial<Campaign> = {}): Campaign {
+    return {
+      id: '1', trackTitle: 'Midnight Drive', type: 'demos',
+      date: new Date(NOW - FOLLOW_UP_DAYS * DAY_MS).toISOString(),
+      accountId: 'acc1', driveLink: 'https://drive.example/track',
+      emails: ['a@x.com', 'b@x.com'],
+      ...overrides,
+    };
+  }
+
+  it('qualifies a campaign that meets every condition', () => {
+    const due = campaignsNeedingFollowUp([baseCampaign()], FOLLOW_UP_DAYS, [], NOW);
+    expect(due).toHaveLength(1);
+    expect(due[0]).toMatchObject({ daysSinceSent: FOLLOW_UP_DAYS, pendingCount: 2, totalCount: 2 });
+  });
+
+  it('excludes non-demos campaigns', () => {
+    const due = campaignsNeedingFollowUp([baseCampaign({ type: 'radio' })], FOLLOW_UP_DAYS, [], NOW);
+    expect(due).toEqual([]);
+  });
+
+  it('excludes a campaign with no accountId', () => {
+    const due = campaignsNeedingFollowUp([baseCampaign({ accountId: undefined })], FOLLOW_UP_DAYS, [], NOW);
+    expect(due).toEqual([]);
+  });
+
+  it('excludes a campaign with no driveLink', () => {
+    const due = campaignsNeedingFollowUp([baseCampaign({ driveLink: undefined })], FOLLOW_UP_DAYS, [], NOW);
+    expect(due).toEqual([]);
+  });
+
+  it('excludes a campaign already marked fully followed-up (followUpSentAt set)', () => {
+    const due = campaignsNeedingFollowUp([baseCampaign({ followUpSentAt: NOW - DAY_MS })], FOLLOW_UP_DAYS, [], NOW);
+    expect(due).toEqual([]);
+  });
+
+  it('excludes a campaign with an in-flight send (pendingSend set)', () => {
+    const due = campaignsNeedingFollowUp(
+      [baseCampaign({ pendingSend: { endpoint: '/api/send', payload: {} } })], FOLLOW_UP_DAYS, [], NOW
+    );
+    expect(due).toEqual([]);
+  });
+
+  it('excludes a campaign where everyone already replied', () => {
+    const due = campaignsNeedingFollowUp([baseCampaign({ responded: ['a@x.com', 'b@x.com'] })], FOLLOW_UP_DAYS, [], NOW);
+    expect(due).toEqual([]);
+  });
+
+  it('excludes a campaign where everyone bounced', () => {
+    const due = campaignsNeedingFollowUp([baseCampaign({ bounced: ['a@x.com', 'B@x.com'] })], FOLLOW_UP_DAYS, [], NOW);
+    expect(due).toEqual([]);
+  });
+
+  it('excludes a campaign where everyone already got a follow-up (followUpSent)', () => {
+    const due = campaignsNeedingFollowUp([baseCampaign({ followUpSent: ['a@x.com', 'b@x.com'] })], FOLLOW_UP_DAYS, [], NOW);
+    expect(due).toEqual([]);
+  });
+
+  it('excludes a campaign where every recipient is blacklisted, case-insensitively', () => {
+    const due = campaignsNeedingFollowUp([baseCampaign()], FOLLOW_UP_DAYS, ['A@X.COM', 'b@x.com'], NOW);
+    expect(due).toEqual([]);
+  });
+
+  it('still qualifies, with a reduced pendingCount, when only some recipients are excluded', () => {
+    const due = campaignsNeedingFollowUp([baseCampaign({ responded: ['a@x.com'] })], FOLLOW_UP_DAYS, [], NOW);
+    expect(due).toHaveLength(1);
+    expect(due[0]).toMatchObject({ pendingCount: 1, totalCount: 2 });
+  });
+
+  it('day-threshold boundary: qualifies at exactly followUpDays old', () => {
+    const due = campaignsNeedingFollowUp(
+      [baseCampaign({ date: new Date(NOW - FOLLOW_UP_DAYS * DAY_MS).toISOString() })], FOLLOW_UP_DAYS, [], NOW
+    );
+    expect(due).toHaveLength(1);
+  });
+
+  it('day-threshold boundary: excludes a campaign just short of followUpDays old', () => {
+    const due = campaignsNeedingFollowUp(
+      [baseCampaign({ date: new Date(NOW - FOLLOW_UP_DAYS * DAY_MS + 1).toISOString() })], FOLLOW_UP_DAYS, [], NOW
+    );
+    expect(due).toEqual([]);
+  });
+
+  it('sorts most-overdue first', () => {
+    const campaigns = [
+      baseCampaign({ id: 'recent', date: new Date(NOW - 6 * DAY_MS).toISOString() }),
+      baseCampaign({ id: 'oldest', date: new Date(NOW - 20 * DAY_MS).toISOString() }),
+      baseCampaign({ id: 'middle', date: new Date(NOW - 10 * DAY_MS).toISOString() }),
+    ];
+    const due = campaignsNeedingFollowUp(campaigns, FOLLOW_UP_DAYS, [], NOW);
+    expect(due.map(d => d.campaign.id)).toEqual(['oldest', 'middle', 'recent']);
+  });
+
+  it('defaults `now` to the current time when omitted', () => {
+    const due = campaignsNeedingFollowUp([baseCampaign()], FOLLOW_UP_DAYS, []);
+    expect(due).toHaveLength(1);
   });
 });
 

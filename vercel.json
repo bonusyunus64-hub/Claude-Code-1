@@ -3,7 +3,7 @@
   "outputDirectory": ".next",
   "framework": "nextjs",
   "crons": [
-    { "path": "/api/cron/auto-followup", "schedule": "0 14 * * *" },
+    { "path": "/api/cron/refresh-replies", "schedule": "0 14 * * *" },
     { "path": "/api/cron/drain-send-window", "schedule": "0 3 * * *" }
   ]
 }

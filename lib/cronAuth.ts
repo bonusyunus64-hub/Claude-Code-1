@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
 
 /**
- * Shared by every Vercel Cron route (app/api/cron/auto-followup,
+ * Shared by every Vercel Cron route (app/api/cron/refresh-replies,
  * app/api/cron/drain-send-window) — one implementation rather than a copy of the
  * same bearer-token comparison in each.
  *

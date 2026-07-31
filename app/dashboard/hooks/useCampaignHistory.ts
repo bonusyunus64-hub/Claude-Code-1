@@ -13,6 +13,11 @@ export interface CampaignHistoryConfig {
   /** Current signature image (Account tab) — pendingSend.payload never carries one (see
    *  payloadForPendingSend), so resumeSend injects whatever's configured now instead. */
   signOffImage: string | null;
+  /** Current sign-off text and inter-message delay (Account tab) — sendFollowUp below
+   *  reads these live, the same way resumeSend re-supplies signOffImage, since a manual
+   *  follow-up send has no pendingSend payload of its own to fall back to. */
+  signOff: string;
+  sendDelay: number;
 }
 
 // How often the send-window drain effect (further down) checks for a queued
@@ -34,7 +39,7 @@ const DRAIN_CHECK_INTERVAL_MS = 60_000;
  * through, instead of duplicating campaign state ownership.
  */
 export function useCampaignHistory(config: CampaignHistoryConfig) {
-  const { emailAccounts, customContacts, addFailedToBlacklist, refreshSendsToday, signOffImage } = config;
+  const { emailAccounts, customContacts, addFailedToBlacklist, refreshSendsToday, signOffImage, signOff, sendDelay } = config;
 
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   useEffect(() => {
@@ -293,6 +298,58 @@ export function useCampaignHistory(config: CampaignHistoryConfig) {
     }
   }
 
+  const [followUpSendingId, setFollowUpSendingId] = useState<string | null>(null);
+  const [followUpError, setFollowUpError] = useState('');
+  const [followUpProgress, setFollowUpProgress] = useState<{ campaignId: string; sent: number; total: number } | null>(null);
+
+  /**
+   * Sends this campaign's follow-up template to exactly its current non-responders
+   * (the same set app/dashboard/utils.ts's campaignsNeedingFollowUp counted to put
+   * this campaign in the Overview tab's "Needs follow-up" panel in the first
+   * place) via POST /api/send-followup, batched through sendInBatches the same
+   * way every other send flow in this app is — see that route (lib/followUpSend.ts)
+   * for why its response is shaped identically to /api/send's.
+   *
+   * Modeled on resumeSend above (progress state, error state, refreshSendsToday),
+   * but doesn't persist campaign state itself: unlike a resumed original send,
+   * /api/send-followup already writes followUpSent/messageIds/followUpSentAt to
+   * Redis server-side after every batch (that's what decides when a campaign is
+   * fully followed-up), so duplicating that bookkeeping here would just be a second,
+   * potentially racing writer. Instead this re-fetches the campaign list once the
+   * send settles, which is what makes the row disappear from the Overview panel —
+   * campaignsNeedingFollowUp is recomputed from that fresh `campaigns` state on
+   * every render, so a campaign that just became fully followed-up (or ran out of
+   * pending recipients) simply stops qualifying.
+   *
+   * This mails real people, so it confirms up front — with the exact recipient
+   * count and track name — before doing anything: a misclick on the button alone
+   * must not be enough to send.
+   */
+  async function sendFollowUp(campaign: Campaign, pendingCount: number) {
+    const confirmed = confirm(
+      `Send a follow-up to ${pendingCount} recipient${pendingCount === 1 ? '' : 's'} who haven't replied to "${campaign.trackTitle}"?`
+    );
+    if (!confirmed) return;
+    setFollowUpSendingId(campaign.id);
+    setFollowUpError('');
+    setFollowUpProgress({ campaignId: campaign.id, sent: 0, total: 0 });
+    try {
+      const payload = { campaignId: campaign.id, signOffImage: signOffImage ?? undefined, sendDelay, signOff };
+      const outcome = await sendInBatches('/api/send-followup', payload, (progress) => {
+        setFollowUpProgress({ campaignId: campaign.id, sent: progress.sent, total: progress.total });
+      });
+      if (!outcome.ok) { setFollowUpError(outcome.error); return; }
+      const res = await fetch('/api/campaigns');
+      const data = await res.json();
+      setCampaigns(data.campaigns ?? []);
+      if (outcome.results.some(r => r.success)) refreshSendsToday();
+    } catch (err) {
+      setFollowUpError(`Could not send follow-up: ${String(err)}`);
+    } finally {
+      setFollowUpSendingId(null);
+    }
+  }
+
   /**
    * A campaign a send-window queue put here (pendingSend set, nothing sent yet —
    * see useDemosFlow/usePromotionChannel's handleSend) was never actually
@@ -375,5 +432,6 @@ export function useCampaignHistory(config: CampaignHistoryConfig) {
     backfillingId, backfillRecipients, backfillError,
     resumingCampaignId, resumeSend, resumeError, resumeProgress,
     cancelQueuedSend,
+    followUpSendingId, sendFollowUp, followUpError, followUpProgress,
   };
 }
