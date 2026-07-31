@@ -1,4 +1,5 @@
 import { getRedis, isKvConfigured, STATE_KEY } from '@/lib/kv';
+import { assignSubjectVariant } from '@/lib/recipients';
 
 export const CAMPAIGNS_KEY = 'trackpitch:campaigns';
 
@@ -101,6 +102,20 @@ export interface CampaignRecord {
    * didn't run a test.
    */
   subjectVariants?: Record<string, 'A' | 'B'>;
+  /**
+   * UTC epoch ms after which a send-window-queued campaign (Account settings'
+   * Send Window, lib/sendWindow.ts) may actually start — set only when
+   * `pendingSend` represents a send that hasn't gone out at all yet (`emails`
+   * still empty). Draining it just means calling the same resumeSend machinery
+   * pendingSend already exists for (app/dashboard/hooks/useCampaignHistory.ts's
+   * drain effect, and the app/api/cron/drain-send-window backstop) once
+   * Date.now() passes this value — there's no separate queue data structure.
+   * Once the first batch actually sends, `emails` stops being empty and this
+   * field is simply ignored from then on (harmless if it lingers on the
+   * record): `pendingSend` + an empty `emails` is what distinguishes "queued,
+   * nothing sent yet" from "interrupted partway through", not this field.
+   */
+  scheduledFor?: number;
 }
 
 // Campaign history used to live as one JSON array under a single settings field,
@@ -171,4 +186,39 @@ export async function clearCampaigns(): Promise<void> {
   const raw = (await redis.hgetall<Record<string, unknown>>(CAMPAIGNS_KEY)) ?? {};
   const fields = Object.keys(raw);
   if (fields.length) await redis.hdel(CAMPAIGNS_KEY, ...fields);
+}
+
+/**
+ * Merges one round of send results into a campaign record — the server-side
+ * counterpart to app/dashboard/hooks/useCampaignHistory.ts's resumeSend, used by
+ * the send-window drain cron (app/api/cron/drain-send-window/route.ts) to persist
+ * progress after every batch the same way a browser-driven resume would. Kept as
+ * a small pure function here (rather than inlined in the route) so its shape —
+ * merging `emails`, recomputing `subjectVariants` for a running A/B test, and
+ * swapping in whatever `pendingSend` the round just produced — can be unit
+ * tested without spinning up a route handler or mocking Redis.
+ *
+ * Doesn't touch `recipients`: the cron has no roster-lookup closure to draw
+ * artist/manager names from (that only ever existed in the original browser tab
+ * that built the send), so a cron-drained campaign's recipients stay exactly as
+ * blank as resumeSend already leaves them for the same reason — "Show artists
+ * sent to" (app/api/campaign-recipients) is the existing remedy either way.
+ */
+export function mergeSendResultsIntoCampaign(
+  campaign: CampaignRecord,
+  newlySentEmails: string[],
+  newMessageIds: Record<string, string>,
+  nextPendingSend: CampaignRecord['pendingSend']
+): CampaignRecord {
+  const emails = Array.from(new Set([...campaign.emails, ...newlySentEmails]));
+  const subjectVariants = campaign.subjectB
+    ? { ...(campaign.subjectVariants ?? {}), ...Object.fromEntries(newlySentEmails.map(email => [email.toLowerCase(), assignSubjectVariant(email)])) }
+    : campaign.subjectVariants;
+  return {
+    ...campaign,
+    emails,
+    subjectVariants,
+    messageIds: { ...(campaign.messageIds ?? {}), ...newMessageIds },
+    pendingSend: nextPendingSend,
+  };
 }

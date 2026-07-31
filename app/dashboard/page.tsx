@@ -151,6 +151,7 @@ export default function Dashboard() {
     sendDelay: account.sendDelay, blacklist: account.blacklist, dailySendCap: account.dailySendCap, sendsToday: account.sendsToday,
     accountCapError: account.accountCapError, refreshSendsToday: account.refreshSendsToday, recordFailedEmails: account.recordFailedEmails,
     pitchedEmailMap, upsertCampaign: history.upsertCampaign,
+    sendWindowSettings: account.sendWindowSettings,
   });
 
   const playlists = usePromotionChannel<PlaylistCurator>({
@@ -167,6 +168,7 @@ export default function Dashboard() {
     sendDelay: account.sendDelay, blacklist: account.blacklist, dailySendCap: account.dailySendCap, sendsToday: account.sendsToday,
     accountCapError: account.accountCapError, refreshSendsToday: account.refreshSendsToday, recordFailedEmails: account.recordFailedEmails,
     pitchedEmailMap, upsertCampaign: history.upsertCampaign,
+    sendWindowSettings: account.sendWindowSettings,
   });
 
   // No twin to share an implementation with (unlike Radio/Playlists) — this is the
@@ -185,6 +187,7 @@ export default function Dashboard() {
     pitchedEmailMap,
     upsertCampaign: history.upsertCampaign, threadIdsFor: history.threadIdsFor,
     customContacts,
+    sendWindowSettings: account.sendWindowSettings,
   });
 
   useEffect(() => {
@@ -278,6 +281,26 @@ export default function Dashboard() {
 
       const savedAutoFollowUpDays = localStorage.getItem('tp_auto_followup_days');
       if (savedAutoFollowUpDays !== null) account.setAutoFollowUpDays(Number(savedAutoFollowUpDays));
+
+      const savedSendWindowEnabled = localStorage.getItem('tp_send_window_enabled');
+      if (savedSendWindowEnabled !== null) account.setSendWindowEnabled(savedSendWindowEnabled === 'true');
+
+      const savedSendWindowStartHour = localStorage.getItem('tp_send_window_start_hour');
+      if (savedSendWindowStartHour !== null) account.setSendWindowStartHour(Number(savedSendWindowStartHour));
+
+      const savedSendWindowEndHour = localStorage.getItem('tp_send_window_end_hour');
+      if (savedSendWindowEndHour !== null) account.setSendWindowEndHour(Number(savedSendWindowEndHour));
+
+      // No saved timezone yet on this device (or anywhere it's synced from) means
+      // this is the first time the Send Window has been touched — default to the
+      // browser's own zone (Intl.DateTimeFormat().resolvedOptions().timeZone)
+      // rather than making the user hunt for their own IANA zone name. This is a
+      // live default, not persisted here: it's only written to storage once the
+      // user actually saves a Send Window setting (setSendWindowTimezoneOption),
+      // same as every other tp_* field's hardcoded default in this effect.
+      const savedSendWindowTimezone = localStorage.getItem('tp_send_window_timezone');
+      if (savedSendWindowTimezone !== null) account.setSendWindowTimezone(savedSendWindowTimezone);
+      else account.setSendWindowTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone);
     } catch {}
     })();
     // account/radio/playlists/demos are plain objects rebuilt every render, so
@@ -709,7 +732,7 @@ export default function Dashboard() {
             )}
 
             {/* ── History ── */}
-            {activeSection === 'history' && <HistorySection {...history} />}
+            {activeSection === 'history' && <HistorySection {...history} sendWindowTimezone={account.sendWindowSettings.timezone} />}
 
           </div>
         </main>

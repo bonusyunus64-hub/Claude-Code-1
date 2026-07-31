@@ -42,6 +42,7 @@ const SYNCED_KEYS = [
   'tp_failed_emails', 'tp_custom_contacts',
   'tp_send_delay', 'tp_daily_cap',
   'tp_auto_followup_enabled', 'tp_auto_followup_days',
+  'tp_send_window_enabled', 'tp_send_window_start_hour', 'tp_send_window_end_hour', 'tp_send_window_timezone',
 ];
 
 export async function hydrateFromRemote(): Promise<void> {

@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { syncStorage } from '@/lib/remoteSync';
-import type { Campaign, SavedTemplate } from '../types';
+import { isWithinSendWindow, nextWindowOpenTime, type SendWindowSettings } from '@/lib/sendWindow';
+import type { Campaign, SavedTemplate, SendResultEntry } from '../types';
 import { sendInBatches, countUniqueRecipients, findDuplicateRecipients, messageIdsFromResults, checkRecipientsValidity, payloadForPendingSend } from '../utils';
 
 export type SendOutcome = { sent: number; failed: number; total: number };
@@ -55,6 +56,9 @@ export interface PromotionChannelConfig {
   recordFailedEmails: (emails: string[]) => void;
   pitchedEmailMap: Map<string, string[]>;
   upsertCampaign: (campaign: Campaign) => void;
+  /** Account settings' Send Window (lib/sendWindow.ts) — see useDemosFlow's
+   *  identical field and handleSend for how it's used. */
+  sendWindowSettings: SendWindowSettings;
 }
 
 /**
@@ -71,7 +75,7 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
     campaignType, genresEndpoint, previewEndpoint, sendEndpoint, resultsKey, secondaryFilterKey, nameVar,
     trackTitle, driveLink, senderName, template, subject, setTemplate, setSubject, signOff, signOffImage,
     selectedAccountId, sendDelay, blacklist, dailySendCap, sendsToday, accountCapError, refreshSendsToday,
-    recordFailedEmails, pitchedEmailMap, upsertCampaign,
+    recordFailedEmails, pitchedEmailMap, upsertCampaign, sendWindowSettings,
   } = config;
 
   // Genres list has no synced-settings dependency (unlike presets/template library
@@ -170,17 +174,39 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
         blacklist: blacklist.length > 0 ? blacklist : undefined,
         accountId: selectedAccountId || undefined,
       };
+
+      // Builds the campaign record for however far this send has gotten — see
+      // useDemosFlow's identical helper for why `sentEmails`/`resultsSoFar` both
+      // empty (the send-window "queue it" branch below) reuses the same shape as
+      // a normal in-progress/completed record instead of a separate one.
+      function buildCampaignRecord(sentEmails: string[], resultsSoFar: SendResultEntry[], pendingSend: Campaign['pendingSend']): Campaign {
+        return {
+          id: campaignId, trackTitle, date: campaignDate, type: campaignType,
+          emails: sentEmails, accountId: selectedAccountId, messageIds: messageIdsFromResults(resultsSoFar),
+          pendingSend, driveLink, senderName,
+        };
+      }
+
+      // Account settings' Send Window: queue instead of blocking — see
+      // useDemosFlow's handleSend for the full reasoning (same machinery, same
+      // cap/blacklist guarantee, just a simpler campaign shape here).
+      if (sendWindowSettings.enabled && !isWithinSendWindow(Date.now(), sendWindowSettings)) {
+        const scheduledFor = nextWindowOpenTime(Date.now(), sendWindowSettings);
+        upsertCampaign({
+          ...buildCampaignRecord([], [], { endpoint: sendEndpoint, payload: payloadForPendingSend(sendPayload) }),
+          scheduledFor,
+        });
+        setSendResult(null);
+        return;
+      }
+
       const outcome = await sendInBatches(sendEndpoint, sendPayload, (progress, resultsSoFar, nextOffset) => {
         setSendResult(progress);
         const sentEmails = resultsSoFar.filter(r => r.success).map(r => r.to);
-        upsertCampaign({
-          id: campaignId, trackTitle, date: campaignDate, type: campaignType,
-          emails: sentEmails, accountId: selectedAccountId, messageIds: messageIdsFromResults(resultsSoFar),
-          // Persisted without signOffImage — see payloadForPendingSend — while sendPayload
-          // itself (with the image intact) keeps driving sendInBatches above.
-          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: payloadForPendingSend(sendPayload) } : undefined,
-          driveLink, senderName,
-        });
+        // Persisted without signOffImage — see payloadForPendingSend — while sendPayload
+        // itself (with the image intact) keeps driving sendInBatches above.
+        const pendingSend = nextOffset != null ? { endpoint: sendEndpoint, payload: payloadForPendingSend(sendPayload) } : undefined;
+        upsertCampaign(buildCampaignRecord(sentEmails, resultsSoFar, pendingSend));
       });
       if (!outcome.ok) { setSendError(outcome.error); }
       else {
@@ -196,6 +222,7 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
     trackTitle, driveLink, dailySendCap, sendsToday, totalEmails, selectedAccountId, accountCapError,
     selectedGenres, selectedSecondary, secondaryFilterKey, template, subject, senderName, signOff, signOffImage,
     matchMode, sendDelay, blacklist, sendEndpoint, campaignType, upsertCampaign, recordFailedEmails, refreshSendsToday,
+    sendWindowSettings,
   ]);
 
   const savePreset = useCallback(() => {

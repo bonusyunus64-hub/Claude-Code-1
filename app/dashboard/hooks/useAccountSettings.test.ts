@@ -269,6 +269,58 @@ describe('useAccountSettings', () => {
       expect(result.current.autoFollowUpDays).toBe(10);
       expect(syncStorage.setItem).toHaveBeenCalledWith('tp_auto_followup_days', '10');
     });
+
+    it('setSendWindowEnabledOption updates state and syncs to storage', () => {
+      const { result } = renderHook(() => useAccountSettings());
+      act(() => result.current.setSendWindowEnabledOption(true));
+      expect(result.current.sendWindowEnabled).toBe(true);
+      expect(syncStorage.setItem).toHaveBeenCalledWith('tp_send_window_enabled', 'true');
+    });
+
+    it('setSendWindowStartHourOption/setSendWindowEndHourOption update state and sync to storage', () => {
+      const { result } = renderHook(() => useAccountSettings());
+      act(() => result.current.setSendWindowStartHourOption(22));
+      act(() => result.current.setSendWindowEndHourOption(6));
+      expect(result.current.sendWindowStartHour).toBe(22);
+      expect(result.current.sendWindowEndHour).toBe(6);
+      expect(syncStorage.setItem).toHaveBeenCalledWith('tp_send_window_start_hour', '22');
+      expect(syncStorage.setItem).toHaveBeenCalledWith('tp_send_window_end_hour', '6');
+    });
+
+    it('setSendWindowTimezoneOption updates state and syncs to storage', () => {
+      const { result } = renderHook(() => useAccountSettings());
+      act(() => result.current.setSendWindowTimezoneOption('Europe/Istanbul'));
+      expect(result.current.sendWindowTimezone).toBe('Europe/Istanbul');
+      expect(syncStorage.setItem).toHaveBeenCalledWith('tp_send_window_timezone', 'Europe/Istanbul');
+    });
+  });
+
+  describe('sendWindowSettings', () => {
+    it('reflects the current enabled/hours/timezone state', () => {
+      const { result } = renderHook(() => useAccountSettings());
+      act(() => {
+        result.current.setSendWindowEnabledOption(true);
+        result.current.setSendWindowStartHourOption(9);
+        result.current.setSendWindowEndHourOption(17);
+        result.current.setSendWindowTimezoneOption('Asia/Kolkata');
+      });
+      expect(result.current.sendWindowSettings).toEqual({
+        enabled: true, startHour: 9, endHour: 17, timezone: 'Asia/Kolkata',
+      });
+    });
+
+    it('falls back to the browser\'s own timezone when none has been set yet, rather than an empty string', () => {
+      const { result } = renderHook(() => useAccountSettings());
+      expect(result.current.sendWindowTimezone).toBe('');
+      expect(result.current.sendWindowSettings.timezone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    });
+
+    it('keeps the same object identity across re-renders when nothing it depends on changed', () => {
+      const { result, rerender } = renderHook(() => useAccountSettings());
+      const first = result.current.sendWindowSettings;
+      rerender();
+      expect(result.current.sendWindowSettings).toBe(first);
+    });
   });
 
   describe('refreshSendsToday', () => {

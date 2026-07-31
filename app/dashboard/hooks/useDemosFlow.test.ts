@@ -40,6 +40,10 @@ function useHarness(overrides: Partial<DemosFlowConfig> & { upsertCampaign: (c: 
     pitchedEmailMap: new Map(),
     threadIdsFor: () => ({}),
     customContacts: [],
+    // Disabled by default so existing tests exercise the same immediate-send
+    // behavior as before this feature existed — see the 'send window' describe
+    // block below for tests that turn it on.
+    sendWindowSettings: { enabled: false, startHour: 9, endHour: 17, timezone: 'UTC' },
     ...overrides,
   };
   return useDemosFlow(config);
@@ -457,6 +461,90 @@ describe('useDemosFlow', () => {
       act(() => result.current.deleteFollowUpTemplateFromLibrary(result.current.followUpTemplateLibrary[0].id));
       expect(result.current.demosTemplateLibrary).toEqual([]);
       expect(result.current.followUpTemplateLibrary).toEqual([]);
+    });
+  });
+
+  describe('send window', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it('queues instead of sending when "now" falls outside the window, and never touches the send endpoint', async () => {
+      vi.setSystemTime(Date.UTC(2026, 0, 1, 3, 0, 0)); // 3am UTC, outside a 9-17 window
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const upsertCampaign = vi.fn();
+      const sendWindowSettings = { enabled: true, startHour: 9, endHour: 17, timezone: 'UTC' };
+      const { result } = renderDemos({ upsertCampaign, sendWindowSettings });
+      await act(async () => { await result.current.handlePreview(); });
+
+      const sendFetch = vi.fn();
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      expect(sendFetch).not.toHaveBeenCalled();
+      expect(upsertCampaign).toHaveBeenCalledTimes(1);
+      const queued = upsertCampaign.mock.calls[0][0] as Campaign;
+      expect(queued.emails).toEqual([]);
+      expect(queued.pendingSend).toBeDefined();
+      expect(queued.pendingSend?.endpoint).toBe('/api/send');
+      expect(queued.scheduledFor).toBe(Date.UTC(2026, 0, 1, 9, 0, 0));
+      expect(result.current.sending).toBe(false); // the button isn't left stuck mid-send
+    });
+
+    it('sends immediately when "now" already falls inside the window', async () => {
+      vi.setSystemTime(Date.UTC(2026, 0, 1, 12, 0, 0)); // noon UTC, inside a 9-17 window
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const upsertCampaign = vi.fn();
+      const sendWindowSettings = { enabled: true, startHour: 9, endHour: 17, timezone: 'UTC' };
+      const { result } = renderDemos({ upsertCampaign, sendWindowSettings });
+      await act(async () => { await result.current.handlePreview(); });
+
+      const sendFetch = vi.fn(async () => ({
+        ok: true, json: async () => ({ results: [{ to: 'sam@example.com', success: true }], total: 1, nextOffset: null }),
+      }));
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      expect(sendFetch).toHaveBeenCalled();
+      const sent = upsertCampaign.mock.calls[0][0] as Campaign;
+      expect(sent.emails).toEqual(['sam@example.com']);
+      expect(sent.scheduledFor).toBeUndefined();
+    });
+
+    it('preserves the subject A/B test snapshot on a queued campaign so a later resume keeps testing the same two subjects', async () => {
+      vi.setSystemTime(Date.UTC(2026, 0, 1, 3, 0, 0));
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const upsertCampaign = vi.fn();
+      const sendWindowSettings = { enabled: true, startHour: 9, endHour: 17, timezone: 'UTC' };
+      const { result } = renderDemos({ upsertCampaign, sendWindowSettings });
+      act(() => result.current.setSubjectTestEnabled(true));
+      act(() => result.current.setDemosSubjectB('Alternate subject'));
+      await act(async () => { await result.current.handlePreview(); });
+
+      vi.stubGlobal('fetch', vi.fn());
+      await act(async () => { await result.current.handleSend(); });
+
+      const queued = upsertCampaign.mock.calls[0][0] as Campaign;
+      expect(queued.subjectA).toBe(result.current.demosSubject);
+      expect(queued.subjectB).toBe('Alternate subject');
+      // Nothing has been sent yet, so there's nobody to have assigned a variant to.
+      expect(queued.subjectVariants).toEqual({});
+    });
+
+    it('does not queue when the feature is switched off, even outside conventional hours', async () => {
+      vi.setSystemTime(Date.UTC(2026, 0, 1, 3, 0, 0));
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const upsertCampaign = vi.fn();
+      const sendWindowSettings = { enabled: false, startHour: 9, endHour: 17, timezone: 'UTC' };
+      const { result } = renderDemos({ upsertCampaign, sendWindowSettings });
+      await act(async () => { await result.current.handlePreview(); });
+
+      const sendFetch = vi.fn(async () => ({
+        ok: true, json: async () => ({ results: [{ to: 'sam@example.com', success: true }], total: 1, nextOffset: null }),
+      }));
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      expect(sendFetch).toHaveBeenCalled();
     });
   });
 });

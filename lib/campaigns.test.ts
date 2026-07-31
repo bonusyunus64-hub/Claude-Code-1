@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { CampaignRecord } from './campaigns';
+import { assignSubjectVariant } from './recipients';
 
 const store = new Map<string, Record<string, string>>();
 
@@ -94,5 +95,52 @@ describe('campaigns store', () => {
     kvConfigured = false;
     const { listCampaigns } = await freshCampaignsModule();
     expect(await listCampaigns()).toEqual([]);
+  });
+});
+
+describe('mergeSendResultsIntoCampaign', () => {
+  it('folds newly-sent addresses into a still-empty campaign (the send-window-queued case)', async () => {
+    const { mergeSendResultsIntoCampaign } = await freshCampaignsModule();
+    const queued = sample('1', { emails: [], pendingSend: { endpoint: '/api/send', payload: {} }, scheduledFor: 123 });
+    const merged = mergeSendResultsIntoCampaign(queued, ['a@example.com'], { 'a@example.com': '<m1>' }, undefined);
+    expect(merged.emails).toEqual(['a@example.com']);
+    expect(merged.messageIds).toEqual({ 'a@example.com': '<m1>' });
+    expect(merged.pendingSend).toBeUndefined();
+  });
+
+  it('keeps pendingSend when more work remains', async () => {
+    const { mergeSendResultsIntoCampaign } = await freshCampaignsModule();
+    const pending = { endpoint: '/api/send', payload: { trackTitle: 'Track' } };
+    const queued = sample('1', { emails: [], pendingSend: pending });
+    const merged = mergeSendResultsIntoCampaign(queued, ['a@example.com'], {}, pending);
+    expect(merged.pendingSend).toEqual(pending);
+  });
+
+  it('deduplicates addresses already recorded as sent', async () => {
+    const { mergeSendResultsIntoCampaign } = await freshCampaignsModule();
+    const existing = sample('1', { emails: ['a@example.com'] });
+    const merged = mergeSendResultsIntoCampaign(existing, ['a@example.com', 'b@example.com'], {}, undefined);
+    expect(merged.emails.sort()).toEqual(['a@example.com', 'b@example.com']);
+  });
+
+  it('merges newly-sent addresses into subjectVariants when a subject test is running, without recomputing existing ones', async () => {
+    const { mergeSendResultsIntoCampaign } = await freshCampaignsModule();
+    const existing = sample('1', {
+      emails: ['a@example.com'],
+      subjectA: 'A', subjectB: 'B',
+      subjectVariants: { 'a@example.com': assignSubjectVariant('a@example.com') },
+    });
+    const merged = mergeSendResultsIntoCampaign(existing, ['b@example.com'], {}, undefined);
+    expect(merged.subjectVariants).toEqual({
+      'a@example.com': assignSubjectVariant('a@example.com'),
+      'b@example.com': assignSubjectVariant('b@example.com'),
+    });
+  });
+
+  it('leaves subjectVariants untouched (undefined) for a campaign that never ran a subject test', async () => {
+    const { mergeSendResultsIntoCampaign } = await freshCampaignsModule();
+    const existing = sample('1', { emails: [] });
+    const merged = mergeSendResultsIntoCampaign(existing, ['a@example.com'], {}, undefined);
+    expect(merged.subjectVariants).toBeUndefined();
   });
 });

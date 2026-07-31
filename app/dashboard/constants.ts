@@ -83,3 +83,21 @@ export const FOLLOWUP_DAYS_OPTIONS = [
 export const BLANK_ACCOUNT: NewAccountForm = {
   name: '', email: '', smtpHost: 'smtp.zoho.com', smtpPort: '465', smtpUser: '', smtpPass: '', dailyCap: 0,
 };
+
+// Send Window defaults — a fairly conservative "normal business hours" range so
+// a user who just flips the toggle on gets something sensible immediately,
+// rather than an unset 0-0 (which lib/sendWindow.ts treats as "no restriction",
+// silently defeating the whole point of turning the feature on).
+export const DEFAULT_SEND_WINDOW_START_HOUR = 9;
+export const DEFAULT_SEND_WINDOW_END_HOUR = 21;
+
+// Hour-of-day picker options for the Send Window start/end selects, labeled in
+// plain 12-hour time. Built from a fixed UTC reference date/time rather than
+// whatever `new Date()` the browser happens to construct, so the label is the
+// same regardless of the machine's own timezone or the time of day this module
+// happens to load — only the *hour number* (0-23) is what actually gets stored
+// and compared (see lib/sendWindow.ts), this is display text only.
+export const SEND_WINDOW_HOUR_OPTIONS = Array.from({ length: 24 }, (_, hour) => ({
+  value: hour,
+  label: new Date(Date.UTC(2000, 0, 1, hour)).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'UTC' }),
+}));

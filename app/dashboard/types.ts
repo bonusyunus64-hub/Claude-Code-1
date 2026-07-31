@@ -113,6 +113,11 @@ export interface Campaign {
    *  so analytics can attribute a reply back to the subject that earned it.
    *  Only populated alongside subjectA/subjectB. */
   subjectVariants?: Record<string, 'A' | 'B'>;
+  /** UTC epoch ms after which a send-window-queued campaign may actually start —
+   *  set only alongside a `pendingSend` that hasn't sent anything yet (`emails`
+   *  still empty). See lib/campaigns.ts's CampaignRecord.scheduledFor for the
+   *  full reasoning; this mirrors it for the client-side shape. */
+  scheduledFor?: number;
 }
 
 /**

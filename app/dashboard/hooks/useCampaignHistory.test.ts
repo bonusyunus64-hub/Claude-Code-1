@@ -396,4 +396,105 @@ describe('useCampaignHistory', () => {
       expect(result.current.campaigns[0].subjectVariants).toBeUndefined();
     });
   });
+
+  describe('send-window queue draining', () => {
+    it('drains a queued campaign the instant it loads, when its scheduledFor has already passed', async () => {
+      const queued = campaign({
+        id: 'q1', emails: [], scheduledFor: Date.now() - 1000,
+        pendingSend: { endpoint: '/api/send', payload: {} },
+      });
+      // One mock handles both the initial campaigns load and the drain's own
+      // send request — the drain effect fires the instant `campaigns` state
+      // updates (i.e. as soon as the load resolves), which is too fast to swap
+      // in a second mock afterwards without racing it.
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url === '/api/campaigns') return { json: async () => ({ campaigns: [queued] }) };
+        if (url === '/api/send') return { ok: true, json: async () => ({ results: [{ to: 'b@example.com', success: true }], total: 1, nextOffset: null }) };
+        throw new Error(`unexpected fetch: ${url}`);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const { result } = renderHistory();
+
+      await waitFor(() => expect(result.current.campaigns[0]?.emails).toEqual(['b@example.com']));
+      // Drained via the same resumeSend machinery an interrupted send uses —
+      // pendingSend is cleared the same way once nothing's left to send.
+      expect(result.current.campaigns[0].pendingSend).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledWith('/api/send', expect.anything());
+    });
+
+    it('does not drain a queued campaign whose scheduledFor is still in the future', async () => {
+      const queued = campaign({
+        id: 'q1', emails: [], scheduledFor: Date.now() + 60 * 60 * 1000,
+        pendingSend: { endpoint: '/api/send', payload: {} },
+      });
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ campaigns: [queued] }) })));
+      const { result } = renderHistory();
+      await waitFor(() => expect(result.current.campaigns).toHaveLength(1));
+
+      const sendFetch = vi.fn();
+      vi.stubGlobal('fetch', sendFetch);
+      // Give any (incorrect) immediate drain a chance to fire before asserting it didn't.
+      await act(async () => { await Promise.resolve(); });
+      expect(sendFetch).not.toHaveBeenCalled();
+    });
+
+    it('does not auto-drain an interrupted (already partially sent) campaign — only "resume" applies to those', async () => {
+      const interrupted = campaign({
+        id: 'q1', emails: ['a@example.com'], scheduledFor: Date.now() - 1000,
+        pendingSend: { endpoint: '/api/send', payload: {} },
+      });
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ campaigns: [interrupted] }) })));
+      const { result } = renderHistory();
+      await waitFor(() => expect(result.current.campaigns).toHaveLength(1));
+
+      const sendFetch = vi.fn();
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await Promise.resolve(); });
+      expect(sendFetch).not.toHaveBeenCalled();
+    });
+
+    it('eventually picks up a still-future queued campaign once the periodic check catches up to its scheduledFor', async () => {
+      vi.useFakeTimers();
+      try {
+        const queued = campaign({
+          id: 'q1', emails: [], scheduledFor: Date.now() + 30_000,
+          pendingSend: { endpoint: '/api/send', payload: {} },
+        });
+        vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ campaigns: [queued] }) })));
+        const { result } = renderHistory();
+        // Flushes the initial campaigns fetch and its immediate (finds-nothing-due-yet) drain check.
+        await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+        expect(result.current.campaigns).toHaveLength(1);
+
+        const sendFetch = vi.fn(async () => ({
+          ok: true, json: async () => ({ results: [{ to: 'b@example.com', success: true }], total: 1, nextOffset: null }),
+        }));
+        vi.stubGlobal('fetch', sendFetch);
+
+        await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+        expect(sendFetch).toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('cancelQueuedSend', () => {
+    it('removes a queued campaign locally and tells the server to delete it outright', async () => {
+      const queued = campaign({
+        id: 'q1', emails: [], scheduledFor: Date.now() + 60 * 60 * 1000,
+        pendingSend: { endpoint: '/api/send', payload: {} },
+      });
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ campaigns: [queued] }) })));
+      const { result } = renderHistory();
+      await waitFor(() => expect(result.current.campaigns).toHaveLength(1));
+
+      const deleteFetch = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
+      vi.stubGlobal('fetch', deleteFetch);
+      act(() => result.current.cancelQueuedSend(queued));
+
+      expect(result.current.campaigns).toEqual([]);
+      expect(deleteFetch).toHaveBeenCalledWith('/api/campaigns?id=q1', expect.objectContaining({ method: 'DELETE' }));
+    });
+  });
 });

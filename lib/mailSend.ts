@@ -5,7 +5,11 @@ import type { OutboundMessage } from '@/lib/recipients';
 
 // Same fallback used by /api/test-email — the real deployed URL when NEXT_PUBLIC_BASE_URL
 // isn't set, so unsubscribe links in outbound mail are never accidentally localhost.
-const SITE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://music-distribution-website.vercel.app';
+// Exported so app/api/cron/drain-send-window/route.ts can resolve the same base URL
+// to call this deployment's own /api/send, /api/radio-send, /api/playlist-send —
+// one definition of "where this app is deployed" rather than a third copy of the
+// same fallback string.
+export const SITE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://music-distribution-website.vercel.app';
 
 export interface FromAccount {
   name: string;

@@ -3,7 +3,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { syncStorage } from '@/lib/remoteSync';
 import { assignSubjectVariant } from '@/lib/recipients';
-import type { Artist, Campaign, CampaignRecipient, CustomContact, DemosFilterPreset, SavedTemplate } from '../types';
+import { isWithinSendWindow, nextWindowOpenTime, type SendWindowSettings } from '@/lib/sendWindow';
+import type { Artist, Campaign, CampaignRecipient, CustomContact, DemosFilterPreset, SavedTemplate, SendResultEntry } from '../types';
 import { sendInBatches, countUniqueRecipients, findDuplicateRecipients, messageIdsFromResults, checkRecipientsValidity, shuffle, payloadForPendingSend } from '../utils';
 
 export type SortOrder = 'followers-desc' | 'followers-asc' | 'alpha-asc' | 'alpha-desc' | 'random';
@@ -43,6 +44,10 @@ export interface DemosFlowConfig {
   /** Read-only: custom contacts are managed by the parent (also read by
    *  useCampaignHistory's backfillRecipients), not owned by this hook. */
   customContacts: CustomContact[];
+  /** Account settings' Send Window (lib/sendWindow.ts) — when enabled and "now"
+   *  falls outside it, handleSend queues the campaign instead of sending
+   *  immediately; see handleSend's own comment for how. */
+  sendWindowSettings: SendWindowSettings;
 }
 
 /**
@@ -65,7 +70,7 @@ export function useDemosFlow(config: DemosFlowConfig) {
     demosFollowUpTemplate, demosFollowUpSubject, setDemosFollowUpTemplate, setDemosFollowUpSubject,
     signOff, signOffImage, selectedAccountId, sendDelay, blacklist, dailySendCap, sendsToday,
     accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap, upsertCampaign, threadIdsFor,
-    customContacts,
+    customContacts, sendWindowSettings,
   } = config;
 
   const [allGenres, setAllGenres] = useState<string[]>([]);
@@ -244,25 +249,23 @@ export function useDemosFlow(config: DemosFlowConfig) {
         threadIds: useFollowUp ? threadIdsFor('demos', trackTitle) : undefined,
       };
 
-      const outcome = await sendInBatches(sendEndpoint, sendPayload, (progress, resultsSoFar, nextOffset) => {
-        setSendResult(progress);
-        // Persisted as each batch lands: closing the tab mid-send loses at most the
-        // in-flight batch, not the whole campaign record. pendingSend carries enough
-        // to resume the remaining recipients later instead of restarting from scratch.
-        const sentEmails = resultsSoFar.filter(r => r.success).map(r => r.to);
+      // Builds the campaign record for however far this send has gotten.
+      // `sentEmails`/`resultsSoFar` both empty is the "queued, nothing sent yet"
+      // shape (see the send-window check below) — everything else about the
+      // record is identical to a normal in-progress/completed one, so this one
+      // function covers both instead of duplicating the shape between them.
+      function buildCampaignRecord(sentEmails: string[], resultsSoFar: SendResultEntry[], pendingSend: Campaign['pendingSend']): Campaign {
         const recipients: CampaignRecipient[] = sentEmails.map(email => ({
           email,
           ...(artistByEmail.get(email.toLowerCase()) ?? {
             artistName: '', managerName: '', avatarUrl: '', genres: [], instagramHandle: '', spotifyFollowers: 0,
           }),
         }));
-        upsertCampaign({
+        return {
           id: campaignId, trackTitle, date: campaignDate, type: 'demos',
           emails: sentEmails, accountId: selectedAccountId, recipients,
           messageIds: messageIdsFromResults(resultsSoFar),
-          // Persisted without signOffImage — see payloadForPendingSend — while sendPayload
-          // itself (with the image intact) keeps driving sendInBatches above.
-          pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: payloadForPendingSend(sendPayload) } : undefined,
+          pendingSend,
           driveLink, senderName,
           // Snapshot of the follow-up template/subject as currently configured —
           // see lib/campaigns.ts's doc comment on these fields for why the cron
@@ -279,7 +282,39 @@ export function useDemosFlow(config: DemosFlowConfig) {
             subjectB: demosSubjectB,
             subjectVariants: Object.fromEntries(sentEmails.map(email => [email.toLowerCase(), assignSubjectVariant(email)])),
           } : {}),
+        };
+      }
+
+      // Account settings' Send Window: a send started outside the chosen hours
+      // isn't blocked, it's queued — reusing the exact same pendingSend/resumeSend
+      // machinery an interrupted send already relies on (app/dashboard/hooks/
+      // useCampaignHistory.ts's resumeSend), since a campaign that hasn't sent
+      // anything yet (emails: []) resumes from scratch exactly the same way a
+      // partially-sent one resumes from where it left off. Nothing has gone out
+      // yet, so the daily cap / Do Not Contact list haven't been touched either —
+      // both are re-checked server-side (checkCapAllows, getBlacklist) the moment
+      // this actually sends, whether that's the drain effect, the cron backstop,
+      // or the user hitting "Send now" in History.
+      if (sendWindowSettings.enabled && !isWithinSendWindow(Date.now(), sendWindowSettings)) {
+        const scheduledFor = nextWindowOpenTime(Date.now(), sendWindowSettings);
+        upsertCampaign({
+          ...buildCampaignRecord([], [], { endpoint: sendEndpoint, payload: payloadForPendingSend(sendPayload) }),
+          scheduledFor,
         });
+        setSendResult(null);
+        return;
+      }
+
+      const outcome = await sendInBatches(sendEndpoint, sendPayload, (progress, resultsSoFar, nextOffset) => {
+        setSendResult(progress);
+        // Persisted as each batch lands: closing the tab mid-send loses at most the
+        // in-flight batch, not the whole campaign record. pendingSend carries enough
+        // to resume the remaining recipients later instead of restarting from scratch.
+        const sentEmails = resultsSoFar.filter(r => r.success).map(r => r.to);
+        // Persisted without signOffImage — see payloadForPendingSend — while sendPayload
+        // itself (with the image intact) keeps driving sendInBatches above.
+        const pendingSend = nextOffset != null ? { endpoint: sendEndpoint, payload: payloadForPendingSend(sendPayload) } : undefined;
+        upsertCampaign(buildCampaignRecord(sentEmails, resultsSoFar, pendingSend));
       });
       if (!outcome.ok) { setSendError(outcome.error); }
       else {

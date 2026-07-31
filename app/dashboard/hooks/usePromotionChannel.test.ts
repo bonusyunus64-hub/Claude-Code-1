@@ -35,6 +35,10 @@ function useHarness(overrides: Partial<PromotionChannelConfig> & { upsertCampaig
     refreshSendsToday: () => {},
     recordFailedEmails: () => {},
     pitchedEmailMap: new Map(),
+    // Disabled by default so existing tests exercise the same immediate-send
+    // behavior as before this feature existed — see the 'send window' describe
+    // block below for tests that turn it on.
+    sendWindowSettings: { enabled: false, startHour: 9, endHour: 17, timezone: 'UTC' },
     ...overrides,
   };
   return usePromotionChannel<TestTarget>(config);
@@ -226,6 +230,49 @@ describe('usePromotionChannel', () => {
       vi.stubGlobal('fetch', sendFetch);
       await act(async () => { await result.current.handleSend(); });
       expect(sendFetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('send window', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it('queues instead of sending when "now" falls outside the window, and never touches the send endpoint', async () => {
+      vi.setSystemTime(Date.UTC(2026, 0, 1, 3, 0, 0)); // 3am UTC, outside a 9-17 window
+      const previewFetch = vi.fn(async () => ({ json: async () => ({ stations: [{ name: 'S', emails: ['a@x.com'] }] }) }));
+      vi.stubGlobal('fetch', previewFetch);
+      const upsertCampaign = vi.fn();
+      const sendWindowSettings = { enabled: true, startHour: 9, endHour: 17, timezone: 'UTC' };
+      const { result } = renderChannel({ upsertCampaign, sendWindowSettings });
+      await act(async () => { await result.current.handlePreview(); });
+
+      const sendFetch = vi.fn();
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      expect(sendFetch).not.toHaveBeenCalled();
+      const queued = upsertCampaign.mock.calls[0][0] as Campaign;
+      expect(queued.emails).toEqual([]);
+      expect(queued.pendingSend).toBeDefined();
+      expect(queued.scheduledFor).toBe(Date.UTC(2026, 0, 1, 9, 0, 0));
+      expect(result.current.sending).toBe(false);
+    });
+
+    it('sends immediately when "now" already falls inside the window', async () => {
+      vi.setSystemTime(Date.UTC(2026, 0, 1, 12, 0, 0)); // noon UTC, inside a 9-17 window
+      const previewFetch = vi.fn(async () => ({ json: async () => ({ stations: [{ name: 'S', emails: ['a@x.com'] }] }) }));
+      vi.stubGlobal('fetch', previewFetch);
+      const sendWindowSettings = { enabled: true, startHour: 9, endHour: 17, timezone: 'UTC' };
+      const { result } = renderChannel({ sendWindowSettings });
+      await act(async () => { await result.current.handlePreview(); });
+
+      const sendFetch = vi.fn(async () => ({
+        ok: true, json: async () => ({ results: [{ to: 'a@x.com', success: true }], total: 1, nextOffset: null }),
+      }));
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      expect(sendFetch).toHaveBeenCalled();
     });
   });
 

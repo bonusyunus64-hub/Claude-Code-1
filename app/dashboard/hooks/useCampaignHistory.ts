@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { sendInBatches, downloadCsv, messageIdsFromResults, payloadForPendingSend } from '../utils';
 import { assignSubjectVariant } from '@/lib/recipients';
 import type { Campaign, CampaignRecipient, EmailAccount, CustomContact, ReplyClassification } from '../types';
@@ -14,6 +14,15 @@ export interface CampaignHistoryConfig {
    *  payloadForPendingSend), so resumeSend injects whatever's configured now instead. */
   signOffImage: string | null;
 }
+
+// How often the send-window drain effect (further down) checks for a queued
+// campaign whose scheduledFor has arrived. A plain interval rather than
+// scheduling a precise setTimeout for the next known scheduledFor: settings can
+// change, new campaigns can get queued, and the tab can be backgrounded/resumed
+// at any time, all of which would need to reschedule a single timeout anyway —
+// polling once a minute is simpler and more than frequent enough for a feature
+// whose whole premise is hour-granularity scheduling, not second-granularity.
+const DRAIN_CHECK_INTERVAL_MS = 60_000;
 
 /**
  * Everything campaign-history-related: the campaigns themselves (fetched once on
@@ -284,6 +293,78 @@ export function useCampaignHistory(config: CampaignHistoryConfig) {
     }
   }
 
+  /**
+   * A campaign a send-window queue put here (pendingSend set, nothing sent yet —
+   * see useDemosFlow/usePromotionChannel's handleSend) was never actually
+   * started; cancelling it just deletes the record outright rather than leaving
+   * an empty "0 recipients" entry sitting in history forever. Distinct from an
+   * *interrupted* send (pendingSend set, but emails.length > 0): those already
+   * represent real progress, so there's deliberately no "cancel" for them —
+   * only "resume".
+   */
+  function cancelQueuedSend(c: Campaign) {
+    setCampaigns(prev => prev.filter(x => x.id !== c.id));
+    fetch(`/api/campaigns?id=${encodeURIComponent(c.id)}`, { method: 'DELETE' }).catch(() => {});
+  }
+
+  // --- Send-window queue draining ---
+  //
+  // A campaign queued by handleSend (pendingSend set, emails still empty,
+  // scheduledFor in the future) has never actually sent anything — it's just
+  // waiting for its send window to open. Rather than a second queue/poller
+  // mechanism, this drains it by calling resumeSend itself: a campaign with no
+  // emails sent yet resumes cleanly from scratch (its exclusion set is empty),
+  // exactly like any interrupted send. The two effects below only ever decide
+  // *when* to make that call.
+  //
+  // app/api/cron/drain-send-window is the backstop for when the dashboard isn't
+  // open at all; see that route's own doc comment for why Vercel's Hobby plan
+  // means it can only run once a day rather than build the real guarantee these
+  // effects give while the tab is open — see README/AGENTS.md's note that this
+  // is a single-tenant, one-operator tool, so there's no other browser tab that
+  // could also be racing this one to drain the same queue.
+  //
+  // `resumeSend` is a fresh closure every render (it closes over `signOffImage`
+  // etc.), and `campaigns` changes on every batch of every active send — refs
+  // keep the periodic interval effect below from needing to depend on either
+  // directly, which would mean tearing the interval down and rebuilding it far
+  // more often than its own DRAIN_CHECK_INTERVAL_MS actually calls for (worst
+  // case, never letting it reach a full interval before being reset again).
+  // Reading through a ref rather than a setState-updater callback also keeps
+  // this side-effecting (it can call resumeSend) instead of needing to be a
+  // pure state transition, which a setCampaigns updater is required to be —
+  // React may invoke one more than once (e.g. Strict Mode) to check for that.
+  const campaignsRef = useRef(campaigns);
+  useEffect(() => { campaignsRef.current = campaigns; }, [campaigns]);
+  const resumingCampaignIdRef = useRef(resumingCampaignId);
+  useEffect(() => { resumingCampaignIdRef.current = resumingCampaignId; }, [resumingCampaignId]);
+  const resumeSendRef = useRef(resumeSend);
+  useEffect(() => { resumeSendRef.current = resumeSend; });
+
+  // `drainDueSends` itself stays a stable useCallback (empty deps, reads
+  // everything through the refs above) so both effects below can safely list
+  // it as a dependency without either one re-running more often than its own
+  // trigger actually changed.
+  const drainDueSends = useCallback(() => {
+    if (resumingCampaignIdRef.current) return; // one resume in flight at a time — resumeSend isn't reentrant-safe
+    const due = campaignsRef.current.find(c => c.pendingSend && c.emails.length === 0 && c.scheduledFor != null && c.scheduledFor <= Date.now());
+    if (due) resumeSendRef.current(due);
+  }, []);
+
+  // Checks the instant campaigns load or change (a fresh campaign just got
+  // queued, an earlier resume just finished) rather than waiting for the next
+  // periodic tick below — so a campaign that's already due doesn't sit around
+  // for up to DRAIN_CHECK_INTERVAL_MS after the dashboard finishes loading.
+  useEffect(() => { drainDueSends(); }, [campaigns, resumingCampaignId, drainDueSends]);
+
+  // ...and also on a plain interval, purely to notice time passing on its own —
+  // a queued campaign whose scheduledFor arrives while nothing else changes
+  // wouldn't otherwise trigger the effect above again.
+  useEffect(() => {
+    const id = setInterval(drainDueSends, DRAIN_CHECK_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [drainDueSends]);
+
   return {
     campaigns, upsertCampaign, clearCampaignHistory, exportCampaignsCsv, threadIdsFor,
     filteredCampaigns, demosSendoutGroups,
@@ -293,5 +374,6 @@ export function useCampaignHistory(config: CampaignHistoryConfig) {
     checkingRepliesId, checkReplies, replyCheckResult, replyCheckError, formatCheckedAt,
     backfillingId, backfillRecipients, backfillError,
     resumingCampaignId, resumeSend, resumeError, resumeProgress,
+    cancelQueuedSend,
   };
 }

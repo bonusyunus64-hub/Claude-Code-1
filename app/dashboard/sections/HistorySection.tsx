@@ -1,12 +1,36 @@
+import { useEffect, useState } from 'react';
 import type { Campaign } from '../types';
 import { CopyableName } from '../components/CopyableName';
 import { SpotifyLink } from '../components/SpotifyLink';
+import { describeScheduledSend } from '@/lib/sendWindow';
+
+// How often the "Scheduled to start..." wording below re-evaluates. Reading
+// Date.now() directly during render trips React's purity rule (a render must be
+// a deterministic function of props/state) — this keeps "now" as actual state,
+// refreshed on this interval, which also means a queued campaign's copy quietly
+// keeps itself accurate (today -> tomorrow, "waiting" once its time arrives)
+// without the user needing to reload the page to see it update.
+const SCHEDULED_TEXT_REFRESH_MS = 30_000;
+
+function useNow(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), SCHEDULED_TEXT_REFRESH_MS);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
 
 export interface HistorySectionProps {
   campaigns: Campaign[];
   filteredCampaigns: Campaign[];
   exportCampaignsCsv: (list?: Campaign[]) => void;
   clearCampaignHistory: () => void;
+  /** Account settings' current Send Window timezone — used only to describe a
+   *  queued campaign's scheduledFor in plain English (lib/sendWindow.ts's
+   *  describeScheduledSend); the scheduling decision itself never touches this. */
+  sendWindowTimezone: string;
+  cancelQueuedSend: (c: Campaign) => void;
 
   historySearch: string;
   setHistorySearch: (value: string) => void;
@@ -40,6 +64,7 @@ export interface HistorySectionProps {
 export function HistorySection(props: HistorySectionProps) {
   const {
     campaigns, filteredCampaigns, exportCampaignsCsv, clearCampaignHistory,
+    sendWindowTimezone, cancelQueuedSend,
     historySearch, setHistorySearch, historyTypeFilter, setHistoryTypeFilter,
     historyDateFrom, setHistoryDateFrom, historyDateTo, setHistoryDateTo,
     demosSendoutGroups, expandedCampaignId, setExpandedCampaignId,
@@ -47,6 +72,7 @@ export function HistorySection(props: HistorySectionProps) {
     backfillingId, backfillRecipients, backfillError,
     resumingCampaignId, resumeSend, resumeError, resumeProgress,
   } = props;
+  const now = useNow();
 
   return (
     <div className="space-y-4 pb-6">
@@ -121,6 +147,13 @@ export function HistorySection(props: HistorySectionProps) {
         <section className="bg-zinc-900 rounded-xl border border-zinc-800 divide-y divide-zinc-800 overflow-hidden">
           {filteredCampaigns.slice().sort((a, b) => b.date.localeCompare(a.date)).map(c => {
             const sendoutGroup = c.type === 'demos' ? demosSendoutGroups.get(c.trackTitle.trim().toLowerCase()) : undefined;
+            // A send-window-queued campaign (Account settings' Send Window) has a
+            // pendingSend but hasn't actually sent anything yet — distinct from one
+            // interrupted partway through, which already has real progress in
+            // `emails`. See lib/campaigns.ts's CampaignRecord.scheduledFor doc
+            // comment for why this distinction is emails.length rather than the
+            // field's mere presence.
+            const isQueued = !!c.pendingSend && c.emails.length === 0 && c.scheduledFor != null;
             return (
             <div key={c.id} id={`campaign-${c.id}`}>
               <div className="w-full flex items-center gap-2 px-4 md:px-6 py-3.5 hover:bg-zinc-800/50 transition">
@@ -132,7 +165,11 @@ export function HistorySection(props: HistorySectionProps) {
                   <span className={`text-xs px-2 py-0.5 rounded-full font-medium shrink-0 ${c.type === 'demos' ? 'bg-violet-600/20 text-violet-400 border border-violet-600/30' : c.type === 'radio' ? 'bg-sky-600/20 text-sky-400 border border-sky-600/30' : 'bg-emerald-600/20 text-emerald-400 border border-emerald-600/30'}`}>
                     {c.type === 'demos' ? 'Demos' : c.type === 'radio' ? 'Radio' : 'Playlists'}
                   </span>
-                  {c.pendingSend && (
+                  {isQueued ? (
+                    <span className="text-xs px-2 py-0.5 rounded-full font-medium shrink-0 bg-sky-600/20 text-sky-400 border border-sky-600/30">
+                      Scheduled
+                    </span>
+                  ) : c.pendingSend && (
                     <span className="text-xs px-2 py-0.5 rounded-full font-medium shrink-0 bg-amber-600/20 text-amber-400 border border-amber-600/30">
                       Incomplete
                     </span>
@@ -140,7 +177,7 @@ export function HistorySection(props: HistorySectionProps) {
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-white truncate">{c.trackTitle}</p>
                     <p className="text-xs text-zinc-500">
-                      {new Date(c.date).toLocaleString()} · {c.emails.length} recipient{c.emails.length !== 1 ? 's' : ''}
+                      {new Date(c.date).toLocaleString()} · {isQueued ? 'not sent yet' : `${c.emails.length} recipient${c.emails.length !== 1 ? 's' : ''}`}
                       {(c.responded?.length ?? 0) > 0 && <> · {c.responded!.length} responded</>}
                       {(c.bounced?.length ?? 0) > 0 && <> · <span className="text-red-400">{c.bounced!.length} bounced</span></>}
                     </p>
@@ -170,7 +207,38 @@ export function HistorySection(props: HistorySectionProps) {
               </div>
               {expandedCampaignId === c.id && (
                 <div className="px-4 md:px-6 pb-4 -mt-1 space-y-3">
-                  {c.pendingSend && (
+                  {isQueued && (
+                    <div className="rounded-lg bg-sky-900/20 border border-sky-700/40 px-4 py-3 space-y-2">
+                      <p className="text-sky-300 text-sm font-medium">
+                        {describeScheduledSend(c.scheduledFor!, now, sendWindowTimezone)}
+                      </p>
+                      <p className="text-xs text-zinc-500">
+                        Sending outside your chosen hours (Account settings &rarr; Send Window) can look automated, so this is waiting — no emails have gone out yet.
+                      </p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          onClick={() => resumeSend(c)}
+                          disabled={resumingCampaignId === c.id}
+                          className="rounded-lg bg-sky-700/30 hover:bg-sky-700/50 border border-sky-600/50 px-3 py-1.5 text-xs font-medium text-sky-300 transition disabled:opacity-40"
+                        >
+                          {resumingCampaignId === c.id
+                            ? `Sending… (${resumeProgress?.campaignId === c.id ? resumeProgress.sent : 0}/${resumeProgress?.campaignId === c.id ? resumeProgress.total : '?'})`
+                            : 'Send now instead'}
+                        </button>
+                        <button
+                          onClick={() => { if (confirm('Cancel this queued send? Nothing has gone out yet, and this removes it from history.')) cancelQueuedSend(c); }}
+                          disabled={resumingCampaignId === c.id}
+                          className="rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 transition disabled:opacity-40"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      {resumingCampaignId === null && resumeError && (
+                        <p className="text-xs text-red-400">{resumeError}</p>
+                      )}
+                    </div>
+                  )}
+                  {!isQueued && c.pendingSend && (
                     <div className="rounded-lg bg-amber-900/20 border border-amber-700/40 px-4 py-3 space-y-2">
                       <p className="text-amber-400 text-sm font-medium">
                         This send didn&rsquo;t finish — it was interrupted after {c.emails.length} recipient{c.emails.length !== 1 ? 's' : ''}.

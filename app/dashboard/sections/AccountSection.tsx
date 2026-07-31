@@ -1,6 +1,27 @@
 import type { EmailAccount, NewAccountForm, DeliverabilityResult } from '../types';
-import { DEFAULT_SIGN_OFF, SEND_DELAY_OPTIONS, DAILY_CAP_OPTIONS, FOLLOWUP_DAYS_OPTIONS, BLANK_ACCOUNT } from '../constants';
+import { DEFAULT_SIGN_OFF, SEND_DELAY_OPTIONS, DAILY_CAP_OPTIONS, FOLLOWUP_DAYS_OPTIONS, BLANK_ACCOUNT, SEND_WINDOW_HOUR_OPTIONS } from '../constants';
 import { syncStorage } from '@/lib/remoteSync';
+
+// Timezone picker options for the Send Window section below. Intl.supportedValuesOf
+// is the real IANA zone list straight from the platform's own tzdata — far more
+// complete and always current than anything hand-maintained here — but it's a
+// fairly recent addition to the spec, so a short, common-zones fallback covers a
+// runtime old enough not to have it rather than the picker crashing outright.
+const FALLBACK_TIMEZONES = [
+  'UTC', 'America/Los_Angeles', 'America/Denver', 'America/Chicago', 'America/New_York', 'America/Sao_Paulo',
+  'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Istanbul', 'Europe/Moscow',
+  'Africa/Cairo', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Shanghai', 'Asia/Tokyo', 'Asia/Seoul',
+  'Australia/Sydney', 'Pacific/Auckland',
+];
+
+function timezoneOptions(current: string): string[] {
+  const supported = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : FALLBACK_TIMEZONES;
+  // The current value might not be in the list at all (an unusual zone name saved
+  // from a browser richer than this one, or the fallback list simply not
+  // including it) — always keep it selectable rather than silently swapping the
+  // user's own setting out from under them the moment this component renders.
+  return current && !supported.includes(current) ? [current, ...supported] : supported;
+}
 
 export interface AccountSectionProps {
   emailAccounts: EmailAccount[];
@@ -47,6 +68,15 @@ export interface AccountSectionProps {
   setAutoFollowUpDaysValue: (days: number) => void;
   demosFollowUpTemplate: string;
 
+  sendWindowEnabled: boolean;
+  setSendWindowEnabledOption: (enabled: boolean) => void;
+  sendWindowStartHour: number;
+  setSendWindowStartHourOption: (hour: number) => void;
+  sendWindowEndHour: number;
+  setSendWindowEndHourOption: (hour: number) => void;
+  sendWindowTimezone: string;
+  setSendWindowTimezoneOption: (timezone: string) => void;
+
   testEmailTo: string;
   setTestEmailTo: (value: string) => void;
   testEmailSending: boolean;
@@ -79,6 +109,8 @@ export function AccountSection(props: AccountSectionProps) {
     sendDelay, setSendDelay,
     dailySendCap, setDailyCap, sendsToday, sendsTodayByAccount,
     autoFollowUpEnabled, setAutoFollowUp, autoFollowUpDays, setAutoFollowUpDaysValue, demosFollowUpTemplate,
+    sendWindowEnabled, setSendWindowEnabledOption, sendWindowStartHour, setSendWindowStartHourOption,
+    sendWindowEndHour, setSendWindowEndHourOption, sendWindowTimezone, setSendWindowTimezoneOption,
     testEmailTo, setTestEmailTo, testEmailSending, handleTestEmail,
     showTestEmailOptions, setShowTestEmailOptions, testEmailSubject, setTestEmailSubject,
     testEmailMessage, setTestEmailMessage, demosSubject, demosTemplate, testEmailResult, setTestEmailResult, testEmailError,
@@ -308,6 +340,71 @@ export function AccountSection(props: AccountSectionProps) {
               </div>
             ))}
           </div>
+        )}
+      </section>
+
+      {/* Send Window */}
+      <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Send Window</h2>
+            <p className="text-xs text-zinc-500">
+              An email sent at 3am can read as automated and hurt your reply rate. Turn this on and a send started outside these hours waits until the window opens instead of going out right away — nothing is lost, it just waits.
+            </p>
+          </div>
+          <button
+            onClick={() => setSendWindowEnabledOption(!sendWindowEnabled)}
+            className={`shrink-0 relative inline-flex h-6 w-11 items-center rounded-full transition ${sendWindowEnabled ? 'bg-violet-600' : 'bg-zinc-700'}`}
+            aria-pressed={sendWindowEnabled}
+          >
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${sendWindowEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+          </button>
+        </div>
+        {sendWindowEnabled && (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-zinc-400 mb-1.5">Start sending at</label>
+                <select
+                  value={sendWindowStartHour}
+                  onChange={e => setSendWindowStartHourOption(Number(e.target.value))}
+                  className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent"
+                >
+                  {SEND_WINDOW_HOUR_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-zinc-400 mb-1.5">Stop sending at</label>
+                <select
+                  value={sendWindowEndHour}
+                  onChange={e => setSendWindowEndHourOption(Number(e.target.value))}
+                  className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent"
+                >
+                  {SEND_WINDOW_HOUR_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                </select>
+              </div>
+            </div>
+            {sendWindowStartHour === sendWindowEndHour && (
+              <p className="text-xs text-amber-500">Start and stop are the same time, so sends are never held. Pick two different times to actually limit the window.</p>
+            )}
+            {sendWindowStartHour > sendWindowEndHour && (
+              <p className="text-xs text-zinc-600">This window crosses midnight — sends are allowed from {SEND_WINDOW_HOUR_OPTIONS[sendWindowStartHour].label} through to {SEND_WINDOW_HOUR_OPTIONS[sendWindowEndHour].label} the next morning.</p>
+            )}
+            <div>
+              <label className="block text-xs text-zinc-400 mb-1.5">Timezone</label>
+              <select
+                value={sendWindowTimezone}
+                onChange={e => setSendWindowTimezoneOption(e.target.value)}
+                className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent"
+              >
+                {timezoneOptions(sendWindowTimezone).map(tz => <option key={tz} value={tz}>{tz}</option>)}
+              </select>
+              <p className="text-xs text-zinc-600 mt-1.5">Defaults to this device&rsquo;s own timezone. Change it if you&rsquo;re sending on behalf of somewhere else.</p>
+            </div>
+            <p className="text-xs text-zinc-600">
+              A send started outside these hours shows up in History as &ldquo;Scheduled&rdquo; — you can let it wait, send it right away instead, or cancel it there.
+            </p>
+          </>
         )}
       </section>
 

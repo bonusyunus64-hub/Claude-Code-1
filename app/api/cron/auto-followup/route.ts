@@ -10,6 +10,7 @@ import {
   resolveFollowUpContent,
 } from '@/lib/autoFollowUp';
 import { getBlacklist } from '@/lib/unsubscribe';
+import { isAuthorizedCronRequest } from '@/lib/cronAuth';
 
 // Even with the per-run budgets below keeping total SMTP and Redis work bounded,
 // this can still do up to MAX_CAMPAIGNS_TOUCHED_PER_RUN campaigns' worth of Redis
@@ -20,14 +21,9 @@ export const maxDuration = 60;
 
 // Vercel Cron (see vercel.json) hits this once a day. No browser session is
 // involved, so it can't reuse proxy.ts's cookie auth — Vercel signs cron requests
-// with `Authorization: Bearer $CRON_SECRET` instead, matching the platform's own
-// documented pattern, which is why this path is also listed in proxy.ts's
-// PUBLIC_API_PATHS (the auth happens here, not there).
-function isAuthorizedCronRequest(req: NextRequest): boolean {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return false;
-  return req.headers.get('authorization') === `Bearer ${secret}`;
-}
+// with `Authorization: Bearer $CRON_SECRET` instead (see lib/cronAuth.ts), which
+// is why this path is also listed in proxy.ts's PUBLIC_API_PATHS (the auth
+// happens here, not there).
 
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCronRequest(req)) {

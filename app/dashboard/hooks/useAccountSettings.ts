@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { syncStorage } from '@/lib/remoteSync';
 import type { EmailAccount, NewAccountForm, DeliverabilityResult } from '../types';
-import { DEFAULT_SIGN_OFF, BLANK_ACCOUNT } from '../constants';
+import { DEFAULT_SIGN_OFF, BLANK_ACCOUNT, DEFAULT_SEND_WINDOW_START_HOUR, DEFAULT_SEND_WINDOW_END_HOUR } from '../constants';
+import type { SendWindowSettings } from '@/lib/sendWindow';
 
 // --- Signature image upload: bounded size, downscaled client-side ---
 //
@@ -150,6 +151,18 @@ export function useAccountSettings() {
   const [autoFollowUpDays, setAutoFollowUpDays] = useState(5);
   const [sendsToday, setSendsToday] = useState(0);
   const [sendsTodayByAccount, setSendsTodayByAccount] = useState<Record<string, number>>({});
+
+  // Send Window — off by default (nothing changes for an existing user until they
+  // opt in). `sendWindowTimezone` starts blank rather than defaulting to the
+  // browser's own zone right here: this hook can run its first render during SSR,
+  // where `Intl.DateTimeFormat().resolvedOptions().timeZone` would read the
+  // *server's* zone and could mismatch what the client renders on hydration.
+  // page.tsx's client-only init effect fills in the real browser default (or
+  // whatever was previously saved) after mount instead — see its own comment.
+  const [sendWindowEnabled, setSendWindowEnabled] = useState(false);
+  const [sendWindowStartHour, setSendWindowStartHour] = useState(DEFAULT_SEND_WINDOW_START_HOUR);
+  const [sendWindowEndHour, setSendWindowEndHour] = useState(DEFAULT_SEND_WINDOW_END_HOUR);
+  const [sendWindowTimezone, setSendWindowTimezone] = useState('');
 
   const [blacklist, setBlacklist] = useState<string[]>([]);
   const [newBlacklistEmail, setNewBlacklistEmail] = useState('');
@@ -305,6 +318,41 @@ export function useAccountSettings() {
     syncStorage.setItem('tp_auto_followup_days', String(days));
   }
 
+  function setSendWindowEnabledOption(enabled: boolean) {
+    setSendWindowEnabled(enabled);
+    syncStorage.setItem('tp_send_window_enabled', String(enabled));
+  }
+
+  function setSendWindowStartHourOption(hour: number) {
+    setSendWindowStartHour(hour);
+    syncStorage.setItem('tp_send_window_start_hour', String(hour));
+  }
+
+  function setSendWindowEndHourOption(hour: number) {
+    setSendWindowEndHour(hour);
+    syncStorage.setItem('tp_send_window_end_hour', String(hour));
+  }
+
+  function setSendWindowTimezoneOption(timezone: string) {
+    setSendWindowTimezone(timezone);
+    syncStorage.setItem('tp_send_window_timezone', timezone);
+  }
+
+  // Memoized so useDemosFlow/usePromotionChannel's handleSend (which depends on
+  // this object) doesn't see a new identity — and re-run whatever effects/
+  // useCallbacks key off it — on every unrelated render of this hook.
+  // sendWindowTimezone falls back live to the browser's own zone rather than an
+  // empty string: page.tsx's init effect normally fills a real value in almost
+  // immediately after mount, but a render in the narrow gap before that (or a
+  // test harness that never runs it) shouldn't silently disable the window by
+  // handing lib/sendWindow.ts a timezone Intl can't resolve.
+  const sendWindowSettings: SendWindowSettings = useMemo(() => ({
+    enabled: sendWindowEnabled,
+    startHour: sendWindowStartHour,
+    endHour: sendWindowEndHour,
+    timezone: sendWindowTimezone || (typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : 'UTC'),
+  }), [sendWindowEnabled, sendWindowStartHour, sendWindowEndHour, sendWindowTimezone]);
+
   function recordFailedEmails(emails: string[]) {
     if (!emails.length) return;
     setFailedEmails(prev => {
@@ -376,6 +424,12 @@ export function useAccountSettings() {
     sendDelay, setSendDelay,
     dailySendCap, setDailySendCap, setDailyCap, sendsToday, setSendsToday, sendsTodayByAccount, setSendsTodayByAccount, refreshSendsToday,
     autoFollowUpEnabled, setAutoFollowUpEnabled, setAutoFollowUp, autoFollowUpDays, setAutoFollowUpDays, setAutoFollowUpDaysValue,
+
+    sendWindowEnabled, setSendWindowEnabled, setSendWindowEnabledOption,
+    sendWindowStartHour, setSendWindowStartHour, setSendWindowStartHourOption,
+    sendWindowEndHour, setSendWindowEndHour, setSendWindowEndHourOption,
+    sendWindowTimezone, setSendWindowTimezone, setSendWindowTimezoneOption,
+    sendWindowSettings,
 
     accountCapError,
 
