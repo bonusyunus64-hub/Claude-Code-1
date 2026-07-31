@@ -38,6 +38,10 @@ function useHarness(overrides: Partial<DemosFlowConfig> & { upsertCampaign: (c: 
     refreshSendsToday: () => {},
     recordFailedEmails: () => {},
     pitchedEmailMap: new Map(),
+    lastContactedMap: new Map(),
+    // Off by default so existing tests aren't affected by the new cooldown warning —
+    // see the 'contact cooldown' describe block below for tests that turn it on.
+    contactCooldownDays: 0,
     threadIdsFor: () => ({}),
     customContacts: [],
     // Disabled by default so existing tests exercise the same immediate-send
@@ -180,6 +184,32 @@ describe('useDemosFlow', () => {
       await act(async () => { await result.current.handlePreview(); });
       expect(result.current.demosDuplicateRecipients.sort()).toEqual(['manager@x.com', 'sam@example.com']);
     });
+
+    it('excludes a blacklisted recipient from totalEmails and reports it as excludedByBlacklist', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist(), artist({ name: 'B', managerEmails: ['b@x.com'] })] }) })));
+      const { result } = renderDemos({ blacklist: ['sam@example.com'] });
+      await act(async () => { await result.current.handlePreview(); });
+      expect(result.current.totalEmails).toBe(1);
+      expect(result.current.excludedByBlacklist).toBe(1);
+    });
+
+    it('flags recipients contacted recently under a different track, distinct from demosDuplicateRecipients', async () => {
+      const lastContactedMap = new Map([['sam@example.com', Date.now() - 5 * 24 * 60 * 60 * 1000]]);
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const { result } = renderDemos({ lastContactedMap, contactCooldownDays: 30 });
+      await act(async () => { await result.current.handlePreview(); });
+      expect(result.current.cooldownRecipients).toEqual(['sam@example.com']);
+      // Same-track duplicate check doesn't fire — pitchedEmailMap has nothing for this address.
+      expect(result.current.demosDuplicateRecipients).toEqual([]);
+    });
+
+    it('does not flag anyone when contactCooldownDays is 0 (disabled)', async () => {
+      const lastContactedMap = new Map([['sam@example.com', Date.now()]]);
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const { result } = renderDemos({ lastContactedMap, contactCooldownDays: 0 });
+      await act(async () => { await result.current.handlePreview(); });
+      expect(result.current.cooldownRecipients).toEqual([]);
+    });
   });
 
   describe('handleSend — send-cap enforcement', () => {
@@ -271,7 +301,25 @@ describe('useDemosFlow', () => {
       await act(async () => { await result.current.handleSend(); });
 
       expect(upsertCampaign).toHaveBeenCalledWith(expect.objectContaining({ type: 'demos', trackTitle: 'Track' }));
-      expect(recordFailedEmails).toHaveBeenCalledWith(['sam@example.com']);
+      expect(recordFailedEmails).toHaveBeenCalledWith([{ email: 'sam@example.com', permanent: false }]);
+    });
+
+    it('flags a permanently-rejected failure as such to recordFailedEmails, and records it on the campaign\'s bounced list', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const upsertCampaign = vi.fn();
+      const recordFailedEmails = vi.fn();
+      const { result } = renderDemos({ upsertCampaign, recordFailedEmails });
+      await act(async () => { await result.current.handlePreview(); });
+
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ results: [{ to: 'sam@example.com', success: false, permanent: true, error: '550 no such user' }], total: 1, nextOffset: null }),
+      })));
+      await act(async () => { await result.current.handleSend(); });
+
+      expect(recordFailedEmails).toHaveBeenCalledWith([{ email: 'sam@example.com', permanent: true }]);
+      const upserted = upsertCampaign.mock.calls[upsertCampaign.mock.calls.length - 1][0] as Campaign;
+      expect(upserted.bounced).toEqual(['sam@example.com']);
     });
 
     it('snapshots the follow-up template/subject onto the campaign record, independent of useFollowUp', async () => {

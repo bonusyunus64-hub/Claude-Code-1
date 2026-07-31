@@ -28,11 +28,14 @@ export type PreviewEntry = { label: string; to: string; subject: string; body: s
 /**
  * Dedupes preview candidates by address using the same rule the server applies
  * before sending (dedupeByRecipient: highest `rank` wins, ties keep the first
- * seen) — so the modal never previews a row that would never actually go out,
- * and its total agrees with the unique-recipient count the send button shows.
- * Subject/body are rendered only for the first `cap` of the *deduped* list, not
- * every candidate — renderTemplateClient is real work, and a full send can be
- * hundreds of recipients that the user will never scroll to in this modal.
+ * seen), then drops anyone on the Do Not Contact list — the same filter
+ * lib/demosSend.ts/lib/broadcastSend.ts apply server-side before a send ever
+ * reaches them — so the modal never previews a row that would never actually
+ * go out, and its `total` agrees with the send button's own
+ * countSendableRecipients. Subject/body are rendered only for the first `cap`
+ * of the deduped, blacklist-filtered list, not every candidate —
+ * renderTemplateClient is real work, and a full send can be hundreds of
+ * recipients that the user will never scroll to in this modal.
  *
  * Lives here rather than in page.tsx so it's an ordinary importable module: a
  * route entry point isn't the place to hang exported helpers off, and its test
@@ -42,13 +45,20 @@ export type PreviewEntry = { label: string; to: string; subject: string; body: s
  * vars — needed so a caller doing subject-line A/B testing (lib/recipients.ts's
  * subjectTemplateFor) can pick the same variant for this preview row that
  * app/api/send/route.ts will actually use for that address.
+ *
+ * `blacklist` defaults to empty so an existing caller that doesn't pass one
+ * behaves exactly as before (nothing filtered, excludedByBlacklist always 0).
  */
 export function buildPreviewEntries(
   candidates: PreviewCandidate[],
   cap: number,
-  render: (vars: Record<string, string>, to: string) => { subject: string; body: string }
-): { entries: PreviewEntry[]; total: number } {
+  render: (vars: Record<string, string>, to: string) => { subject: string; body: string },
+  blacklist: string[] = []
+): { entries: PreviewEntry[]; total: number; excludedByBlacklist: number } {
+  const bl = new Set(blacklist.map(e => e.trim().toLowerCase()));
   const deduped = dedupeByRecipient(candidates);
-  const entries = deduped.slice(0, cap).map(c => ({ label: c.label, to: c.to, ...render(c.vars, c.to) }));
-  return { entries, total: deduped.length };
+  const sendable = deduped.filter(c => !bl.has(c.to.trim().toLowerCase()));
+  const excludedByBlacklist = deduped.length - sendable.length;
+  const entries = sendable.slice(0, cap).map(c => ({ label: c.label, to: c.to, ...render(c.vars, c.to) }));
+  return { entries, total: sendable.length, excludedByBlacklist };
 }

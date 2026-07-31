@@ -25,6 +25,7 @@ export interface PromotionSectionProps {
 
   radio: PromotionChannel<RadioStation>;
   radioPitchCount: number;
+  contactCooldownDays: number;
 }
 
 export function PromotionSection(props: PromotionSectionProps) {
@@ -32,7 +33,7 @@ export function PromotionSection(props: PromotionSectionProps) {
     promotionTab, setPromotionTab,
     senderName, setSenderName, trackTitle, setTrackTitle, driveLink, setDriveLink,
     pitchedEmailMap, selectedAccount, setActiveSection, addFailedToBlacklist, setPreviewModalType, setPreviewModalIdx,
-    radio, radioPitchCount,
+    radio, radioPitchCount, contactCooldownDays,
   } = props;
 
   return (
@@ -231,7 +232,12 @@ export function PromotionSection(props: PromotionSectionProps) {
                   className="rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-4 py-2.5 text-sm font-medium text-zinc-300 transition">
                   Preview Email
                 </button>
-                <span className="text-sm text-zinc-400">{radio.results.length} stations · {radio.totalEmails} emails</span>
+                <span className="text-sm text-zinc-400">
+                  {radio.results.length} stations · {radio.totalEmails} emails
+                  {radio.excludedByBlacklist > 0 && (
+                    <span className="text-zinc-600"> ({radio.excludedByBlacklist} on Do Not Contact, excluded)</span>
+                  )}
+                </span>
               </>
             )}
           </div>
@@ -279,6 +285,14 @@ export function PromotionSection(props: PromotionSectionProps) {
             <div className="rounded-lg bg-amber-900/20 border border-amber-700/40 px-5 py-3">
               <p className="text-amber-400 text-sm">
                 {radio.duplicateRecipients.length} recipient{radio.duplicateRecipients.length !== 1 ? 's have' : ' has'} already been pitched &ldquo;{trackTitle}&rdquo; before (via Song Demos or Track Promotion). You can still send.
+              </p>
+            </div>
+          )}
+
+          {!radio.sendResult && radio.cooldownRecipients.length > 0 && (
+            <div className="rounded-lg bg-amber-900/20 border border-amber-700/40 px-5 py-3">
+              <p className="text-amber-400 text-sm">
+                {radio.cooldownRecipients.length} recipient{radio.cooldownRecipients.length !== 1 ? 's were' : ' was'} contacted within the last {contactCooldownDays} day{contactCooldownDays !== 1 ? 's' : ''} (a different track, via Song Demos or Track Promotion). You can still send.
               </p>
             </div>
           )}

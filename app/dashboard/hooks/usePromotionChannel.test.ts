@@ -35,6 +35,10 @@ function useHarness(overrides: Partial<PromotionChannelConfig> & { upsertCampaig
     refreshSendsToday: () => {},
     recordFailedEmails: () => {},
     pitchedEmailMap: new Map(),
+    lastContactedMap: new Map(),
+    // Off by default so existing tests aren't affected by the new cooldown warning —
+    // see the 'derived values' describe block below for tests that turn it on.
+    contactCooldownDays: 0,
     // Disabled by default so existing tests exercise the same immediate-send
     // behavior as before this feature existed — see the 'send window' describe
     // block below for tests that turn it on.
@@ -173,9 +177,29 @@ describe('usePromotionChannel', () => {
       vi.stubGlobal('fetch', sendFetch);
       await act(async () => { await result.current.handleSend(); });
 
-      expect(recordFailedEmails).toHaveBeenCalledWith(['a@x.com']);
+      expect(recordFailedEmails).toHaveBeenCalledWith([{ email: 'a@x.com', permanent: false }]);
       expect(refreshSendsToday).not.toHaveBeenCalled();
       expect(result.current.sendFailedEmails).toEqual(['a@x.com']);
+    });
+
+    it('flags a permanently-rejected failure as such to recordFailedEmails, and records it on the campaign\'s bounced list', async () => {
+      const previewFetch = vi.fn(async () => ({ json: async () => ({ stations: [{ name: 'S', emails: ['a@x.com'] }] }) }));
+      vi.stubGlobal('fetch', previewFetch);
+      const upsertCampaign = vi.fn();
+      const recordFailedEmails = vi.fn();
+      const { result } = renderChannel({ upsertCampaign, recordFailedEmails });
+      await act(async () => { await result.current.handlePreview(); });
+
+      const sendFetch = vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ results: [{ to: 'a@x.com', success: false, permanent: true, error: '550 no such user' }], total: 1, nextOffset: null }),
+      }));
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      expect(recordFailedEmails).toHaveBeenCalledWith([{ email: 'a@x.com', permanent: true }]);
+      const upserted = upsertCampaign.mock.calls[upsertCampaign.mock.calls.length - 1][0] as Campaign;
+      expect(upserted.bounced).toEqual(['a@x.com']);
     });
 
     it('POSTs the signature image but strips it from the pendingSend payload written to campaign history', async () => {
@@ -352,6 +376,33 @@ describe('usePromotionChannel', () => {
       const { result } = renderChannel({ pitchedEmailMap });
       await act(async () => { await result.current.handlePreview(); });
       expect(result.current.duplicateRecipients).toEqual(['a@x.com']);
+    });
+
+    it('excludes a blacklisted recipient from totalEmails and reports it as excludedByBlacklist', async () => {
+      const previewFetch = vi.fn(async () => ({ json: async () => ({ stations: [{ name: 'S', emails: ['a@x.com', 'b@x.com'] }] }) }));
+      vi.stubGlobal('fetch', previewFetch);
+      const { result } = renderChannel({ blacklist: ['a@x.com'] });
+      await act(async () => { await result.current.handlePreview(); });
+      expect(result.current.totalEmails).toBe(1);
+      expect(result.current.excludedByBlacklist).toBe(1);
+    });
+
+    it('flags recipients contacted recently under a different track', async () => {
+      const lastContactedMap = new Map([['a@x.com', Date.now() - 5 * 24 * 60 * 60 * 1000]]);
+      const previewFetch = vi.fn(async () => ({ json: async () => ({ stations: [{ name: 'S', emails: ['a@x.com', 'b@x.com'] }] }) }));
+      vi.stubGlobal('fetch', previewFetch);
+      const { result } = renderChannel({ lastContactedMap, contactCooldownDays: 30 });
+      await act(async () => { await result.current.handlePreview(); });
+      expect(result.current.cooldownRecipients).toEqual(['a@x.com']);
+    });
+
+    it('does not flag anyone when contactCooldownDays is 0 (disabled)', async () => {
+      const lastContactedMap = new Map([['a@x.com', Date.now()]]);
+      const previewFetch = vi.fn(async () => ({ json: async () => ({ stations: [{ name: 'S', emails: ['a@x.com'] }] }) }));
+      vi.stubGlobal('fetch', previewFetch);
+      const { result } = renderChannel({ lastContactedMap, contactCooldownDays: 0 });
+      await act(async () => { await result.current.handlePreview(); });
+      expect(result.current.cooldownRecipients).toEqual([]);
     });
   });
 });

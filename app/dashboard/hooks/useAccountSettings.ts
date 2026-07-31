@@ -2,9 +2,31 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { syncStorage } from '@/lib/remoteSync';
-import type { EmailAccount, NewAccountForm, DeliverabilityResult } from '../types';
-import { DEFAULT_SIGN_OFF, BLANK_ACCOUNT, DEFAULT_SEND_WINDOW_START_HOUR, DEFAULT_SEND_WINDOW_END_HOUR } from '../constants';
+import type { EmailAccount, NewAccountForm, DeliverabilityResult, FailedEmailEntry } from '../types';
+import { DEFAULT_SIGN_OFF, BLANK_ACCOUNT, DEFAULT_SEND_WINDOW_START_HOUR, DEFAULT_SEND_WINDOW_END_HOUR, DEFAULT_CONTACT_COOLDOWN_DAYS } from '../constants';
 import type { SendWindowSettings } from '@/lib/sendWindow';
+
+/**
+ * Tolerates both the current FailedEmailEntry[] shape and the legacy
+ * tp_failed_emails shape (a plain string[], from before permanent/transient
+ * failures were distinguished) — so a value already sitting in a user's
+ * synced settings from before this change doesn't crash page.tsx's
+ * initial-load effect. A bare string becomes a transient entry: the safer
+ * default, since wrongly treating an old fluke as a confirmed hard bounce
+ * would auto-suppress an address that was never actually confirmed dead.
+ */
+export function parseFailedEmails(raw: unknown): FailedEmailEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const out: FailedEmailEntry[] = [];
+  for (const entry of raw) {
+    if (typeof entry === 'string') {
+      out.push({ email: entry, permanent: false });
+    } else if (entry && typeof entry === 'object' && typeof (entry as { email?: unknown }).email === 'string') {
+      out.push({ email: (entry as { email: string }).email, permanent: !!(entry as { permanent?: unknown }).permanent });
+    }
+  }
+  return out;
+}
 
 // --- Signature image upload: bounded size, downscaled client-side ---
 //
@@ -147,6 +169,12 @@ export function useAccountSettings() {
 
   const [sendDelay, setSendDelay] = useState(0);
   const [dailySendCap, setDailySendCap] = useState(0);
+  // How many days must pass before the same address is fair game again for a
+  // *different* track — a send-pacing setting alongside sendDelay/dailySendCap
+  // above, synced the same way (see setContactCooldown below). 0 = off, same
+  // convention as dailySendCap; see findCooldownRecipients in utils.ts for how
+  // it's actually applied (a warning, never a hard block).
+  const [contactCooldownDays, setContactCooldownDays] = useState(DEFAULT_CONTACT_COOLDOWN_DAYS);
   // Names (and localStorage keys, via setAutoFollowUp/setAutoFollowUpDaysValue below)
   // are unchanged from when this drove an automatic daily cron send — that cron is
   // gone. autoFollowUpEnabled now means "show a Needs-follow-up reminder in
@@ -194,8 +222,12 @@ export function useAccountSettings() {
   }, []);
 
   // Emails that bounced/failed on a send — kept separate from the blacklist so they can
-  // be reviewed (a failure can be a fluke) rather than silently blocked forever.
-  const [failedEmails, setFailedEmails] = useState<string[]>([]);
+  // be reviewed (a failure can be a fluke) rather than silently blocked forever. A
+  // `permanent` entry (see FailedEmailEntry/SendResultEntry) is the exception: it's
+  // already been auto-added to the blacklist below (see recordFailedEmails) — it
+  // stays visible here too, rather than just vanishing into the Do Not Contact list,
+  // so the auto-suppression is something the user can see and undo, not silent.
+  const [failedEmails, setFailedEmails] = useState<FailedEmailEntry[]>([]);
 
   const [deliverabilityResult, setDeliverabilityResult] = useState<DeliverabilityResult | null>(null);
   const [deliverabilityLoading, setDeliverabilityLoading] = useState(false);
@@ -316,6 +348,11 @@ export function useAccountSettings() {
     syncStorage.setItem('tp_daily_cap', String(value));
   }
 
+  function setContactCooldown(value: number) {
+    setContactCooldownDays(value);
+    syncStorage.setItem('tp_contact_cooldown_days', String(value));
+  }
+
   function setAutoFollowUp(enabled: boolean) {
     setAutoFollowUpEnabled(enabled);
     syncStorage.setItem('tp_auto_followup_enabled', String(enabled));
@@ -361,18 +398,37 @@ export function useAccountSettings() {
     timezone: sendWindowTimezone || (typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : 'UTC'),
   }), [sendWindowEnabled, sendWindowStartHour, sendWindowEndHour, sendWindowTimezone]);
 
-  function recordFailedEmails(emails: string[]) {
-    if (!emails.length) return;
+  /**
+   * Merges newly-failed addresses into the reviewable list, keyed by lowercased
+   * address so the same recipient failing again (a different campaign, a retry)
+   * updates one entry instead of piling up duplicates. A permanent failure
+   * (SendResultEntry.permanent — an outright SMTP rejection, not a dropped
+   * connection) is also pushed straight to the Do Not Contact list: see
+   * lib/mailSend.ts's doc comment on `permanent` for why nothing else would
+   * ever otherwise learn this address is dead. Once an address is marked
+   * permanent it stays permanent even if a later, unrelated transient failure
+   * for the same address comes in — a real hard rejection doesn't get less
+   * real because something else also timed out once.
+   */
+  function recordFailedEmails(entries: FailedEmailEntry[]) {
+    if (!entries.length) return;
     setFailedEmails(prev => {
-      const merged = [...new Set([...prev, ...emails.map(e => e.toLowerCase())])];
-      syncStorage.setItem('tp_failed_emails', JSON.stringify(merged));
-      return merged;
+      const merged = new Map(prev.map(e => [e.email, e]));
+      for (const entry of entries) {
+        const email = entry.email.toLowerCase();
+        merged.set(email, { email, permanent: entry.permanent || merged.get(email)?.permanent || false });
+      }
+      const updated = Array.from(merged.values());
+      syncStorage.setItem('tp_failed_emails', JSON.stringify(updated));
+      return updated;
     });
+    const permanentEmails = entries.filter(e => e.permanent).map(e => e.email);
+    if (permanentEmails.length) addFailedToBlacklist(permanentEmails);
   }
 
   function removeFromFailedEmails(email: string) {
     setFailedEmails(prev => {
-      const updated = prev.filter(e => e !== email);
+      const updated = prev.filter(e => e.email !== email);
       syncStorage.setItem('tp_failed_emails', JSON.stringify(updated));
       return updated;
     });
@@ -431,6 +487,7 @@ export function useAccountSettings() {
 
     sendDelay, setSendDelay,
     dailySendCap, setDailySendCap, setDailyCap, sendsToday, setSendsToday, sendsTodayByAccount, setSendsTodayByAccount, refreshSendsToday,
+    contactCooldownDays, setContactCooldownDays, setContactCooldown,
     autoFollowUpEnabled, setAutoFollowUpEnabled, setAutoFollowUp, autoFollowUpDays, setAutoFollowUpDays, setAutoFollowUpDaysValue,
 
     sendWindowEnabled, setSendWindowEnabled, setSendWindowEnabledOption,

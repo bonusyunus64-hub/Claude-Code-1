@@ -4,8 +4,11 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { syncStorage } from '@/lib/remoteSync';
 import { assignSubjectVariant } from '@/lib/recipients';
 import { isWithinSendWindow, nextWindowOpenTime, type SendWindowSettings } from '@/lib/sendWindow';
-import type { Artist, Campaign, CampaignRecipient, CustomContact, DemosFilterPreset, SavedTemplate, SendResultEntry } from '../types';
-import { sendInBatches, countUniqueRecipients, findDuplicateRecipients, messageIdsFromResults, checkRecipientsValidity, shuffle, payloadForPendingSend } from '../utils';
+import type { Artist, Campaign, CampaignRecipient, CustomContact, DemosFilterPreset, FailedEmailEntry, SavedTemplate, SendResultEntry } from '../types';
+import {
+  sendInBatches, countSendableRecipients, findDuplicateRecipients, findCooldownRecipients, messageIdsFromResults,
+  permanentlyFailedEmails, checkRecipientsValidity, shuffle, payloadForPendingSend,
+} from '../utils';
 
 export type SortOrder = 'followers-desc' | 'followers-asc' | 'alpha-asc' | 'alpha-desc' | 'random';
 
@@ -37,8 +40,14 @@ export interface DemosFlowConfig {
   sendsToday: number;
   accountCapError: (accountId: string, additionalSends: number) => string | null;
   refreshSendsToday: () => void;
-  recordFailedEmails: (emails: string[]) => void;
+  recordFailedEmails: (entries: FailedEmailEntry[]) => void;
   pitchedEmailMap: Map<string, string[]>;
+  /** Lowercased recipient -> most recent campaign timestamp, across every track/channel —
+   *  see app/dashboard/utils.ts's buildLastContactedMap/findCooldownRecipients for why this
+   *  is a separate map from pitchedEmailMap rather than reusing it. */
+  lastContactedMap: Map<string, number>;
+  /** Account settings' cross-campaign contact cooldown (days); 0 disables it. */
+  contactCooldownDays: number;
   upsertCampaign: (campaign: Campaign) => void;
   threadIdsFor: (type: Campaign['type'], title: string) => Record<string, string>;
   /** Read-only: custom contacts are managed by the parent (also read by
@@ -69,7 +78,8 @@ export function useDemosFlow(config: DemosFlowConfig) {
     demosSubjectB, setDemosSubjectB,
     demosFollowUpTemplate, demosFollowUpSubject, setDemosFollowUpTemplate, setDemosFollowUpSubject,
     signOff, signOffImage, selectedAccountId, sendDelay, blacklist, dailySendCap, sendsToday,
-    accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap, upsertCampaign, threadIdsFor,
+    accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap, lastContactedMap, contactCooldownDays,
+    upsertCampaign, threadIdsFor,
     customContacts, sendWindowSettings,
   } = config;
 
@@ -178,7 +188,8 @@ export function useDemosFlow(config: DemosFlowConfig) {
     [previewArtists, excludedArtistNames]
   );
 
-  const totalEmails = countUniqueRecipients(
+  const { sendable: totalEmails, excludedByBlacklist } = countSendableRecipients(
+    blacklist,
     includedArtists.flatMap(a => a.managerEmails),
     customContacts.map(c => c.managerEmail)
   );
@@ -188,6 +199,11 @@ export function useDemosFlow(config: DemosFlowConfig) {
   const demosDuplicateRecipients = useMemo(
     () => findDuplicateRecipients(pitchedEmailMap, trackTitle, [...includedArtists.flatMap(a => a.managerEmails), ...customContacts.map(c => c.managerEmail)]),
     [includedArtists, customContacts, trackTitle, pitchedEmailMap]
+  );
+
+  const cooldownRecipients = useMemo(
+    () => findCooldownRecipients(lastContactedMap, contactCooldownDays, [...includedArtists.flatMap(a => a.managerEmails), ...customContacts.map(c => c.managerEmail)]),
+    [includedArtists, customContacts, lastContactedMap, contactCooldownDays]
   );
 
   async function handleSend() {
@@ -265,6 +281,12 @@ export function useDemosFlow(config: DemosFlowConfig) {
           id: campaignId, trackTitle, date: campaignDate, type: 'demos',
           emails: sentEmails, accountId: selectedAccountId, recipients,
           messageIds: messageIdsFromResults(resultsSoFar),
+          // A permanently-rejected address never generates a bounce message, so this
+          // is the only chance to record it — see lib/followUpSend.ts's identical
+          // treatment of `bounced` and permanentlyFailedEmails's doc comment.
+          // Recomputed from the full cumulative resultsSoFar each tick, same
+          // reasoning as messageIds above rather than merged incrementally.
+          bounced: permanentlyFailedEmails(resultsSoFar),
           pendingSend,
           driveLink, senderName,
           // Snapshot of the follow-up template/subject as currently configured —
@@ -318,9 +340,12 @@ export function useDemosFlow(config: DemosFlowConfig) {
       });
       if (!outcome.ok) { setSendError(outcome.error); }
       else {
-        const failed = outcome.results.filter(r => !r.success).map(r => r.to);
-        setSendFailedEmails(failed);
-        recordFailedEmails(failed);
+        const failedResults = outcome.results.filter(r => !r.success);
+        setSendFailedEmails(failedResults.map(r => r.to));
+        // Permanent failures are auto-suppressed to Do Not Contact inside
+        // recordFailedEmails (see useAccountSettings.ts) — this just hands over
+        // which ones those were.
+        recordFailedEmails(failedResults.map(r => ({ email: r.to, permanent: !!r.permanent })));
         if (outcome.results.some(r => r.success)) refreshSendsToday();
       }
     } finally { setSending(false); }
@@ -453,11 +478,12 @@ export function useDemosFlow(config: DemosFlowConfig) {
     minInstagram, setMinInstagram, maxInstagram, setMaxInstagram, gender, setGender, artistType, setArtistType,
 
     handlePreview, previewDone, previewLoading, previewArtists, includedArtists, sortedArtists, visibleArtists, totalEmails,
+    excludedByBlacklist,
     setExcludedArtistNames, excludedArtistNames, toggleArtistExclusion, toggleGenreFromPreview,
     recipientSearch, setRecipientSearch, sortOrder, setSortOrder,
     outsideResults, outsideResultsQuery, outsideSearchLoading, handleOutsideSearch,
 
-    demosDuplicateRecipients, demosInvalidEmails, setDemosInvalidEmails,
+    demosDuplicateRecipients, cooldownRecipients, demosInvalidEmails, setDemosInvalidEmails,
 
     sendResult, sendFailedEmails, setSendFailedEmails, sendError,
     useFollowUp, setUseFollowUp, handleSend, canSend, sending,

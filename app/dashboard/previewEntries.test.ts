@@ -97,7 +97,7 @@ describe('buildPreviewEntries', () => {
   });
 
   it('returns an empty result for an empty candidate list', () => {
-    expect(buildPreviewEntries([], 20, passthroughRender)).toEqual({ entries: [], total: 0 });
+    expect(buildPreviewEntries([], 20, passthroughRender)).toEqual({ entries: [], total: 0, excludedByBlacklist: 0 });
   });
 
   it('passes the deduped recipient\'s address to render, not just their vars', () => {
@@ -112,5 +112,43 @@ describe('buildPreviewEntries', () => {
     const recordingRender = (vars: Record<string, string>, to: string) => { seenAddresses.push(to); return passthroughRender(vars); };
     buildPreviewEntries(candidates, 20, recordingRender);
     expect(seenAddresses.sort()).toEqual(['a@x.com', 'b@x.com']);
+  });
+
+  describe('blacklist filtering', () => {
+    it('drops a blacklisted address from both entries and total, and reports it as excluded', () => {
+      const candidates: PreviewCandidate[] = [
+        candidate({ to: 'a@x.com', label: 'A' }),
+        candidate({ to: 'b@x.com', label: 'B' }),
+      ];
+      const { entries, total, excludedByBlacklist } = buildPreviewEntries(candidates, 20, passthroughRender, ['b@x.com']);
+      expect(entries.map(e => e.to)).toEqual(['a@x.com']);
+      expect(total).toBe(1);
+      expect(excludedByBlacklist).toBe(1);
+    });
+
+    it('matches the blacklist case-insensitively', () => {
+      const candidates: PreviewCandidate[] = [candidate({ to: 'Manager@Label.com', label: 'M' })];
+      const { entries, total, excludedByBlacklist } = buildPreviewEntries(candidates, 20, passthroughRender, ['manager@label.com']);
+      expect(entries).toEqual([]);
+      expect(total).toBe(0);
+      expect(excludedByBlacklist).toBe(1);
+    });
+
+    it('filters before dedup collapses to the final address, so a blacklisted duplicate is not double-counted', () => {
+      const candidates: PreviewCandidate[] = [
+        candidate({ to: 'a@x.com', rank: 1, label: 'a-low' }),
+        candidate({ to: 'a@x.com', rank: 2, label: 'a-high' }),
+      ];
+      const { total, excludedByBlacklist } = buildPreviewEntries(candidates, 20, passthroughRender, ['a@x.com']);
+      expect(total).toBe(0);
+      expect(excludedByBlacklist).toBe(1);
+    });
+
+    it('defaults to no filtering when no blacklist is passed, matching pre-existing callers', () => {
+      const candidates: PreviewCandidate[] = [candidate({ to: 'a@x.com' })];
+      const { total, excludedByBlacklist } = buildPreviewEntries(candidates, 20, passthroughRender);
+      expect(total).toBe(1);
+      expect(excludedByBlacklist).toBe(0);
+    });
   });
 });

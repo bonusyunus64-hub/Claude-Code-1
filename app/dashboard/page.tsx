@@ -13,7 +13,7 @@ import {
   DEFAULT_SIGN_OFF,
 } from './constants';
 import {
-  parseContactsCsv, renderTemplateClient, pronounForClient, computeAnalyticsStats,
+  parseContactsCsv, renderTemplateClient, pronounForClient, computeAnalyticsStats, buildLastContactedMap,
 } from './utils';
 import {
   buildPreviewEntries, PREVIEW_MODAL_RECIPIENT_CAP, CUSTOM_CONTACT_RANK,
@@ -22,7 +22,7 @@ import {
 import { usePromotionChannel } from './hooks/usePromotionChannel';
 import { useCampaignHistory } from './hooks/useCampaignHistory';
 import { useDemosFlow } from './hooks/useDemosFlow';
-import { useAccountSettings } from './hooks/useAccountSettings';
+import { useAccountSettings, parseFailedEmails } from './hooks/useAccountSettings';
 import { OverviewSection } from './sections/OverviewSection';
 import { DemosSection } from './sections/DemosSection';
 import { PromotionSection } from './sections/PromotionSection';
@@ -126,6 +126,13 @@ export default function Dashboard() {
     return map;
   }, [history.campaigns]);
 
+  // Feeds the cross-campaign contact-cooldown warning (findCooldownRecipients in
+  // utils.ts) — distinct from pitchedEmailMap above, which only tracks which
+  // *tracks* an address has seen; this tracks *when* it was last mailed at all,
+  // across every track/channel. Built the same way (once per campaigns list) so
+  // it's cheap to recompute per render without redoing the work per keystroke.
+  const lastContactedMap = useMemo(() => buildLastContactedMap(history.campaigns), [history.campaigns]);
+
   // Radio is the one remaining instantiation of usePromotionChannel — it used to be
   // shared with an equivalent Playlists channel (genre/secondary-filter selection,
   // preview, send, presets, template library), removed along with the rest of the
@@ -147,7 +154,7 @@ export default function Dashboard() {
     signOff: account.signOff, signOffImage: account.signOffImage, selectedAccountId: account.selectedAccountId,
     sendDelay: account.sendDelay, blacklist: account.blacklist, dailySendCap: account.dailySendCap, sendsToday: account.sendsToday,
     accountCapError: account.accountCapError, refreshSendsToday: account.refreshSendsToday, recordFailedEmails: account.recordFailedEmails,
-    pitchedEmailMap, upsertCampaign: history.upsertCampaign,
+    pitchedEmailMap, lastContactedMap, contactCooldownDays: account.contactCooldownDays, upsertCampaign: history.upsertCampaign,
     sendWindowSettings: account.sendWindowSettings,
   });
 
@@ -164,7 +171,7 @@ export default function Dashboard() {
     signOff: account.signOff, signOffImage: account.signOffImage, selectedAccountId: account.selectedAccountId,
     sendDelay: account.sendDelay, blacklist: account.blacklist, dailySendCap: account.dailySendCap, sendsToday: account.sendsToday,
     accountCapError: account.accountCapError, refreshSendsToday: account.refreshSendsToday, recordFailedEmails: account.recordFailedEmails,
-    pitchedEmailMap,
+    pitchedEmailMap, lastContactedMap, contactCooldownDays: account.contactCooldownDays,
     upsertCampaign: history.upsertCampaign, threadIdsFor: history.threadIdsFor,
     customContacts,
     sendWindowSettings: account.sendWindowSettings,
@@ -217,8 +224,11 @@ export default function Dashboard() {
       // list was meant to end, since it would silently un-blacklist an address
       // someone had already unsubscribed.
 
+      // parseFailedEmails tolerates both the current shape and the legacy plain
+      // string[] a device may still have saved from before permanent/transient
+      // failures were distinguished — see its own doc comment.
       const savedFailedEmails = localStorage.getItem('tp_failed_emails');
-      if (savedFailedEmails) account.setFailedEmails(JSON.parse(savedFailedEmails));
+      if (savedFailedEmails) account.setFailedEmails(parseFailedEmails(JSON.parse(savedFailedEmails)));
 
       const savedCustomContacts = localStorage.getItem('tp_custom_contacts');
       if (savedCustomContacts) setCustomContacts(JSON.parse(savedCustomContacts));
@@ -243,6 +253,9 @@ export default function Dashboard() {
 
       const savedDailyCap = localStorage.getItem('tp_daily_cap');
       if (savedDailyCap !== null) account.setDailySendCap(Number(savedDailyCap));
+
+      const savedContactCooldown = localStorage.getItem('tp_contact_cooldown_days');
+      if (savedContactCooldown !== null) account.setContactCooldownDays(Number(savedContactCooldown));
 
       const savedAutoFollowUpEnabled = localStorage.getItem('tp_auto_followup_enabled');
       if (savedAutoFollowUpEnabled !== null) account.setAutoFollowUpEnabled(savedAutoFollowUpEnabled === 'true');
@@ -438,8 +451,8 @@ export default function Dashboard() {
   // Build email preview modal entries. Candidates are cheap (no template rendering)
   // so building the *full*, unsliced list per branch costs nothing; buildPreviewEntries
   // is what dedupes them by address and renders only the capped survivors.
-  const { entries: previewModalEntries, total: previewModalTotal } = useMemo((): { entries: PreviewEntry[]; total: number } => {
-    if (!previewModalType) return { entries: [], total: 0 };
+  const { entries: previewModalEntries, total: previewModalTotal, excludedByBlacklist: previewModalExcludedByBlacklist } = useMemo((): { entries: PreviewEntry[]; total: number; excludedByBlacklist: number } => {
+    if (!previewModalType) return { entries: [], total: 0, excludedByBlacklist: 0 };
     if (previewModalType === 'demos') {
       const tpl = demos.useFollowUp ? demosFollowUpTemplate : demosTemplate;
       const subjectA = demos.useFollowUp ? demosFollowUpSubject : demosSubject;
@@ -474,7 +487,7 @@ export default function Dashboard() {
           });
         });
       });
-      return buildPreviewEntries(candidates, PREVIEW_MODAL_RECIPIENT_CAP, render);
+      return buildPreviewEntries(candidates, PREVIEW_MODAL_RECIPIENT_CAP, render, account.blacklist);
     }
     const render = (vars: Record<string, string>) => {
       const bodyParts = [renderTemplateClient(radio.template, vars)];
@@ -491,8 +504,8 @@ export default function Dashboard() {
         });
       });
     });
-    return buildPreviewEntries(candidates, PREVIEW_MODAL_RECIPIENT_CAP, render);
-  }, [previewModalType, demos.includedArtists, radio.results, demosTemplate, demosSubject, demosSubjectB, demos.subjectTestEnabled, demosFollowUpTemplate, demosFollowUpSubject, demos.useFollowUp, radio.template, radio.subject, account.signOff, trackTitle, driveLink, senderName, customContacts]);
+    return buildPreviewEntries(candidates, PREVIEW_MODAL_RECIPIENT_CAP, render, account.blacklist);
+  }, [previewModalType, demos.includedArtists, radio.results, demosTemplate, demosSubject, demosSubjectB, demos.subjectTestEnabled, demosFollowUpTemplate, demosFollowUpSubject, demos.useFollowUp, radio.template, radio.subject, account.signOff, account.blacklist, trackTitle, driveLink, senderName, customContacts]);
 
   // Keyboard/focus handling for the preview modal (see the modal markup below):
   // Escape closes it, and focus moves into the dialog on open and back to
@@ -643,7 +656,7 @@ export default function Dashboard() {
                 newCustomContact={newCustomContact} setNewCustomContact={setNewCustomContact} addCustomContact={addCustomContact} handleCustomContactsCsv={handleCustomContactsCsv}
                 addOutsideArtistToContacts={addOutsideArtistToContacts} pitchedEmailMap={pitchedEmailMap}
                 setPreviewModalType={setPreviewModalType} setPreviewModalIdx={setPreviewModalIdx}
-                addFailedToBlacklist={account.addFailedToBlacklist}
+                addFailedToBlacklist={account.addFailedToBlacklist} contactCooldownDays={account.contactCooldownDays}
                 selectedAccount={account.selectedAccount} setActiveSection={setActiveSection}
                 testEmailTo={testEmailTo} setTestEmailTo={setTestEmailTo} setTestEmailResult={setTestEmailResult} handleTestEmail={handleTestEmail}
                 testEmailSending={testEmailSending} selectedAccountId={account.selectedAccountId} testEmailResult={testEmailResult} testEmailError={testEmailError}
@@ -658,7 +671,7 @@ export default function Dashboard() {
                 driveLink={driveLink} setDriveLink={setDriveLink}
                 pitchedEmailMap={pitchedEmailMap} selectedAccount={account.selectedAccount} setActiveSection={setActiveSection}
                 addFailedToBlacklist={account.addFailedToBlacklist} setPreviewModalType={setPreviewModalType} setPreviewModalIdx={setPreviewModalIdx}
-                radio={radio} radioPitchCount={radioPitchCount}
+                radio={radio} radioPitchCount={radioPitchCount} contactCooldownDays={account.contactCooldownDays}
               />
             )}
 
@@ -736,6 +749,11 @@ export default function Dashboard() {
                   </p>
                 ) : (
                   <p className="text-xs text-zinc-500 mt-1.5">{previewModalTotal} recipient{previewModalTotal === 1 ? '' : 's'}</p>
+                )}
+                {previewModalExcludedByBlacklist > 0 && (
+                  <p className="text-xs text-zinc-600 mt-1">
+                    {previewModalExcludedByBlacklist} more on your Do Not Contact list, excluded automatically.
+                  </p>
                 )}
               </div>
               {previewModalEntries[previewModalIdx] && (

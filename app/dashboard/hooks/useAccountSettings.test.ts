@@ -4,7 +4,7 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 const syncStorage = vi.hoisted(() => ({ setItem: vi.fn(), removeItem: vi.fn() }));
 vi.mock('@/lib/remoteSync', () => ({ syncStorage }));
 
-import { useAccountSettings, fitWithinEdge, dataUrlByteSize, SIGN_OFF_IMAGE_MAX_BYTES } from './useAccountSettings';
+import { useAccountSettings, fitWithinEdge, dataUrlByteSize, SIGN_OFF_IMAGE_MAX_BYTES, parseFailedEmails } from './useAccountSettings';
 import type { EmailAccount } from '../types';
 
 function makeChangeEvent(file: File | undefined): React.ChangeEvent<HTMLInputElement> {
@@ -148,29 +148,97 @@ describe('useAccountSettings', () => {
   });
 
   describe('failed emails', () => {
-    it('recordFailedEmails merges, lowercases, and dedupes; a no-op on an empty list', () => {
+    it('recordFailedEmails merges, lowercases, and dedupes by address; a no-op on an empty list', () => {
       const { result } = renderHook(() => useAccountSettings());
-      act(() => result.current.recordFailedEmails(['A@example.com', 'b@example.com']));
-      act(() => result.current.recordFailedEmails(['a@example.com']));
-      expect(result.current.failedEmails.sort()).toEqual(['a@example.com', 'b@example.com']);
+      act(() => result.current.recordFailedEmails([{ email: 'A@example.com', permanent: false }, { email: 'b@example.com', permanent: false }]));
+      act(() => result.current.recordFailedEmails([{ email: 'a@example.com', permanent: false }]));
+      expect(result.current.failedEmails.map(e => e.email).sort()).toEqual(['a@example.com', 'b@example.com']);
 
       act(() => result.current.recordFailedEmails([]));
-      expect(result.current.failedEmails.sort()).toEqual(['a@example.com', 'b@example.com']);
+      expect(result.current.failedEmails).toHaveLength(2);
     });
 
     it('removeFromFailedEmails removes a single address', () => {
       const { result } = renderHook(() => useAccountSettings());
-      act(() => result.current.recordFailedEmails(['a@example.com', 'b@example.com']));
+      act(() => result.current.recordFailedEmails([{ email: 'a@example.com', permanent: false }, { email: 'b@example.com', permanent: false }]));
       act(() => result.current.removeFromFailedEmails('a@example.com'));
-      expect(result.current.failedEmails).toEqual(['b@example.com']);
+      expect(result.current.failedEmails).toEqual([{ email: 'b@example.com', permanent: false }]);
     });
 
     it('moveFailedToDoNotContact blacklists the address and drops it from failedEmails', () => {
       const { result } = renderHook(() => useAccountSettings());
-      act(() => result.current.recordFailedEmails(['a@example.com']));
+      act(() => result.current.recordFailedEmails([{ email: 'a@example.com', permanent: false }]));
       act(() => result.current.moveFailedToDoNotContact('a@example.com'));
       expect(result.current.blacklist).toEqual(['a@example.com']);
       expect(result.current.failedEmails).toEqual([]);
+    });
+
+    it('auto-adds a permanent failure to the Do Not Contact list, and keeps it visible marked as such', () => {
+      const fetchMock = stubFetch(async () => ({ ok: true, json: async () => ({ blacklist: [] }) }));
+      const { result } = renderHook(() => useAccountSettings());
+      act(() => result.current.recordFailedEmails([{ email: 'dead@example.com', permanent: true }]));
+      expect(result.current.blacklist).toEqual(['dead@example.com']);
+      expect(result.current.failedEmails).toEqual([{ email: 'dead@example.com', permanent: true }]);
+      const pushCalls = fetchMock.mock.calls.filter(([url, init]) => url === '/api/blacklist' && (init as RequestInit | undefined)?.method === 'POST');
+      expect(pushCalls).toHaveLength(1);
+    });
+
+    it('does not touch the Do Not Contact list for an ordinary transient failure', () => {
+      const { result } = renderHook(() => useAccountSettings());
+      act(() => result.current.recordFailedEmails([{ email: 'flaky@example.com', permanent: false }]));
+      expect(result.current.blacklist).toEqual([]);
+    });
+
+    it('upgrades an existing transient entry to permanent (and blacklists it) rather than losing the upgrade', () => {
+      const { result } = renderHook(() => useAccountSettings());
+      act(() => result.current.recordFailedEmails([{ email: 'a@example.com', permanent: false }]));
+      act(() => result.current.recordFailedEmails([{ email: 'a@example.com', permanent: true }]));
+      expect(result.current.failedEmails).toEqual([{ email: 'a@example.com', permanent: true }]);
+      expect(result.current.blacklist).toEqual(['a@example.com']);
+    });
+
+    it('does not downgrade an already-permanent entry back to transient on a later unrelated failure', () => {
+      const { result } = renderHook(() => useAccountSettings());
+      act(() => result.current.recordFailedEmails([{ email: 'a@example.com', permanent: true }]));
+      act(() => result.current.recordFailedEmails([{ email: 'a@example.com', permanent: false }]));
+      expect(result.current.failedEmails).toEqual([{ email: 'a@example.com', permanent: true }]);
+    });
+  });
+
+  describe('parseFailedEmails', () => {
+    it('tolerates the legacy string[] shape, treating each address as transient', () => {
+      expect(parseFailedEmails(['a@example.com', 'b@example.com'])).toEqual([
+        { email: 'a@example.com', permanent: false },
+        { email: 'b@example.com', permanent: false },
+      ]);
+    });
+
+    it('passes through the current FailedEmailEntry[] shape', () => {
+      expect(parseFailedEmails([{ email: 'a@example.com', permanent: true }])).toEqual([{ email: 'a@example.com', permanent: true }]);
+    });
+
+    it('returns an empty array for non-array input rather than throwing', () => {
+      expect(parseFailedEmails(null)).toEqual([]);
+      expect(parseFailedEmails(undefined)).toEqual([]);
+      expect(parseFailedEmails('garbage')).toEqual([]);
+    });
+
+    it('skips malformed entries rather than throwing', () => {
+      expect(parseFailedEmails([{ nope: true }, 42, null])).toEqual([]);
+    });
+  });
+
+  describe('contact cooldown', () => {
+    it('defaults to 30 days', () => {
+      const { result } = renderHook(() => useAccountSettings());
+      expect(result.current.contactCooldownDays).toBe(30);
+    });
+
+    it('setContactCooldown updates state and persists via syncStorage, including "0 = off"', () => {
+      const { result } = renderHook(() => useAccountSettings());
+      act(() => result.current.setContactCooldown(0));
+      expect(result.current.contactCooldownDays).toBe(0);
+      expect(syncStorage.setItem).toHaveBeenCalledWith('tp_contact_cooldown_days', '0');
     });
   });
 

@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, sendInBatches, findDuplicateRecipients, messageIdsFromResults, computeAnalyticsStats, payloadForPendingSend, subjectTestWinner, countedResponders, deliveredCount, campaignsNeedingFollowUp } from './utils';
-import type { Campaign, CampaignRecipient } from './types';
+import {
+  csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, countSendableRecipients, sendInBatches,
+  findDuplicateRecipients, messageIdsFromResults, permanentlyFailedEmails, computeAnalyticsStats,
+  payloadForPendingSend, subjectTestWinner, countedResponders, deliveredCount, campaignsNeedingFollowUp,
+  buildLastContactedMap, findCooldownRecipients,
+} from './utils';
+import type { Campaign, CampaignRecipient, SendResultEntry } from './types';
 
 describe('shuffle', () => {
   it('preserves every element (no drops or duplicates)', () => {
@@ -82,6 +87,56 @@ describe('countUniqueRecipients', () => {
   it('returns 0 for no lists or empty lists', () => {
     expect(countUniqueRecipients()).toBe(0);
     expect(countUniqueRecipients([], [])).toBe(0);
+  });
+});
+
+describe('countSendableRecipients', () => {
+  it('matches countUniqueRecipients when the blacklist is empty', () => {
+    expect(countSendableRecipients([], ['a@example.com', 'b@example.com'], ['b@example.com']))
+      .toEqual({ sendable: 2, excludedByBlacklist: 0 });
+  });
+
+  it('drops a blacklisted address from the sendable count and reports it as excluded', () => {
+    expect(countSendableRecipients(['b@example.com'], ['a@example.com', 'b@example.com']))
+      .toEqual({ sendable: 1, excludedByBlacklist: 1 });
+  });
+
+  it('matches the blacklist case-insensitively and trims whitespace, same as the address dedup itself', () => {
+    expect(countSendableRecipients(['B@Example.com'], [' a@example.com ', 'b@example.com']))
+      .toEqual({ sendable: 1, excludedByBlacklist: 1 });
+  });
+
+  it('does not double-count a blacklisted address that appears in more than one list', () => {
+    const managerEmails = Array.from({ length: 5 }, () => 'manager@label.com');
+    expect(countSendableRecipients(['manager@label.com'], managerEmails, ['other@label.com']))
+      .toEqual({ sendable: 1, excludedByBlacklist: 1 });
+  });
+
+  it('returns all zero for no recipients at all', () => {
+    expect(countSendableRecipients([])).toEqual({ sendable: 0, excludedByBlacklist: 0 });
+  });
+});
+
+describe('permanentlyFailedEmails', () => {
+  function result(overrides: Partial<SendResultEntry> = {}): SendResultEntry {
+    return { to: 'a@example.com', success: false, ...overrides };
+  }
+
+  it('picks out only failures flagged permanent', () => {
+    const results = [
+      result({ to: 'dead@example.com', permanent: true }),
+      result({ to: 'flaky@example.com', permanent: false }),
+      result({ to: 'ok@example.com', success: true }),
+    ];
+    expect(permanentlyFailedEmails(results)).toEqual(['dead@example.com']);
+  });
+
+  it('ignores a successful send even if permanent happens to be set on it', () => {
+    expect(permanentlyFailedEmails([result({ to: 'x@example.com', success: true, permanent: true })])).toEqual([]);
+  });
+
+  it('returns an empty array when nothing failed permanently', () => {
+    expect(permanentlyFailedEmails([result({ permanent: false }), result({ success: true })])).toEqual([]);
   });
 });
 
@@ -425,6 +480,84 @@ describe('campaignsNeedingFollowUp', () => {
   it('defaults `now` to the current time when omitted', () => {
     const due = campaignsNeedingFollowUp([baseCampaign()], FOLLOW_UP_DAYS, []);
     expect(due).toHaveLength(1);
+  });
+});
+
+describe('buildLastContactedMap / findCooldownRecipients', () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const NOW = Date.UTC(2026, 0, 30);
+
+  function campaign(overrides: Partial<Campaign> = {}): Campaign {
+    return { id: '1', trackTitle: 'Track', date: new Date(NOW).toISOString(), type: 'demos', emails: [], ...overrides };
+  }
+
+  describe('buildLastContactedMap', () => {
+    it('maps each lowercased recipient to their most recent campaign timestamp', () => {
+      const campaigns = [
+        campaign({ id: 'old', date: new Date(NOW - 20 * DAY_MS).toISOString(), emails: ['a@example.com'] }),
+        campaign({ id: 'new', date: new Date(NOW - 2 * DAY_MS).toISOString(), emails: ['A@Example.com'] }),
+      ];
+      const map = buildLastContactedMap(campaigns);
+      expect(map.get('a@example.com')).toBe(NOW - 2 * DAY_MS);
+    });
+
+    it('keeps the later date regardless of campaign order in the input array', () => {
+      const campaigns = [
+        campaign({ id: 'new', date: new Date(NOW - 2 * DAY_MS).toISOString(), emails: ['a@example.com'] }),
+        campaign({ id: 'old', date: new Date(NOW - 20 * DAY_MS).toISOString(), emails: ['a@example.com'] }),
+      ];
+      const map = buildLastContactedMap(campaigns);
+      expect(map.get('a@example.com')).toBe(NOW - 2 * DAY_MS);
+    });
+
+    it('skips a campaign with an unparseable date rather than poisoning the map with NaN', () => {
+      const campaigns = [campaign({ date: 'not-a-date', emails: ['a@example.com'] })];
+      const map = buildLastContactedMap(campaigns);
+      expect(map.has('a@example.com')).toBe(false);
+    });
+
+    it('returns an empty map for no campaigns', () => {
+      expect(buildLastContactedMap([]).size).toBe(0);
+    });
+  });
+
+  describe('findCooldownRecipients', () => {
+    it('flags a recipient last contacted within the cooldown window', () => {
+      const map = new Map([['a@example.com', NOW - 5 * DAY_MS]]);
+      expect(findCooldownRecipients(map, 30, ['a@example.com'], NOW)).toEqual(['a@example.com']);
+    });
+
+    it('does not flag a recipient last contacted outside the cooldown window', () => {
+      const map = new Map([['a@example.com', NOW - 40 * DAY_MS]]);
+      expect(findCooldownRecipients(map, 30, ['a@example.com'], NOW)).toEqual([]);
+    });
+
+    it('boundary: flags exactly at the cutoff', () => {
+      const map = new Map([['a@example.com', NOW - 30 * DAY_MS]]);
+      expect(findCooldownRecipients(map, 30, ['a@example.com'], NOW)).toEqual(['a@example.com']);
+    });
+
+    it('does not flag a recipient with no prior contact at all', () => {
+      const map = new Map<string, number>();
+      expect(findCooldownRecipients(map, 30, ['never@example.com'], NOW)).toEqual([]);
+    });
+
+    it('is disabled entirely when cooldownDays is 0, mirroring dailySendCap', () => {
+      const map = new Map([['a@example.com', NOW]]);
+      expect(findCooldownRecipients(map, 0, ['a@example.com'], NOW)).toEqual([]);
+    });
+
+    it('matches case-insensitively and de-dupes repeated addresses in the input list', () => {
+      const map = new Map([['a@example.com', NOW - 1 * DAY_MS]]);
+      expect(findCooldownRecipients(map, 30, ['A@Example.com', 'a@example.com'], NOW)).toEqual(['A@Example.com']);
+    });
+
+    it('flags a recipient contacted recently under a different track — the whole point vs. findDuplicateRecipients', () => {
+      const pitchedEmailMap = new Map([['a@example.com', ['Old Track']]]);
+      const lastContactedMap = new Map([['a@example.com', NOW - 5 * DAY_MS]]);
+      expect(findDuplicateRecipients(pitchedEmailMap, 'New Track', ['a@example.com'])).toEqual([]);
+      expect(findCooldownRecipients(lastContactedMap, 30, ['a@example.com'], NOW)).toEqual(['a@example.com']);
+    });
   });
 });
 

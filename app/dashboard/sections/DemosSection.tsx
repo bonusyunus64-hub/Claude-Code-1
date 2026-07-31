@@ -128,6 +128,7 @@ export interface DemosSectionProps {
   includedArtists: Artist[];
   visibleArtists: Artist[];
   totalEmails: number;
+  excludedByBlacklist: number;
   setExcludedArtistNames: React.Dispatch<React.SetStateAction<Set<string>>>;
   excludedArtistNames: Set<string>;
   toggleArtistExclusion: (name: string) => void;
@@ -147,6 +148,8 @@ export interface DemosSectionProps {
   setPreviewModalIdx: (idx: number) => void;
 
   demosDuplicateRecipients: string[];
+  cooldownRecipients: string[];
+  contactCooldownDays: number;
   demosInvalidEmails: string[];
   setDemosInvalidEmails: (emails: string[]) => void;
   addFailedToBlacklist: (emails: string[]) => void;
@@ -191,12 +194,12 @@ export function DemosSection(props: DemosSectionProps) {
     minInstagram, setMinInstagram, maxInstagram, setMaxInstagram, gender, setGender, artistType, setArtistType,
     customContacts, removeCustomContact, showAddCustomContact, setShowAddCustomContact,
     newCustomContact, setNewCustomContact, addCustomContact, handleCustomContactsCsv,
-    handlePreview, previewDone, previewLoading, previewArtists, includedArtists, visibleArtists, totalEmails,
+    handlePreview, previewDone, previewLoading, previewArtists, includedArtists, visibleArtists, totalEmails, excludedByBlacklist,
     setExcludedArtistNames, excludedArtistNames, toggleArtistExclusion, toggleGenreFromPreview,
     recipientSearch, setRecipientSearch, sortOrder, setSortOrder,
     outsideResults, outsideResultsQuery, outsideSearchLoading, handleOutsideSearch, addOutsideArtistToContacts, pitchedEmailMap,
     setPreviewModalType, setPreviewModalIdx,
-    demosDuplicateRecipients, demosInvalidEmails, setDemosInvalidEmails, addFailedToBlacklist,
+    demosDuplicateRecipients, cooldownRecipients, contactCooldownDays, demosInvalidEmails, setDemosInvalidEmails, addFailedToBlacklist,
     sendResult, sendFailedEmails, setSendFailedEmails, sendError,
     useFollowUp, setUseFollowUp, handleSend, canSend, sending,
     selectedAccount, setActiveSection,
@@ -634,6 +637,9 @@ export function DemosSection(props: DemosSectionProps) {
           {previewDone && (
             <span className="text-sm text-zinc-400">
               {includedArtists.length}{includedArtists.length !== previewArtists.length ? ` of ${previewArtists.length}` : ''} artists selected · {totalEmails} emails
+              {excludedByBlacklist > 0 && (
+                <span className="text-zinc-600"> ({excludedByBlacklist} on Do Not Contact, excluded)</span>
+              )}
             </span>
           )}
           {!previewDone && customContacts.length > 0 && (
@@ -853,6 +859,14 @@ export function DemosSection(props: DemosSectionProps) {
           <div className="rounded-lg bg-amber-900/20 border border-amber-700/40 px-5 py-3">
             <p className="text-amber-400 text-sm">
               {demosDuplicateRecipients.length} recipient{demosDuplicateRecipients.length !== 1 ? 's have' : ' has'} already been pitched &ldquo;{trackTitle}&rdquo; before (via Song Demos or Track Promotion). You can still send.
+            </p>
+          </div>
+        )}
+
+        {!sendResult && cooldownRecipients.length > 0 && (
+          <div className="rounded-lg bg-amber-900/20 border border-amber-700/40 px-5 py-3">
+            <p className="text-amber-400 text-sm">
+              {cooldownRecipients.length} recipient{cooldownRecipients.length !== 1 ? 's were' : ' was'} contacted within the last {contactCooldownDays} day{contactCooldownDays !== 1 ? 's' : ''} (a different track, via Song Demos or Track Promotion). You can still send.
             </p>
           </div>
         )}

@@ -24,6 +24,45 @@ export function countUniqueRecipients(...emailLists: string[][]): number {
   return seen.size;
 }
 
+/**
+ * Same job as countUniqueRecipients, but also drops anyone on the Do Not
+ * Contact list — matching what the server actually does before a send
+ * (lib/demosSend.ts, lib/broadcastSend.ts both filter their own `bl` set,
+ * built from this same blacklist, out of the recipient list before counting
+ * or sending). Without this, the client's own count — the preview modal, the
+ * send button, and the daily-cap pre-check in useDemosFlow/usePromotionChannel —
+ * overstates how many messages will actually go out, which can make the
+ * cap pre-check refuse a send the server would in fact have accepted.
+ * Returns how many were excluded this way too, so a caller can tell the user
+ * some recipients were dropped rather than just showing a smaller number with
+ * no explanation.
+ */
+export function countSendableRecipients(blacklist: string[], ...emailLists: string[][]): { sendable: number; excludedByBlacklist: number } {
+  const bl = new Set(blacklist.map(e => e.trim().toLowerCase()));
+  const seen = new Set<string>();
+  let excludedByBlacklist = 0;
+  for (const list of emailLists) {
+    for (const email of list) {
+      const key = email.trim().toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (bl.has(key)) excludedByBlacklist++;
+    }
+  }
+  return { sendable: seen.size - excludedByBlacklist, excludedByBlacklist };
+}
+
+/**
+ * Recipients whose failure this round was permanent (SendResultEntry.permanent) —
+ * the addresses worth recording on the campaign's `bounced` list, the same way
+ * lib/followUpSend.ts already does for a follow-up send. A synchronous SMTP
+ * rejection produces no bounce message, so without this lib/checkReplies.ts
+ * would never have a way to learn the address is dead on its own.
+ */
+export function permanentlyFailedEmails(results: SendResultEntry[]): string[] {
+  return results.filter(r => !r.success && r.permanent).map(r => r.to);
+}
+
 export function getTodayDateStr(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -306,6 +345,58 @@ export interface FollowUpDue {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Lowercased recipient -> the most recent campaign timestamp (epoch ms) they
+ * were mailed under, across every campaign and every track. Feeds
+ * findCooldownRecipients below, which is about a manager being pitched too
+ * often in general — as distinct from pitchedEmailMap (built the same way in
+ * page.tsx) and findDuplicateRecipients above, which only ever compare the
+ * *same* track. Built once per campaigns list so a caller can useMemo it the
+ * same way page.tsx already does for pitchedEmailMap.
+ */
+export function buildLastContactedMap(campaigns: Campaign[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const campaign of campaigns) {
+    const ts = new Date(campaign.date).getTime();
+    if (Number.isNaN(ts)) continue;
+    for (const email of campaign.emails) {
+      const key = email.toLowerCase();
+      const existing = map.get(key);
+      if (existing === undefined || ts > existing) map.set(key, ts);
+    }
+  }
+  return map;
+}
+
+/**
+ * Recipients who were mailed by ANY campaign — any track, any channel —
+ * within the last `cooldownDays`. Deliberately broader than
+ * findDuplicateRecipients, which only warns about re-pitching the exact same
+ * track: hitting one manager with four different tracks in a fortnight is the
+ * pattern that actually reads as spam, and the same-track check alone has
+ * nothing to say about it. `cooldownDays <= 0` disables the check entirely —
+ * mirrors dailySendCap's 0 = no limit — so nothing is ever flagged.
+ */
+export function findCooldownRecipients(
+  lastContactedMap: Map<string, number>,
+  cooldownDays: number,
+  emails: string[],
+  now: number = Date.now()
+): string[] {
+  if (cooldownDays <= 0) return [];
+  const cutoff = now - cooldownDays * DAY_MS;
+  const seen = new Set<string>();
+  const flagged: string[] = [];
+  for (const email of emails) {
+    const key = email.trim().toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const last = lastContactedMap.get(key);
+    if (last !== undefined && last >= cutoff) flagged.push(email);
+  }
+  return flagged;
+}
 
 /**
  * Song Demos campaigns overdue for a manual follow-up nudge — feeds the Overview

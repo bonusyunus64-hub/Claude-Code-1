@@ -1,5 +1,5 @@
-import type { EmailAccount, NewAccountForm, DeliverabilityResult } from '../types';
-import { DEFAULT_SIGN_OFF, SEND_DELAY_OPTIONS, DAILY_CAP_OPTIONS, FOLLOWUP_DAYS_OPTIONS, BLANK_ACCOUNT, SEND_WINDOW_HOUR_OPTIONS } from '../constants';
+import type { EmailAccount, NewAccountForm, DeliverabilityResult, FailedEmailEntry } from '../types';
+import { DEFAULT_SIGN_OFF, SEND_DELAY_OPTIONS, DAILY_CAP_OPTIONS, CONTACT_COOLDOWN_OPTIONS, FOLLOWUP_DAYS_OPTIONS, BLANK_ACCOUNT, SEND_WINDOW_HOUR_OPTIONS } from '../constants';
 import { syncStorage } from '@/lib/remoteSync';
 
 // Timezone picker options for the Send Window section below. Intl.supportedValuesOf
@@ -50,7 +50,7 @@ export interface AccountSectionProps {
   addToBlacklist: () => void;
   removeFromBlacklist: (email: string) => void;
 
-  failedEmails: string[];
+  failedEmails: FailedEmailEntry[];
   moveFailedToDoNotContact: (email: string) => void;
   removeFromFailedEmails: (email: string) => void;
 
@@ -61,6 +61,9 @@ export interface AccountSectionProps {
   setDailyCap: (value: number) => void;
   sendsToday: number;
   sendsTodayByAccount: Record<string, number>;
+
+  contactCooldownDays: number;
+  setContactCooldown: (value: number) => void;
 
   autoFollowUpEnabled: boolean;
   setAutoFollowUp: (enabled: boolean) => void;
@@ -108,6 +111,7 @@ export function AccountSection(props: AccountSectionProps) {
     failedEmails, moveFailedToDoNotContact, removeFromFailedEmails,
     sendDelay, setSendDelay,
     dailySendCap, setDailyCap, sendsToday, sendsTodayByAccount,
+    contactCooldownDays, setContactCooldown,
     autoFollowUpEnabled, setAutoFollowUp, autoFollowUpDays, setAutoFollowUpDaysValue, demosFollowUpTemplate,
     sendWindowEnabled, setSendWindowEnabledOption, sendWindowStartHour, setSendWindowStartHourOption,
     sendWindowEndHour, setSendWindowEndHourOption, sendWindowTimezone, setSendWindowTimezoneOption,
@@ -274,12 +278,26 @@ export function AccountSection(props: AccountSectionProps) {
         </div>
         {failedEmails.length > 0 ? (
           <div className="space-y-1 max-h-48 overflow-y-auto">
-            {failedEmails.map(email => (
+            {failedEmails.map(({ email, permanent }) => (
               <div key={email} className="flex items-center justify-between px-3 py-2 bg-zinc-800 rounded-lg gap-3">
-                <span className="text-xs text-zinc-300 font-mono truncate">{email}</span>
+                <div className="min-w-0 flex items-center gap-2">
+                  <span className="text-xs text-zinc-300 font-mono truncate">{email}</span>
+                  {permanent && (
+                    <span title="The mail server rejected this address outright, so it was added to Do Not Contact automatically."
+                      className="shrink-0 text-[10px] uppercase tracking-wide text-amber-400 bg-amber-600/15 border border-amber-600/30 px-1.5 py-0.5 rounded-full">
+                      Auto-added to Do Not Contact
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <button onClick={() => moveFailedToDoNotContact(email)}
-                    className="text-xs text-amber-400 hover:text-amber-300 transition whitespace-nowrap">Do Not Contact</button>
+                  {permanent ? (
+                    <button onClick={() => { removeFromBlacklist(email); removeFromFailedEmails(email); }}
+                      title="Remove from Do Not Contact and clear this entry — use this if the rejection looks like a mistake."
+                      className="text-xs text-zinc-400 hover:text-zinc-200 transition whitespace-nowrap">Undo</button>
+                  ) : (
+                    <button onClick={() => moveFailedToDoNotContact(email)}
+                      className="text-xs text-amber-400 hover:text-amber-300 transition whitespace-nowrap">Do Not Contact</button>
+                  )}
                   <button onClick={() => removeFromFailedEmails(email)} className="text-zinc-600 hover:text-red-400 transition text-lg leading-none">×</button>
                 </div>
               </div>
@@ -341,6 +359,25 @@ export function AccountSection(props: AccountSectionProps) {
             ))}
           </div>
         )}
+      </section>
+
+      {/* Contact Cooldown */}
+      <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Contact Cooldown</h2>
+          <p className="text-xs text-zinc-500">
+            Warn before pitching a manager who was contacted — by any track, via Song Demos or Track Promotion — within this many days. This never blocks a send, it just flags who to double-check.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {CONTACT_COOLDOWN_OPTIONS.map(opt => (
+            <button key={opt.value}
+              onClick={() => setContactCooldown(opt.value)}
+              className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${contactCooldownDays === opt.value ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+              {opt.label}
+            </button>
+          ))}
+        </div>
       </section>
 
       {/* Send Window */}

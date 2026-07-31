@@ -3,8 +3,11 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { syncStorage } from '@/lib/remoteSync';
 import { isWithinSendWindow, nextWindowOpenTime, type SendWindowSettings } from '@/lib/sendWindow';
-import type { Campaign, SavedTemplate, SendResultEntry } from '../types';
-import { sendInBatches, countUniqueRecipients, findDuplicateRecipients, messageIdsFromResults, checkRecipientsValidity, payloadForPendingSend } from '../utils';
+import type { Campaign, FailedEmailEntry, SavedTemplate, SendResultEntry } from '../types';
+import {
+  sendInBatches, countSendableRecipients, findDuplicateRecipients, findCooldownRecipients, messageIdsFromResults,
+  permanentlyFailedEmails, checkRecipientsValidity, payloadForPendingSend,
+} from '../utils';
 
 export type SendOutcome = { sent: number; failed: number; total: number };
 
@@ -53,8 +56,12 @@ export interface PromotionChannelConfig {
   sendsToday: number;
   accountCapError: (accountId: string, additionalSends: number) => string | null;
   refreshSendsToday: () => void;
-  recordFailedEmails: (emails: string[]) => void;
+  recordFailedEmails: (entries: FailedEmailEntry[]) => void;
   pitchedEmailMap: Map<string, string[]>;
+  /** See useDemosFlow's identical field for what this is and why it's separate from pitchedEmailMap. */
+  lastContactedMap: Map<string, number>;
+  /** Account settings' cross-campaign contact cooldown (days); 0 disables it. */
+  contactCooldownDays: number;
   upsertCampaign: (campaign: Campaign) => void;
   /** Account settings' Send Window (lib/sendWindow.ts) — see useDemosFlow's
    *  identical field and handleSend for how it's used. */
@@ -75,7 +82,7 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
     campaignType, genresEndpoint, previewEndpoint, sendEndpoint, resultsKey, secondaryFilterKey, nameVar,
     trackTitle, driveLink, senderName, template, subject, setTemplate, setSubject, signOff, signOffImage,
     selectedAccountId, sendDelay, blacklist, dailySendCap, sendsToday, accountCapError, refreshSendsToday,
-    recordFailedEmails, pitchedEmailMap, upsertCampaign, sendWindowSettings,
+    recordFailedEmails, pitchedEmailMap, lastContactedMap, contactCooldownDays, upsertCampaign, sendWindowSettings,
   } = config;
 
   // Genres list has no synced-settings dependency (unlike presets/template library
@@ -148,11 +155,15 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
     }
   }, [previewEndpoint, resultsKey, secondaryFilterKey, selectedGenres, selectedSecondary, matchMode]);
 
-  const totalEmails = countUniqueRecipients(results.flatMap(t => t.emails));
+  const { sendable: totalEmails, excludedByBlacklist } = countSendableRecipients(blacklist, results.flatMap(t => t.emails));
   const canSend = !!trackTitle && !!driveLink && previewDone;
   const duplicateRecipients = useMemo(
     () => findDuplicateRecipients(pitchedEmailMap, trackTitle, results.flatMap(t => t.emails)),
     [results, trackTitle, pitchedEmailMap]
+  );
+  const cooldownRecipients = useMemo(
+    () => findCooldownRecipients(lastContactedMap, contactCooldownDays, results.flatMap(t => t.emails)),
+    [results, lastContactedMap, contactCooldownDays]
   );
 
   const handleSend = useCallback(async () => {
@@ -183,6 +194,9 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
         return {
           id: campaignId, trackTitle, date: campaignDate, type: campaignType,
           emails: sentEmails, accountId: selectedAccountId, messageIds: messageIdsFromResults(resultsSoFar),
+          // See useDemosFlow's identical field — a permanently-rejected address never
+          // generates a bounce message, so this is the only chance to record it.
+          bounced: permanentlyFailedEmails(resultsSoFar),
           pendingSend, driveLink, senderName,
         };
       }
@@ -210,9 +224,12 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
       });
       if (!outcome.ok) { setSendError(outcome.error); }
       else {
-        const failed = outcome.results.filter(r => !r.success).map(r => r.to);
-        setSendFailedEmails(failed);
-        recordFailedEmails(failed);
+        const failedResults = outcome.results.filter(r => !r.success);
+        setSendFailedEmails(failedResults.map(r => r.to));
+        // Permanent failures are auto-suppressed to Do Not Contact inside
+        // recordFailedEmails (see useAccountSettings.ts) — this just hands over
+        // which ones those were.
+        recordFailedEmails(failedResults.map(r => ({ email: r.to, permanent: !!r.permanent })));
         if (outcome.results.some(r => r.success)) refreshSendsToday();
       }
     } finally {
@@ -293,7 +310,7 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
 
     handleSend, sending, sendResult, sendFailedEmails, setSendFailedEmails, sendError,
 
-    totalEmails, canSend, duplicateRecipients,
+    totalEmails, excludedByBlacklist, canSend, duplicateRecipients, cooldownRecipients,
 
     nameVar,
   };

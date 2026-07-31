@@ -1,5 +1,22 @@
-export interface SendResultEntry { to: string; success: boolean; error?: string; messageId?: string }
+/**
+ * `permanent` mirrors lib/mailSend.ts's SendResult.permanent: set when SMTP
+ * rejected the address outright (5xx, bad envelope) rather than the send being
+ * lost to a dropped connection. A synchronous rejection like that produces no
+ * bounce message, so nothing downstream (lib/checkReplies.ts) would ever learn
+ * the address is dead on its own — callers use this flag to auto-suppress it
+ * (see useAccountSettings.ts's recordFailedEmails) and to record it on the
+ * campaign's `bounced` list the same way lib/followUpSend.ts already does.
+ */
+export interface SendResultEntry { to: string; success: boolean; error?: string; messageId?: string; permanent?: boolean }
 export type BatchProgress = { sent: number; failed: number; total: number };
+
+/**
+ * One address in the Account tab's "Potential False Emails" review list.
+ * `permanent` distinguishes a confirmed-dead address (SendResultEntry.permanent,
+ * already auto-added to Do Not Contact — see recordFailedEmails) from an
+ * ordinary transient failure the user still has to triage by hand.
+ */
+export interface FailedEmailEntry { email: string; permanent: boolean }
 
 export interface Artist {
   name: string;

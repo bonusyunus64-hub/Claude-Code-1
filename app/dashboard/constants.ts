@@ -60,6 +60,20 @@ export const DAILY_CAP_OPTIONS = [
   { label: '500', value: 500 },
 ];
 
+// 0 = off, mirroring DAILY_CAP_OPTIONS' "None". Otherwise a manager who's been
+// pitched a track recently isn't automatically off-limits for a different one —
+// this only ever produces a warning (see findCooldownRecipients in utils.ts),
+// same as the existing same-track duplicate check.
+export const CONTACT_COOLDOWN_OPTIONS = [
+  { label: 'Off', value: 0 },
+  { label: '14 days', value: 14 },
+  { label: '30 days', value: 30 },
+  { label: '60 days', value: 60 },
+  { label: '90 days', value: 90 },
+];
+
+export const DEFAULT_CONTACT_COOLDOWN_DAYS = 30;
+
 export const FOLLOWUP_DAYS_OPTIONS = [
   { label: '3 days', value: 3 },
   { label: '5 days', value: 5 },
