@@ -29,100 +29,36 @@ export interface CampaignRecord {
   lastChecked?: number;
   recipients?: CampaignRecipient[];
   messageIds?: Record<string, string>;
-  /**
-   * Present while a send is still in progress (or was interrupted before finishing) —
-   * lets it be resumed instead of restarted. No numeric offset: resume re-derives its
-   * exclusion set from `emails` (see app/dashboard/hooks/useCampaignHistory.ts's
-   * resumeSend), which every record — including ones written before this field
-   * changed shape — already has. A record persisted by an older build may still have
-   * a leftover `offset` property in Redis; it's simply ignored on read.
-   */
+  /** Present while a send is in progress or was interrupted, so it can be resumed.
+   *  No numeric offset — resume re-derives its exclusion set from `emails`. */
   pendingSend?: { endpoint: string; payload: Record<string, unknown> };
-  /** Needed to re-render the follow-up template later (lib/emailTemplate.ts's {{driveLink}}/{{senderName}}) — not used for anything at send time itself. */
+  /** Needed to re-render the follow-up template later ({{driveLink}}/{{senderName}}); unused at send time. */
   driveLink?: string;
   senderName?: string;
-  /**
-   * Addresses (lowercased) that have already received an automatic follow-up for
-   * this campaign. A campaign whose non-responded recipient count exceeds one cron
-   * run's message budget (lib/autoFollowUp.ts's computeFollowUpBudget) or the daily
-   * send cap gets worked through a batch at a time across several days'
-   * app/api/cron/auto-followup runs; this is what lets nonRespondedRecipients()
-   * skip whoever a previous partial run already reached, instead of re-sending the
-   * whole campaign. Missing on records saved before this field existed — treated
-   * as an empty list, so old records behave exactly as before.
-   */
+  /** Lowercased addresses already sent an automatic follow-up for this campaign.
+   *  Lets a multi-day cron run skip whoever a prior partial run already reached. Missing on older records = empty list. */
   followUpSent?: string[];
-  /**
-   * Set once every non-responded/non-bounced/non-blacklisted recipient in `emails`
-   * has an entry in `followUpSent` — i.e. this campaign needs no further automatic
-   * follow-up work, ever. A campaign still partway through (some, but not all,
-   * recipients in `followUpSent`) has no followUpSentAt yet, so
-   * isCampaignDueForFollowUp keeps returning it on future runs until it's finished.
-   * Records saved under the old all-or-nothing behaviour already have this set
-   * from a single unbatched send — they're left alone and stay done.
-   */
+  /** Set once every eligible recipient has a `followUpSent` entry — campaign needs no more follow-up work.
+   *  Older, pre-batching records already have this set from their single unbatched send. */
   followUpSentAt?: number;
-  /**
-   * The follow-up template/subject as configured (Account settings' Automatic
-   * Follow-ups fields, tp_followup_template/tp_followup_subject) at the moment
-   * this Song Demos campaign was sent — mirrors driveLink/senderName above, for
-   * the same reason: app/api/cron/auto-followup/route.ts renders and sends the
-   * follow-up days after the original pitch, and without a snapshot it would
-   * silently pick up whatever the user has since edited those settings to,
-   * making a campaign that already went out inconsistent with what it actually
-   * follows up on. Only ever set on `demos` campaigns — radio/playlists never
-   * get an automatic follow-up (see isCampaignDueForFollowUp). Missing on
-   * records saved before this field existed, or wherever the follow-up template
-   * was blank at send time; the cron route falls back to whatever's currently
-   * configured in either case, exactly matching this field's absence to its
-   * pre-snapshot behavior.
-   */
+  /** Follow-up template/subject as configured at send time, snapshotted so a later settings edit
+   *  doesn't change what an already-sent campaign follows up with. `demos` campaigns only; missing on older records or a blank template, in which case the cron falls back to current settings. */
   followUpTemplate?: string;
   followUpSubject?: string;
-  /**
-   * Present when this Song Demos send tested two subject lines against each
-   * other (DemosSection's "Test a second subject line" toggle) — the raw
-   * templates (with {{variables}} unrendered) as configured at send time,
-   * snapshotted for the same driveLink/senderName reason: the Overview tab
-   * reports on these later, and a template edit made afterwards shouldn't
-   * rewrite what a finished test says it compared. `subjectB` (non-blank) is
-   * what marks a campaign as having actually run a test — a send with the
-   * toggle off, or with B left empty, has neither field set and behaves exactly
-   * as a send always has.
-   */
+  /** Raw subject-line A/B templates as configured at send time (DemosSection's "Test a second subject line"),
+   *  snapshotted so a later template edit doesn't rewrite what a finished test compared. Non-blank `subjectB` marks a real test. */
   subjectA?: string;
   subjectB?: string;
-  /**
-   * Lowercased recipient -> which subject variant ('A' or 'B') they were sent,
-   * assigned deterministically by address (lib/recipients.ts's
-   * assignSubjectVariant) so a batched or resumed send can never move someone
-   * between variants after the fact. Lets computeAnalyticsStats attribute each
-   * recipient's reply (`responded`) back to the subject they actually got. Only
-   * populated alongside subjectA/subjectB — absent entirely for a campaign that
-   * didn't run a test.
-   */
+  /** Lowercased recipient -> assigned variant ('A'/'B'), from lib/recipients.ts's assignSubjectVariant,
+   *  so computeAnalyticsStats can attribute replies to the subject actually sent. Only set alongside subjectA/subjectB. */
   subjectVariants?: Record<string, 'A' | 'B'>;
-  /**
-   * UTC epoch ms after which a send-window-queued campaign (Account settings'
-   * Send Window, lib/sendWindow.ts) may actually start — set only when
-   * `pendingSend` represents a send that hasn't gone out at all yet (`emails`
-   * still empty). Draining it just means calling the same resumeSend machinery
-   * pendingSend already exists for (app/dashboard/hooks/useCampaignHistory.ts's
-   * drain effect, and the app/api/cron/drain-send-window backstop) once
-   * Date.now() passes this value — there's no separate queue data structure.
-   * Once the first batch actually sends, `emails` stops being empty and this
-   * field is simply ignored from then on (harmless if it lingers on the
-   * record): `pendingSend` + an empty `emails` is what distinguishes "queued,
-   * nothing sent yet" from "interrupted partway through", not this field.
-   */
+  /** UTC epoch ms after which a send-window-queued campaign may start; only meaningful while
+   *  `pendingSend` exists and `emails` is still empty. Ignored once the first batch has sent. */
   scheduledFor?: number;
 }
 
-// Campaign history used to live as one JSON array under a single settings field,
-// rewritten in full on every send and every reply-check. That gets slower and
-// heavier the longer a user's history grows, and risks the whole history if one
-// write is interrupted. Storing one Redis hash field per campaign means a single
-// send or reply-check only ever touches the one record it changed.
+// One Redis hash field per campaign (rather than one JSON blob for all history)
+// so a send or reply-check only ever touches the record it changed.
 
 function safeParse(raw: string): unknown {
   try { return JSON.parse(raw); } catch { return null; }
@@ -190,19 +126,11 @@ export async function clearCampaigns(): Promise<void> {
 
 /**
  * Merges one round of send results into a campaign record — the server-side
- * counterpart to app/dashboard/hooks/useCampaignHistory.ts's resumeSend, used by
- * the send-window drain cron (app/api/cron/drain-send-window/route.ts) to persist
- * progress after every batch the same way a browser-driven resume would. Kept as
- * a small pure function here (rather than inlined in the route) so its shape —
- * merging `emails`, recomputing `subjectVariants` for a running A/B test, and
- * swapping in whatever `pendingSend` the round just produced — can be unit
- * tested without spinning up a route handler or mocking Redis.
- *
+ * counterpart to useCampaignHistory's resumeSend, used by the send-window drain
+ * cron to persist progress after each batch. Merges `emails`, recomputes
+ * `subjectVariants` for a running A/B test, and swaps in the next `pendingSend`.
  * Doesn't touch `recipients`: the cron has no roster-lookup closure to draw
- * artist/manager names from (that only ever existed in the original browser tab
- * that built the send), so a cron-drained campaign's recipients stay exactly as
- * blank as resumeSend already leaves them for the same reason — "Show artists
- * sent to" (app/api/campaign-recipients) is the existing remedy either way.
+ * artist/manager names from, so those stay blank just as resumeSend leaves them.
  */
 export function mergeSendResultsIntoCampaign(
   campaign: CampaignRecord,

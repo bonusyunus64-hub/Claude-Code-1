@@ -90,6 +90,11 @@ function safeParse(raw: string): unknown {
   try { return JSON.parse(raw); } catch { return null; }
 }
 
+// Deliberately uncached: every call re-reads the hash. A short-lived in-memory
+// cache was tried and reverted — it saved ~2 Redis round trips per send batch
+// (~200ms against a batch that takes ~15s to send) in exchange for a window
+// where a just-changed SMTP password or daily cap was still stale on this
+// instance. Not a trade worth making at one operator and a handful of accounts.
 async function readAll(): Promise<AccountRecord[]> {
   if (!isKvConfigured()) return [];
   await migrateLegacyAccounts();
