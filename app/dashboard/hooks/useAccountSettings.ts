@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { syncStorage } from '@/lib/remoteSync';
 import type { EmailAccount, NewAccountForm, DeliverabilityResult } from '../types';
 import { DEFAULT_SIGN_OFF, BLANK_ACCOUNT } from '../constants';
@@ -154,6 +154,24 @@ export function useAccountSettings() {
   const [blacklist, setBlacklist] = useState<string[]>([]);
   const [newBlacklistEmail, setNewBlacklistEmail] = useState('');
 
+  // The Do Not Contact list is authoritative server-side (a Redis set, see
+  // lib/unsubscribe.ts) rather than synced through the generic settings blob like the
+  // rest of this hook's state — see remoteSync.ts's SYNCED_KEYS comment for why. So unlike
+  // everything else here, it isn't seeded by page.tsx's initial-load effect (that effect
+  // still does a legacy `localStorage.getItem('tp_blacklist')` + setBlacklist() for
+  // backward compatibility with tabs open before this change shipped, but that's just a
+  // stale snapshot — this fetch is the real load, and being a single request it resolves
+  // well before that effect's chain of awaited calls gets to its blacklist line, so it
+  // wins the race in practice). Loads once per mount; addToBlacklist/removeFromBlacklist/
+  // addFailedToBlacklist below update local state optimistically and push the change
+  // through /api/blacklist rather than re-fetching.
+  useEffect(() => {
+    fetch('/api/blacklist')
+      .then(res => (res.ok ? res.json() : Promise.reject()))
+      .then((data: { blacklist: string[] }) => setBlacklist(data.blacklist ?? []))
+      .catch(() => {}); // offline or KV not configured — start empty rather than throw
+  }, []);
+
   // Emails that bounced/failed on a send — kept separate from the blacklist so they can
   // be reviewed (a failure can be a fluke) rather than silently blocked forever.
   const [failedEmails, setFailedEmails] = useState<string[]>([]);
@@ -231,26 +249,45 @@ export function useAccountSettings() {
     }
   }
 
+  // Fire-and-forget pushes to /api/blacklist, same idiom as pushToRemote/removeFromRemote
+  // in lib/remoteSync.ts: local state is updated optimistically above, so a failed request
+  // here (offline, KV down) doesn't block the UI — it just means this device's change
+  // hasn't reached the server yet, same tradeoff the rest of this app already makes.
+  function pushBlacklistAdd(emails: string[]): void {
+    if (!emails.length) return;
+    const body = emails.length === 1 ? { email: emails[0] } : { emails };
+    fetch('/api/blacklist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).catch(() => {});
+  }
+
+  function pushBlacklistRemove(email: string): void {
+    fetch(`/api/blacklist?email=${encodeURIComponent(email)}`, { method: 'DELETE' }).catch(() => {});
+  }
+
   function addToBlacklist() {
     const email = newBlacklistEmail.trim().toLowerCase();
     if (!email || blacklist.includes(email)) return;
     const updated = [...blacklist, email];
     setBlacklist(updated);
-    syncStorage.setItem('tp_blacklist', JSON.stringify(updated));
     setNewBlacklistEmail('');
+    pushBlacklistAdd([email]);
   }
 
   function removeFromBlacklist(email: string) {
     const updated = blacklist.filter(e => e !== email);
     setBlacklist(updated);
-    syncStorage.setItem('tp_blacklist', JSON.stringify(updated));
+    pushBlacklistRemove(email);
   }
 
+  /** Batched: one /api/blacklist request for the whole list, not one per address. */
   function addFailedToBlacklist(emails: string[]) {
     const lower = emails.map(e => e.toLowerCase());
     const merged = [...new Set([...blacklist, ...lower])];
     setBlacklist(merged);
-    syncStorage.setItem('tp_blacklist', JSON.stringify(merged));
+    pushBlacklistAdd(lower);
   }
 
   function setDailyCap(value: number) {

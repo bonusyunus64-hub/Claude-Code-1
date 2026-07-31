@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { EmailAccount, PlaylistCurator, RadioStation } from '../types';
 import type { PromotionChannel } from '../hooks/usePromotionChannel';
 import {
@@ -41,6 +42,30 @@ export function PromotionSection(props: PromotionSectionProps) {
     pitchedEmailMap, selectedAccount, setActiveSection, addFailedToBlacklist, setPreviewModalType, setPreviewModalIdx,
     radio, radioPitchCount, playlists, playlistPitchCount,
   } = props;
+
+  // Playlist Curators is a fully-built channel with nobody to send to yet —
+  // data/playlists.json ships with zero curator records (Demos has ~2,983,
+  // Radio has 155). Rather than a hardcoded flag, the tab's disabled state is
+  // driven off the live curator count so it re-enables itself the day someone
+  // populates that file, no code change needed. usePromotionChannel's own
+  // genres fetch doesn't carry a curator count (only the derived genre list),
+  // so this is a small independent fetch of the same /api/playlist-genres
+  // endpoint rather than a change to that shared, out-of-scope-for-this-task hook.
+  // Defaults to 0 (disabled) until the fetch resolves, matching current reality
+  // and avoiding a flash of an enabled tab that immediately becomes disabled.
+  const [playlistCuratorCount, setPlaylistCuratorCount] = useState(0);
+  useEffect(() => {
+    fetch('/api/playlist-genres').then(r => r.json()).then(d => setPlaylistCuratorCount(d.curatorCount ?? 0)).catch(() => {});
+  }, []);
+  const playlistsDisabled = playlistCuratorCount === 0;
+
+  // Belt-and-suspenders: if promotionSection is ever 'playlists' while the tab
+  // is disabled — e.g. a value restored from a previous session, or the fetch
+  // above resolving to 0 after the user had it selected — bounce back to Radio
+  // so the user never lands on (or gets stuck on) a dead panel.
+  useEffect(() => {
+    if (playlistsDisabled && promotionSection === 'playlists') setPromotionSection('radio');
+  }, [playlistsDisabled, promotionSection, setPromotionSection]);
 
   return (
     <>
@@ -156,12 +181,33 @@ export function PromotionSection(props: PromotionSectionProps) {
       {promotionTab === 'compose' && (<>
         {/* Section toggle: Radio / Playlists */}
         <div className="flex gap-1.5">
-          {(['radio', 'playlists'] as const).map(sec => (
-            <button key={sec} onClick={() => setPromotionSection(sec)}
-              className={`px-4 py-1.5 rounded-full text-xs font-medium border transition capitalize ${promotionSection === sec ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
-              {sec === 'radio' ? 'Radio' : 'Playlist Curators'}
-            </button>
-          ))}
+          <button onClick={() => setPromotionSection('radio')}
+            className={`px-4 py-1.5 rounded-full text-xs font-medium border transition ${promotionSection === 'radio' ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'}`}>
+            Radio
+          </button>
+          {/* Kept visible-but-disabled rather than hidden, per the "Coming soon"
+              treatment: a real <button disabled> (not just pointer-events-none)
+              so keyboard/screen-reader users get correct semantics, plus
+              aria-disabled and a title explaining why. */}
+          <button
+            onClick={() => setPromotionSection('playlists')}
+            disabled={playlistsDisabled}
+            aria-disabled={playlistsDisabled}
+            title={playlistsDisabled ? 'No playlist curator contacts yet — add records to data/playlists.json to enable this tab.' : undefined}
+            className={`px-4 py-1.5 rounded-full text-xs font-medium border transition flex items-center gap-1.5 ${
+              playlistsDisabled
+                ? 'bg-zinc-900 border-zinc-800 text-zinc-600 cursor-not-allowed'
+                : promotionSection === 'playlists'
+                  ? 'bg-violet-600 border-violet-500 text-white'
+                  : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white'
+            }`}>
+            Playlist Curators
+            {playlistsDisabled && (
+              <span className="text-[10px] font-normal uppercase tracking-wide bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded-full">
+                Coming soon
+              </span>
+            )}
+          </button>
         </div>
 
         {/* Playlists section */}

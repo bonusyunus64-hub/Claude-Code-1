@@ -6,12 +6,30 @@
 // up), and keys that only exist locally (set before this device ever synced,
 // or before this feature existed) get pushed up so the *other* device can
 // pick them up next time it loads.
+//
+// That last case used to be a straight "server has nothing -> push local up", which
+// can't tell "this key has never been synced" (correct to push up) apart from "another
+// device deleted this key" (must NOT push the stale local copy back — that would
+// silently undo the deletion, e.g. resurrecting a deleted signature image). The server
+// now records a tombstone (deletedAt timestamp, see app/api/state/route.ts) whenever a
+// key is removed, and hydrateFromRemote() checks that before deciding to push: a
+// tombstoned key gets removed locally instead of re-pushed, so whichever happened most
+// recently — the delete or the stale local write — the delete wins. Tombstones expire
+// after 90 days (see TOMBSTONE_TTL_MS server-side) on the assumption that any device
+// that's going to sync a deletion has done so well before then; a device that comes back
+// online after a longer gap than that could in theory resurrect an old deletion, which is
+// an accepted tradeoff against keeping a deletion log forever.
 
 // tp_email_accounts, tp_sends_today and tp_campaigns intentionally aren't here any
 // more: accounts (including passwords) live behind /api/accounts, the send counter
 // behind /api/send-quota, and campaign history behind /api/campaigns — all three
 // are sources of truth the client reads directly rather than mirroring into this
 // generic settings blob.
+//
+// tp_blacklist isn't here either, for a related but distinct reason: the Do Not Contact
+// list moved to its own Redis set (lib/unsubscribe.ts) so concurrent unsubscribes can't
+// lose one to a read-modify-write race the way this key-value blob would. The dashboard
+// reads/writes it through /api/blacklist instead — see useAccountSettings.ts.
 const SYNCED_KEYS = [
   'tp_selected_account',
   'tp_sign_off', 'tp_sign_off_image',
@@ -21,7 +39,7 @@ const SYNCED_KEYS = [
   'tp_playlist_template', 'tp_playlist_subject',
   'tp_demos_templates', 'tp_followup_templates', 'tp_radio_templates', 'tp_playlist_templates',
   'tp_demos_presets', 'tp_radio_presets', 'tp_playlist_presets',
-  'tp_blacklist', 'tp_failed_emails', 'tp_custom_contacts',
+  'tp_failed_emails', 'tp_custom_contacts',
   'tp_send_delay', 'tp_daily_cap',
   'tp_auto_followup_enabled', 'tp_auto_followup_days',
 ];
@@ -30,11 +48,17 @@ export async function hydrateFromRemote(): Promise<void> {
   try {
     const res = await fetch('/api/state');
     if (!res.ok) return;
-    const { state } = await res.json() as { state: Record<string, string> };
+    const { state, tombstones } = await res.json() as { state: Record<string, string>; tombstones?: Record<string, number> };
+    const tomb = tombstones ?? {}; // old server build / cached response without the field — treat as "no known deletions"
     for (const key of SYNCED_KEYS) {
       const remoteValue = state[key];
       if (typeof remoteValue === 'string') {
         localStorage.setItem(key, remoteValue);
+      } else if (key in tomb) {
+        // Another device deleted this key since we last synced — honour that deletion
+        // locally rather than treating "server has nothing" as "never synced" and
+        // pushing our now-stale local copy back up.
+        localStorage.removeItem(key);
       } else {
         const localValue = localStorage.getItem(key);
         if (localValue !== null) pushToRemote(key, localValue);

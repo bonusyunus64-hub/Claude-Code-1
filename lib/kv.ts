@@ -2,6 +2,11 @@ import { Redis } from '@upstash/redis';
 
 export const STATE_KEY = 'trackpitch:settings';
 
+// Per-key deletion markers for the settings hash above — see the reconciliation comment
+// in lib/remoteSync.ts and app/api/state/route.ts for why "the server has nothing for
+// this key" needs to distinguish "never synced" from "deleted on another device".
+export const STATE_TOMBSTONES_KEY = 'trackpitch:settings:tombstones';
+
 let client: Redis | null = null;
 
 // Vercel's Upstash/KV integration injects KV_REST_API_URL + KV_REST_API_TOKEN

@@ -1,5 +1,23 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { paginate, resolveSmtpConfig, sendMessages, dedupeByRecipient, formatFromHeader, type OutboundMessage } from './mailSend';
+
+// createTransport/sendMessagesPooled go through nodemailer.createTransport for real,
+// so exercising the pool options and the close-on-finally behaviour needs a mock
+// transporter rather than the fake { sendMail } object the other sendMessages tests
+// use (those bypass createTransport entirely by constructing their own transporter).
+const mockSendMail = vi.fn();
+const mockClose = vi.fn();
+const mockCreateTransport = vi.fn((options: unknown) => {
+  void options; // recorded via mock.calls for assertions below; unused otherwise
+  return { sendMail: mockSendMail, close: mockClose };
+});
+vi.mock('nodemailer', () => ({
+  default: { createTransport: (options: unknown) => mockCreateTransport(options) },
+}));
+
+import {
+  paginate, resolveSmtpConfig, sendMessages, sendMessagesPooled, createTransport,
+  dedupeByRecipient, formatFromHeader, type OutboundMessage,
+} from './mailSend';
 
 describe('formatFromHeader', () => {
   it('quotes a plain display name', () => {
@@ -205,5 +223,46 @@ describe('sendMessages', () => {
       expect(sentOptions.text).toBe('Body');
       expect(sentOptions.headers).toBeUndefined();
     });
+  });
+});
+
+describe('createTransport', () => {
+  const config = { smtpHost: 'smtp.example.com', smtpPort: 465, smtpUser: 'u', smtpPass: 'p' };
+
+  it('enables pooling with a single connection, deliberately not nodemailer\'s multi-connection default', () => {
+    createTransport(config);
+    expect(mockCreateTransport).toHaveBeenCalledWith(expect.objectContaining({
+      pool: true,
+      maxConnections: 1,
+      maxMessages: 100,
+    }));
+  });
+});
+
+describe('sendMessagesPooled', () => {
+  const config = { smtpHost: 'smtp.example.com', smtpPort: 465, smtpUser: 'u', smtpPass: 'p' };
+  const messages: OutboundMessage[] = [{ to: 'a@example.com', subject: 'Hi', body: 'Body' }];
+
+  afterEach(() => {
+    mockSendMail.mockReset();
+    mockClose.mockReset();
+    mockCreateTransport.mockClear();
+  });
+
+  it('closes the pooled transport after a successful batch', async () => {
+    mockSendMail.mockResolvedValue(undefined);
+    const results = await sendMessagesPooled(config, messages, { fromName: 'F', fromEmail: 'f@example.com' });
+    expect(results).toEqual([{ to: 'a@example.com', success: true }]);
+    expect(mockClose).toHaveBeenCalledTimes(1);
+  });
+
+  // The whole reason sendMessagesPooled exists rather than leaving callers to close
+  // the transport themselves: a pooled connection left open holds a serverless
+  // function alive past the response, so the close has to run on the error path too.
+  it('still closes the pooled transport when every message fails', async () => {
+    mockSendMail.mockRejectedValue(Object.assign(new Error('rejected'), { responseCode: 550 }));
+    const results = await sendMessagesPooled(config, messages, { fromName: 'F', fromEmail: 'f@example.com' });
+    expect(results[0].success).toBe(false);
+    expect(mockClose).toHaveBeenCalledTimes(1);
   });
 });

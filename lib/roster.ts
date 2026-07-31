@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs';
+import { readFileSync, statSync } from 'fs';
 import { join } from 'path';
 
 export interface Artist {
@@ -23,12 +23,22 @@ export interface Artist {
 interface RosterData {
   artists: Artist[];
   genres: string[];
+  /** Stamped by scripts/parse-roster.mjs (and carried forward by strip-roster.mjs)
+   *  as of the version of this file that added roster-freshness reporting to the
+   *  Overview tab. Absent on roster.json snapshots written before that — see
+   *  IndexedRoster.resolvedGeneratedAt for the fallback. */
+  generatedAt?: string;
 }
 
 interface IndexedRoster extends RosterData {
   /** Lowercased genre -> ascending artist indices, built once so a genre filter
    *  is a lookup instead of a full scan over every artist on every request. */
   genreIndex: Map<string, number[]>;
+  /** `generatedAt` if the file has it, else the file's own filesystem mtime as of
+   *  the one time this module reads it. Resolved once here (not in a per-call
+   *  getter) so a roster.json predating `generatedAt` doesn't cost a stat() on
+   *  every request — see the module-level `cached` comment below. */
+  resolvedGeneratedAt: string;
 }
 
 let cached: IndexedRoster | null = null;
@@ -72,12 +82,24 @@ function getIndexedRoster(): IndexedRoster {
   const raw = readFileSync(filePath, 'utf-8');
   const data = JSON.parse(raw) as RosterData;
   const artists = data.artists.map(dedupeManagerContacts);
-  cached = { ...data, artists, genreIndex: buildGenreIndex(artists) };
+  // Fallback for roster.json files written before generatedAt existed: the
+  // file's mtime is a reasonable stand-in for "when the roster was last
+  // regenerated," since both parse-roster.mjs and strip-roster.mjs rewrite the
+  // file wholesale (via writeFileSync) rather than patching it in place.
+  const resolvedGeneratedAt = data.generatedAt ?? statSync(filePath).mtime.toISOString();
+  cached = { ...data, artists, genreIndex: buildGenreIndex(artists), resolvedGeneratedAt };
   return cached;
 }
 
 export function getRoster(): RosterData {
   return getIndexedRoster();
+}
+
+/** ISO timestamp for when the current roster.json snapshot was generated — see
+ *  IndexedRoster.resolvedGeneratedAt for how it's derived. Cached alongside the
+ *  rest of the indexed roster, so this is a free read after the first call. */
+export function getRosterGeneratedAt(): string {
+  return getIndexedRoster().resolvedGeneratedAt;
 }
 
 export function getTopGenres(limit = 20): string[] {

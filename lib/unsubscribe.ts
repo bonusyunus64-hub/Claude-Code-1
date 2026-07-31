@@ -1,7 +1,10 @@
 import crypto from 'crypto';
 import { getRedis, isKvConfigured, STATE_KEY } from '@/lib/kv';
 
-const BLACKLIST_FIELD = 'tp_blacklist';
+export const BLACKLIST_SET_KEY = 'trackpitch:blacklist';
+
+/** The old field in the settings hash this list used to live in, as one big JSON array. */
+const LEGACY_BLACKLIST_FIELD = 'tp_blacklist';
 
 // Same secret convention as lib/accounts.ts: ACCOUNTS_SECRET is the proper key,
 // SITE_PASSWORD is a fallback so this works without new env setup. Whichever one
@@ -53,31 +56,77 @@ export function buildUnsubscribeApiUrl(baseUrl: string, email: string): string |
   return buildUrl(baseUrl, '/api/unsubscribe', email);
 }
 
-async function readBlacklist(): Promise<string[]> {
-  if (!isKvConfigured()) return [];
-  const raw = await getRedis().hget<unknown>(STATE_KEY, BLACKLIST_FIELD);
-  if (typeof raw === 'string') {
-    try { return JSON.parse(raw); } catch { return []; }
+function safeParse(raw: string): unknown {
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+// The Do Not Contact list used to live as one JSON array in a single settings-hash field,
+// read in full, modified, and written back in full on every unsubscribe. Two recipients
+// unsubscribing at nearly the same moment would both read the same starting array, and
+// whichever write landed second would silently clobber the first — losing an opt-out,
+// which is the one list here where being wrong means emailing someone who explicitly
+// asked not to be. SADD/SREM/SMEMBERS on a Redis set are atomic per-member operations, so
+// two concurrent unsubscribes can't step on each other the same way.
+//
+// Same one-time-migration shape as migrateLegacyAccounts() in lib/accounts.ts and
+// migrateLegacyCampaigns() in lib/campaigns.ts: a module-level flag so it only runs once
+// per server instance, reset to false on a transient failure so the next request retries.
+let migrationDone = false;
+
+async function migrateLegacyBlacklist(): Promise<void> {
+  if (migrationDone) return;
+  migrationDone = true;
+  try {
+    const redis = getRedis();
+    const legacy = await redis.hget<unknown>(STATE_KEY, LEGACY_BLACKLIST_FIELD);
+    if (legacy == null) return; // Nothing to migrate.
+
+    const parsed = typeof legacy === 'string' ? safeParse(legacy) : legacy;
+    if (Array.isArray(parsed)) {
+      const emails = [...new Set(parsed.map(e => String(e).trim().toLowerCase()).filter(Boolean))];
+      if (emails.length) await redis.sadd(BLACKLIST_SET_KEY, emails[0], ...emails.slice(1));
+    }
+    // Purge the plaintext-array field regardless of whether anything parsed — leaving it is the bug.
+    await redis.hdel(STATE_KEY, LEGACY_BLACKLIST_FIELD);
+  } catch {
+    migrationDone = false; // transient Redis failure: let the next request retry
   }
-  return Array.isArray(raw) ? (raw as string[]) : [];
 }
 
 /**
  * Adds an address to the shared Do Not Contact list directly in Redis. The
- * unsubscribe page has no browser session to push the change through
- * syncStorage/localStorage the way the dashboard does — this writes straight to
- * the same settings field the dashboard reads on load, so it picks the change up
- * next time it syncs.
+ * unsubscribe page has no browser session to push the change through the dashboard's
+ * usual API routes — this writes straight to the same set the dashboard reads via
+ * /api/blacklist, so it picks the change up next time it loads.
  */
 export async function addToBlacklistServerSide(email: string): Promise<void> {
   if (!isKvConfigured()) return;
-  const list = await readBlacklist();
-
+  await migrateLegacyBlacklist();
   const lower = email.trim().toLowerCase();
-  if (!list.some(e => String(e).toLowerCase() === lower)) {
-    list.push(lower);
-    await getRedis().hset(STATE_KEY, { [BLACKLIST_FIELD]: JSON.stringify(list) });
-  }
+  if (!lower) return;
+  await getRedis().sadd(BLACKLIST_SET_KEY, lower);
+}
+
+/**
+ * Bulk counterpart to addToBlacklistServerSide — one SADD round trip for the whole batch
+ * rather than one request per address, for callers like the dashboard's "move failed
+ * sends to Do Not Contact" action that can add many addresses at once.
+ */
+export async function addManyToBlacklistServerSide(emails: string[]): Promise<void> {
+  if (!isKvConfigured()) return;
+  await migrateLegacyBlacklist();
+  const lower = [...new Set(emails.map(e => e.trim().toLowerCase()).filter(Boolean))];
+  if (!lower.length) return;
+  await getRedis().sadd(BLACKLIST_SET_KEY, lower[0], ...lower.slice(1));
+}
+
+/** Dashboard-only counterpart to addToBlacklistServerSide, for the "remove from Do Not Contact" action. */
+export async function removeFromBlacklistServerSide(email: string): Promise<void> {
+  if (!isKvConfigured()) return;
+  await migrateLegacyBlacklist();
+  const lower = email.trim().toLowerCase();
+  if (!lower) return;
+  await getRedis().srem(BLACKLIST_SET_KEY, lower);
 }
 
 /**
@@ -89,6 +138,8 @@ export async function addToBlacklistServerSide(email: string): Promise<void> {
  * it's recorded rather than on the client's next sync.
  */
 export async function getBlacklist(): Promise<Set<string>> {
-  const list = await readBlacklist();
-  return new Set(list.map(e => String(e).trim().toLowerCase()));
+  if (!isKvConfigured()) return new Set();
+  await migrateLegacyBlacklist();
+  const members = (await getRedis().smembers(BLACKLIST_SET_KEY)) ?? [];
+  return new Set(members.map(e => String(e).trim().toLowerCase()));
 }

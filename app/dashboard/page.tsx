@@ -221,8 +221,12 @@ export default function Dashboard() {
       const savedPlaylistSubject = localStorage.getItem('tp_playlist_subject');
       if (savedPlaylistSubject !== null) { setPlaylistSubject(savedPlaylistSubject); setLastSavedPlaylistSubject(savedPlaylistSubject); }
 
-      const savedBlacklist = localStorage.getItem('tp_blacklist');
-      if (savedBlacklist) account.setBlacklist(JSON.parse(savedBlacklist));
+      // No tp_blacklist read here any more: the Do Not Contact list moved to a Redis
+      // set behind /api/blacklist, which useAccountSettings loads itself on mount.
+      // Seeding it from localStorage as well would race that fetch — and a stale
+      // local copy winning is exactly the bug the move to a server-authoritative
+      // list was meant to end, since it would silently un-blacklist an address
+      // someone had already unsubscribed.
 
       const savedFailedEmails = localStorage.getItem('tp_failed_emails');
       if (savedFailedEmails) account.setFailedEmails(JSON.parse(savedFailedEmails));

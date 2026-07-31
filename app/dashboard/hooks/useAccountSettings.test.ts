@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, act, waitFor } from '@testing-library/react';
 
 const syncStorage = vi.hoisted(() => ({ setItem: vi.fn(), removeItem: vi.fn() }));
 vi.mock('@/lib/remoteSync', () => ({ syncStorage }));
@@ -18,6 +18,25 @@ function base64OfSize(bytes: number): string {
 
 function account(overrides: Partial<EmailAccount> = {}): EmailAccount {
   return { id: 'acct-1', name: 'Main', email: 'main@example.com', smtpHost: 'smtp.zoho.com', smtpPort: '465', smtpUser: 'main@example.com', ...overrides };
+}
+
+/**
+ * The hook fetches GET /api/blacklist once on mount (see the useEffect in
+ * useAccountSettings.ts), independently of whatever a given test is exercising — so most
+ * tests below need a fetch stub that answers that call sanely (an empty list) and defers
+ * everything else to the URL-specific behaviour the test actually cares about, rather than
+ * every test having to special-case it. Tests that care about the mount-time fetch itself
+ * (the 'loads the Do Not Contact list on mount' describe block) stub fetch directly instead.
+ */
+function stubFetch(handler: (url: string, init?: RequestInit) => Promise<unknown> | unknown) {
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === '/api/blacklist' && (!init || !init.method || init.method === 'GET')) {
+      return { ok: true, json: async () => ({ blacklist: [] }) };
+    }
+    return handler(url, init);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
 }
 
 describe('useAccountSettings', () => {
@@ -59,15 +78,22 @@ describe('useAccountSettings', () => {
   });
 
   describe('blacklist', () => {
-    it('adds a trimmed, lowercased address and clears the input', () => {
+    it('adds a trimmed, lowercased address, clears the input, and pushes it to /api/blacklist', () => {
+      const fetchMock = stubFetch(async () => ({ ok: true, json: async () => ({ blacklist: ['manager@example.com'] }) }));
       const { result } = renderHook(() => useAccountSettings());
       act(() => result.current.setNewBlacklistEmail('  Manager@Example.com  '));
       act(() => result.current.addToBlacklist());
       expect(result.current.blacklist).toEqual(['manager@example.com']);
       expect(result.current.newBlacklistEmail).toBe('');
+      expect(fetchMock).toHaveBeenCalledWith('/api/blacklist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'manager@example.com' }),
+      });
     });
 
     it('does not add a blank or already-present address', () => {
+      stubFetch(async () => ({ ok: true, json: async () => ({ blacklist: [] }) }));
       const { result } = renderHook(() => useAccountSettings());
       act(() => result.current.setNewBlacklistEmail(''));
       act(() => result.current.addToBlacklist());
@@ -79,18 +105,45 @@ describe('useAccountSettings', () => {
       expect(result.current.blacklist).toEqual(['manager@example.com']);
     });
 
-    it('removes an address from the blacklist', () => {
+    it('removes an address from the blacklist and sends a DELETE to /api/blacklist', () => {
+      const fetchMock = stubFetch(async () => ({ ok: true, json: async () => ({ blacklist: ['b@example.com'] }) }));
       const { result } = renderHook(() => useAccountSettings());
       act(() => result.current.setBlacklist(['a@example.com', 'b@example.com']));
       act(() => result.current.removeFromBlacklist('a@example.com'));
       expect(result.current.blacklist).toEqual(['b@example.com']);
+      expect(fetchMock).toHaveBeenCalledWith('/api/blacklist?email=a%40example.com', { method: 'DELETE' });
     });
 
-    it('addFailedToBlacklist merges, lowercases, and dedupes against the existing list', () => {
+    it('addFailedToBlacklist merges, lowercases, and dedupes locally, and pushes the whole batch in one request', () => {
+      const fetchMock = stubFetch(async () => ({ ok: true, json: async () => ({ blacklist: [] }) }));
       const { result } = renderHook(() => useAccountSettings());
       act(() => result.current.setBlacklist(['existing@example.com']));
       act(() => result.current.addFailedToBlacklist(['New@Example.com', 'existing@example.com']));
       expect(result.current.blacklist.sort()).toEqual(['existing@example.com', 'new@example.com']);
+
+      // One /api/blacklist POST for the whole batch, not one request per address.
+      const pushCalls = fetchMock.mock.calls.filter(([url, init]) => url === '/api/blacklist' && (init as RequestInit | undefined)?.method === 'POST');
+      expect(pushCalls).toHaveLength(1);
+      expect(JSON.parse((pushCalls[0][1] as RequestInit).body as string)).toEqual({ emails: ['new@example.com', 'existing@example.com'] });
+    });
+  });
+
+  describe('loads the Do Not Contact list on mount', () => {
+    it('populates blacklist from GET /api/blacklist', async () => {
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+        if (url === '/api/blacklist') return { ok: true, json: async () => ({ blacklist: ['a@example.com', 'b@example.com'] }) };
+        throw new Error(`unexpected fetch in this test: ${url}`);
+      }));
+      const { result } = renderHook(() => useAccountSettings());
+      await waitFor(() => expect(result.current.blacklist).toEqual(['a@example.com', 'b@example.com']));
+    });
+
+    it('leaves blacklist empty (rather than throwing) when the request fails', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network down'); }));
+      const { result } = renderHook(() => useAccountSettings());
+      // Give the effect's fetch().catch() a turn to settle before asserting nothing changed.
+      await act(async () => { await Promise.resolve(); });
+      expect(result.current.blacklist).toEqual([]);
     });
   });
 
@@ -137,11 +190,14 @@ describe('useAccountSettings', () => {
     });
 
     it('does not submit when required fields are missing', async () => {
-      const fetchMock = vi.fn();
-      vi.stubGlobal('fetch', fetchMock);
+      // The hook's own mount-time GET to /api/blacklist (see the 'loads the Do Not
+      // Contact list on mount' describe block) means fetch does get called at least
+      // once regardless — this test only cares that addAccount() itself doesn't call
+      // /api/accounts when required fields are missing.
+      const fetchMock = stubFetch(async (url: string) => { throw new Error(`unexpected fetch: ${url}`); });
       const { result } = renderHook(() => useAccountSettings());
       await act(async () => { await result.current.addAccount(); });
-      expect(fetchMock).not.toHaveBeenCalled();
+      expect(fetchMock.mock.calls.filter(([url]) => url === '/api/accounts')).toHaveLength(0);
     });
 
     it('surfaces a server-provided error and leaves the account list untouched', async () => {
@@ -234,18 +290,15 @@ describe('useAccountSettings', () => {
 
   describe('handleDeliverabilityCheck', () => {
     it('does nothing when there is no selected account', async () => {
-      const fetchMock = vi.fn();
-      vi.stubGlobal('fetch', fetchMock);
+      const fetchMock = stubFetch(async (url: string) => { throw new Error(`unexpected fetch: ${url}`); });
       const { result } = renderHook(() => useAccountSettings());
       await act(async () => { await result.current.handleDeliverabilityCheck(); });
-      expect(fetchMock).not.toHaveBeenCalled();
+      expect(fetchMock.mock.calls.filter(([url]) => url === '/api/deliverability')).toHaveLength(0);
     });
 
     it('checks the selected account\'s domain and stores the result', async () => {
       const deliverability = { domain: 'example.com', spf: true, spfRecord: '', dkim: true, dkimSelector: '', mx: true, mxRecords: [], dmarc: true, dmarcRecord: '', dmarcPolicy: 'reject' as const };
-      const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<{ json: () => Promise<unknown> }>>()
-        .mockImplementation(async () => ({ json: async () => deliverability }));
-      vi.stubGlobal('fetch', fetchMock);
+      const fetchMock = stubFetch(async () => ({ json: async () => deliverability }));
       const { result } = renderHook(() => useAccountSettings());
       act(() => {
         result.current.setEmailAccounts([account({ email: 'main@example.com' })]);
@@ -253,7 +306,9 @@ describe('useAccountSettings', () => {
       });
       await act(async () => { await result.current.handleDeliverabilityCheck(); });
       expect(result.current.deliverabilityResult).toEqual(deliverability);
-      const [, init] = fetchMock.mock.calls[0];
+      const call = fetchMock.mock.calls.find(([url]) => url === '/api/deliverability');
+      expect(call).toBeTruthy();
+      const [, init] = call!;
       expect(JSON.parse((init as RequestInit).body as string)).toEqual({ domain: 'example.com' });
     });
   });

@@ -70,7 +70,10 @@ const genreSet = new Set();
 withEmails.forEach(a => a.genres.forEach(g => genreSet.add(g)));
 const allGenres = Array.from(genreSet).sort();
 
-const output = { artists: withEmails, genres: allGenres };
+// Stamped so lib/roster.ts (and the "Artist roster... updated <date>" note on the
+// Overview tab) can report exactly when this snapshot was pulled from the source
+// spreadsheet, instead of falling back to the roster.json file's mtime.
+const output = { artists: withEmails, genres: allGenres, generatedAt: new Date().toISOString() };
 
 const outDir = join(__dirname, '..', 'data');
 mkdirSync(outDir, { recursive: true });

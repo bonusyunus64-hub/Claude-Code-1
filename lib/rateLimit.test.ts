@@ -64,12 +64,27 @@ describe('clientIp', () => {
     return { headers: { get: (k: string) => headers[k] ?? null } } as unknown as Parameters<typeof clientIp>[0];
   }
 
-  it('takes the left-most address from x-forwarded-for', () => {
-    expect(clientIp(fakeReq({ 'x-forwarded-for': '1.2.3.4, 5.6.7.8' }))).toBe('1.2.3.4');
+  it('prefers x-vercel-forwarded-for over everything else', () => {
+    expect(clientIp(fakeReq({
+      'x-vercel-forwarded-for': '1.1.1.1',
+      'x-real-ip': '2.2.2.2',
+      'x-forwarded-for': '3.3.3.3',
+    }))).toBe('1.1.1.1');
   });
 
-  it('falls back to x-real-ip', () => {
-    expect(clientIp(fakeReq({ 'x-real-ip': '9.9.9.9' }))).toBe('9.9.9.9');
+  it('takes the left-most address from x-vercel-forwarded-for', () => {
+    expect(clientIp(fakeReq({ 'x-vercel-forwarded-for': '1.2.3.4, 5.6.7.8' }))).toBe('1.2.3.4');
+  });
+
+  it('falls back to x-real-ip when x-vercel-forwarded-for is absent', () => {
+    expect(clientIp(fakeReq({ 'x-real-ip': '9.9.9.9', 'x-forwarded-for': '3.3.3.3' }))).toBe('9.9.9.9');
+  });
+
+  // This is the case the limiter has to get right: a client can set x-forwarded-for
+  // to anything it wants, so it must only be trusted once the platform-set headers
+  // (which the client cannot spoof) aren't available at all.
+  it('only falls back to the left-most x-forwarded-for entry when neither platform header is present', () => {
+    expect(clientIp(fakeReq({ 'x-forwarded-for': '1.2.3.4, 5.6.7.8' }))).toBe('1.2.3.4');
   });
 
   it('falls back to "unknown" with no identifying headers', () => {

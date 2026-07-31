@@ -36,10 +36,14 @@ const FIXTURE_ARTISTS: Artist[] = [
 
 vi.mock('fs', () => {
   const readFileSync = () => JSON.stringify({ artists: FIXTURE_ARTISTS, genres: ['Pop', 'Rock', 'Indie'] });
-  return { readFileSync, default: { readFileSync } };
+  // The fixture above has no generatedAt, so getIndexedRoster falls back to
+  // statSync(...).mtime — stub it so that fallback path doesn't hit the real
+  // filesystem for a path that doesn't exist in the test environment.
+  const statSync = () => ({ mtime: new Date('2024-01-01T00:00:00.000Z') });
+  return { readFileSync, statSync, default: { readFileSync, statSync } };
 });
 
-const { getArtistsByGenres, getTopGenres, searchArtistsByName } = await import('./roster');
+const { getArtistsByGenres, getTopGenres, searchArtistsByName, getRosterGeneratedAt } = await import('./roster');
 
 describe('getArtistsByGenres', () => {
   it('excludes artists with no manager emails', () => {
@@ -117,5 +121,13 @@ describe('searchArtistsByName', () => {
     const [artist] = searchArtistsByName('Duplicate Manager Artist');
     expect(artist.managerEmails).toEqual(['myles@example.com', 'mike@example.com']);
     expect(artist.managerNames).toEqual(['Myles', 'Mike']);
+  });
+});
+
+describe('getRosterGeneratedAt', () => {
+  it('falls back to the file mtime when roster.json has no generatedAt field', () => {
+    // The fixture's readFileSync mock above returns no generatedAt, so this
+    // exercises the statSync(...).mtime fallback rather than the happy path.
+    expect(getRosterGeneratedAt()).toBe('2024-01-01T00:00:00.000Z');
   });
 });

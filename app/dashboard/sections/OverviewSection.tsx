@@ -1,7 +1,51 @@
+import { useEffect, useState } from 'react';
 import type { AnalyticsStats, RateBreakdown } from '../types';
 
 function pct(rate: number): string {
   return `${Math.round(rate * 100)}%`;
+}
+
+/** What /api/genres reports about the roster snapshot, beyond the genre list
+ *  itself — used only for the freshness note below, so it's kept local to this
+ *  component rather than in types.ts alongside the shapes that flow through
+ *  page.tsx's state. */
+interface RosterStats {
+  artistCount: number;
+  generatedAt: string;
+  radioStationCount: number;
+}
+
+/**
+ * "Artist roster: N contacts · updated <date>" note. Fetched independently by
+ * this section (rather than owned by page.tsx like most dashboard state) since
+ * it's read-only, has no dirty-tracking/save story, and every other consumer of
+ * /api/genres already fetches it the same self-contained way (see
+ * useDemosFlow.ts). Static per server process, so one fetch on mount is enough.
+ */
+function RosterFreshnessNote() {
+  const [stats, setStats] = useState<RosterStats | null>(null);
+
+  useEffect(() => {
+    fetch('/api/genres')
+      .then(r => r.json())
+      .then(d => {
+        if (typeof d.artistCount === 'number' && d.generatedAt) {
+          setStats({ artistCount: d.artistCount, generatedAt: d.generatedAt, radioStationCount: d.radioStationCount ?? 0 });
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  if (!stats) return null;
+
+  const updated = new Date(stats.generatedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+
+  return (
+    <p className="text-xs text-zinc-600">
+      Artist roster: {stats.artistCount.toLocaleString()} contacts · updated {updated}
+      {stats.radioStationCount > 0 && <> · Radio: {stats.radioStationCount.toLocaleString()} stations</>}
+    </p>
+  );
 }
 
 /** Horizontal bar list for a reply-rate breakdown (by type / genre / follower tier). */
@@ -41,6 +85,7 @@ export function OverviewSection({ analyticsStats }: { analyticsStats: AnalyticsS
       <div>
         <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Overview</h2>
         <p className="text-xs text-zinc-500">All-time stats derived from your campaign history on this device.</p>
+        <RosterFreshnessNote />
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">

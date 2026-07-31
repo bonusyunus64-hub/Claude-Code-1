@@ -65,6 +65,26 @@ export function createTransport(config: { smtpHost: string; smtpPort: number; sm
     port: config.smtpPort,
     secure: config.smtpPort === 465,
     auth: { user: config.smtpUser, pass: config.smtpPass },
+    // Without pooling, nodemailer tears down and rebuilds the entire TCP + TLS + EHLO
+    // + AUTH handshake for every single message — with DEFAULT_SEND_BATCH_SIZE at 10,
+    // that's up to 10 full logins to Zoho for one batch, and the send routes only have
+    // maxDuration=60 (Vercel Hobby plan) to work with. Pooling reuses one connection's
+    // handshake across the whole batch instead.
+    //
+    // maxConnections is deliberately 1, not nodemailer's default of 5: this is bulk
+    // cold outreach sent from a single mailbox, and SMTP providers like Zoho rate-limit
+    // aggressively per-account — several parallel connections logging in as the same
+    // user reads as abuse, not legitimate throughput. The win we're after is handshake
+    // reuse, not concurrency, so one connection processed serially is the right shape.
+    //
+    // maxMessages caps how many messages one pooled connection sends before nodemailer
+    // cycles it for a fresh one; left at nodemailer's own default (100) since it's well
+    // above any batch size in practice and the transport gets closed at the end of the
+    // request anyway (see sendMessagesPooled below) — this is just a backstop against a
+    // single connection living unreasonably long, not a limit we expect to hit.
+    pool: true,
+    maxConnections: 1,
+    maxMessages: 100,
   });
 }
 
@@ -108,6 +128,11 @@ export async function sendMessages(
   const results: SendResult[] = [];
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
+    // Pooling doesn't change this wait's purpose (pacing sends so the recipient's mail
+    // server and Zoho don't see a burst) or its effect: with maxConnections capped at 1,
+    // the transport was already serializing messages one at a time, so this delay just
+    // holds the single pooled connection open and idle between sends rather than
+    // tearing it down and reconnecting — cheaper than before, not different in kind.
     if (i > 0 && opts.sendDelay && opts.sendDelay > 0) await new Promise<void>(r => setTimeout(r, opts.sendDelay));
     try {
       // Both null together when ACCOUNTS_SECRET/SITE_PASSWORD isn't set — degrades
@@ -153,6 +178,46 @@ export async function sendMessages(
     }
   }
   return results;
+}
+
+/**
+ * Preferred entry point for a send: builds a pooled transport, sends the batch, and
+ * always closes the transport afterwards — including on failure.
+ *
+ * `createTransport()` and `sendMessages()` above stay exported with their existing
+ * signatures so nothing currently calling them breaks, but neither one closes the
+ * transport on its own, and that matters now that pooling is on. A pooled transport
+ * (`pool: true`) keeps its socket open after the last message instead of tearing the
+ * connection down, which is the whole point — reusing the handshake is what saves
+ * time — but on a serverless platform an open socket is also a live handle that can
+ * hold the function instance alive past the end of the request, past when the
+ * response has already been sent, wasting execution time (and money) until the
+ * platform eventually force-kills it. `transporter.close()` releases the pooled
+ * connection immediately once the batch is done, so the function can actually return.
+ *
+ * The `finally` here is the important part: a batch that throws (or whose messages
+ * all fail) must close the transport exactly the same as a batch that succeeds, or
+ * the error path leaks the connection.
+ *
+ * As of this change, the three current call sites (app/api/send/route.ts,
+ * lib/broadcastSend.ts, app/api/cron/auto-followup/route.ts) still call
+ * `createTransport()` + `sendMessages()` directly and don't close the transport —
+ * they're out of scope for this change and need migrating to this wrapper separately.
+ * Until they are, every pooled send from those routes leaves its connection open for
+ * the rest of the function's lifetime (Vercel will eventually reclaim it, but not
+ * before burning execution time for nothing).
+ */
+export async function sendMessagesPooled(
+  config: { smtpHost: string; smtpPort: number; smtpUser: string; smtpPass: string },
+  messages: OutboundMessage[],
+  opts: { fromName: string; fromEmail: string; signOffImage?: string; sendDelay?: number }
+): Promise<SendResult[]> {
+  const transporter = createTransport(config);
+  try {
+    return await sendMessages(transporter, messages, opts);
+  } finally {
+    transporter.close();
+  }
 }
 
 // Re-exported so every server-side importer of these (app/api/send/route.ts,

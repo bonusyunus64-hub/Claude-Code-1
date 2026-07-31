@@ -49,3 +49,13 @@ export function getAllPlaylistPlatforms(): string[] {
   curators.forEach(c => set.add(c.platform));
   return Array.from(set).sort();
 }
+
+/**
+ * Drives the "Coming soon" gate on the Playlist Curators tab (see
+ * PromotionSection.tsx): data/playlists.json currently ships with zero curator
+ * records, so the tab is disabled whenever this is 0 and lights back up on its
+ * own — no code change needed — the day curator records are added there.
+ */
+export function getPlaylistCuratorCount(): number {
+  return getPlaylistData().curators.length;
+}
