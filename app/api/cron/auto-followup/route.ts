@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getRedis, isKvConfigured, STATE_KEY } from '@/lib/kv';
 import { listCampaigns, saveCampaign } from '@/lib/campaigns';
 import { getAccount } from '@/lib/accounts';
-import { resolveSmtpConfig, createTransport, sendMessages } from '@/lib/mailSend';
+import { resolveSmtpConfig, sendMessagesPooled } from '@/lib/mailSend';
 import { checkCapAllows, recordSends } from '@/lib/sendQuota';
 import {
   DEFAULT_FOLLOWUP_DAYS, isCampaignDueForFollowUp, nonRespondedRecipients, buildFollowUpMessage,
@@ -141,8 +141,17 @@ export async function GET(req: NextRequest) {
     }
 
     const messages = batchTargets.map(email => buildFollowUpMessage(campaign, email, followUpTemplate, subjectTemplate, signOff));
-    const transporter = createTransport({ smtpHost, smtpPort, smtpUser, smtpPass });
-    const sendResults = await sendMessages(transporter, messages, { fromName, fromEmail: fromEmail as string, sendDelay });
+    // One pooled transport per campaign rather than one for the whole run: campaigns
+    // can each have their own sending account, so the connection isn't reusable across
+    // them anyway. sendMessagesPooled closes each one before the next campaign starts,
+    // which matters more here than on the interactive routes — this loop can touch
+    // several campaigns in a single invocation, and leaking a socket per campaign would
+    // pile up for the rest of the function's lifetime.
+    const sendResults = await sendMessagesPooled(
+      { smtpHost, smtpPort, smtpUser, smtpPass },
+      messages,
+      { fromName, fromEmail: fromEmail as string, sendDelay }
+    );
     const sentCount = sendResults.filter(r => r.success).length;
     await recordSends(sentCount, campaign.accountId);
 

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { renderTemplate } from '@/lib/emailTemplate';
 import {
-  resolveSmtpConfig, createTransport, sendMessages, paginate, dedupeByRecipient,
+  resolveSmtpConfig, sendMessagesPooled, paginate, dedupeByRecipient,
   DEFAULT_SEND_BATCH_SIZE, OutboundMessage,
 } from '@/lib/mailSend';
 import { resolveAccount } from '@/lib/accounts';
@@ -98,8 +98,11 @@ export async function sendBroadcast(
   const capCheck = await checkCapAllows(batch.length, accountId);
   if (!capCheck.ok) return NextResponse.json({ error: capCheck.error }, { status: 429 });
 
-  const transporter = createTransport({ smtpHost, smtpPort, smtpUser, smtpPass });
-  const results = await sendMessages(transporter, batch, { fromName, fromEmail: fromEmail as string, signOffImage, sendDelay });
+  const results = await sendMessagesPooled(
+    { smtpHost, smtpPort, smtpUser, smtpPass },
+    batch,
+    { fromName, fromEmail: fromEmail as string, signOffImage, sendDelay }
+  );
 
   const sent = results.filter(r => r.success).length;
   const failed = results.filter(r => !r.success).length;

@@ -87,6 +87,12 @@ export async function POST(req: NextRequest) {
 
   try {
     await transporter.sendMail(mailOptions);
+    // Not routed through sendMessagesPooled like the bulk paths: this builds its own
+    // one-off mailOptions (test subject prefix, sample-variable rendering, no
+    // unsubscribe footer) rather than an OutboundMessage batch. It still needs the
+    // explicit close in the finally below, though — createTransport pools now, so the
+    // socket outlives the send and would otherwise keep the function alive after the
+    // response has already gone out.
     // Recorded the same way /api/send and lib/broadcastSend.ts count a real send
     // (see lib/sendQuota.ts) — this goes out over the same real SMTP account, so
     // leaving it uncounted would let test sends quietly push the account past
@@ -100,5 +106,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
+  } finally {
+    transporter.close();
   }
 }

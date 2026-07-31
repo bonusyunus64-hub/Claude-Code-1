@@ -4,7 +4,11 @@ const resolveAccount = vi.fn();
 const checkCapAllows = vi.fn();
 const recordSends = vi.fn();
 const getBlacklist = vi.fn();
-const sendMessages = vi.fn();
+// sendBroadcast now goes through sendMessagesPooled (which owns the transport's
+// create/send/close lifecycle) rather than createTransport + sendMessages, so that's
+// the seam to mock. Its second argument is still the message batch, which is what
+// every assertion below inspects.
+const sendMessagesPooled = vi.fn();
 
 vi.mock('@/lib/accounts', () => ({ resolveAccount: (...args: unknown[]) => resolveAccount(...args) }));
 vi.mock('@/lib/sendQuota', () => ({
@@ -16,8 +20,7 @@ vi.mock('@/lib/mailSend', async () => {
   const actual = await vi.importActual<typeof import('./mailSend')>('./mailSend');
   return {
     ...actual,
-    createTransport: () => ({}),
-    sendMessages: (...args: unknown[]) => sendMessages(...args),
+    sendMessagesPooled: (...args: unknown[]) => sendMessagesPooled(...args),
   };
 });
 
@@ -44,7 +47,7 @@ describe('sendBroadcast', () => {
     });
     checkCapAllows.mockResolvedValue({ ok: true });
     getBlacklist.mockResolvedValue(new Set());
-    sendMessages.mockImplementation(async (_transporter, messages) =>
+    sendMessagesPooled.mockImplementation(async (_config, messages) =>
       messages.map((m: { to: string }) => ({ to: m.to, success: true, messageId: `<${m.to}>` }))
     );
   });
@@ -65,7 +68,7 @@ describe('sendBroadcast', () => {
     const body = await res.json();
     expect(body.sent).toBe(2);
     expect(recordSends).toHaveBeenCalledWith(2, undefined);
-    const sentMessages = sendMessages.mock.calls[0][1];
+    const sentMessages = sendMessagesPooled.mock.calls[0][1];
     expect(sentMessages.map((m: { to: string }) => m.to).sort()).toEqual(['a@example.com', 'b@example.com']);
     expect(sentMessages.find((m: { to: string }) => m.to === 'a@example.com').body).toContain('Hi Station A');
   });
@@ -75,7 +78,7 @@ describe('sendBroadcast', () => {
     const res = await sendBroadcast(BASE_PAYLOAD, TARGETS, 'stationName');
     const body = await res.json();
     expect(body.total).toBe(1);
-    const sentMessages = sendMessages.mock.calls[0][1];
+    const sentMessages = sendMessagesPooled.mock.calls[0][1];
     expect(sentMessages.map((m: { to: string }) => m.to)).toEqual(['b@example.com']);
   });
 
@@ -89,6 +92,6 @@ describe('sendBroadcast', () => {
     checkCapAllows.mockResolvedValue({ ok: false, error: 'Daily send limit reached' });
     const res = await sendBroadcast(BASE_PAYLOAD, TARGETS, 'stationName');
     expect(res.status).toBe(429);
-    expect(sendMessages).not.toHaveBeenCalled();
+    expect(sendMessagesPooled).not.toHaveBeenCalled();
   });
 });
