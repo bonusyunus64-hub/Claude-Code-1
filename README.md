@@ -1,12 +1,11 @@
 # TrackPitch
 
-TrackPitch is a password-gated, single-tenant bulk email tool for pitching a track to three kinds of contacts:
+TrackPitch is a password-gated, single-tenant bulk email tool for pitching a track to two kinds of contacts:
 
 - **Song Demos** — pitches an unsigned/independent artist's manager on picking up a track, drawn from a bundled roster of artists (`lib/roster.ts`) filtered by genre/audience/etc., plus any manager contacts you add by hand or import via CSV.
 - **Radio Stations** — pitches station contacts on airplay.
-- **Playlist Curators** — pitches curators on adding the track to a playlist.
 
-All three channels share the same underlying machinery: a template with `{{variables}}` per recipient, a live preview before anything goes out, batched sending through a chosen SMTP account with a pooled, single connection reused across a batch (so a large send doesn't time out a single serverless request, and doesn't pay for a fresh TCP/TLS/AUTH handshake per message either), a shared Do Not Contact / unsubscribe list, a daily send cap (plus optional per-account warmup limits), an optional Send Window that queues a send started outside chosen hours instead of firing it right away (`lib/sendWindow.ts`), and campaign history that can trigger an automatic follow-up email to non-responders a few days later (via Vercel Cron).
+Both channels share the same underlying machinery: a template with `{{variables}}` per recipient, a live preview before anything goes out, batched sending through a chosen SMTP account with a pooled, single connection reused across a batch (so a large send doesn't time out a single serverless request, and doesn't pay for a fresh TCP/TLS/AUTH handshake per message either), a shared Do Not Contact / unsubscribe list, a daily send cap (plus optional per-account warmup limits), an optional Send Window that queues a send started outside chosen hours instead of firing it right away (`lib/sendWindow.ts`), and campaign history that can trigger an automatic follow-up email to non-responders a few days later (via Vercel Cron).
 
 There's no multi-user support and no database beyond Redis-as-a-settings-store — this is built for one person/team running their own outreach, not a multi-tenant SaaS.
 

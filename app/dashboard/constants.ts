@@ -29,26 +29,14 @@ I've attached the track "{{trackTitle}}" — you can listen here:
 
 I believe this would be a great fit for your station and listeners. Please let me know if you'd like any additional information.`;
 
-export const DEFAULT_PLAYLIST_TEMPLATE = `Hi,
-
-My name is {{senderName}}, and I'm submitting a track for consideration for your playlist, {{curatorName}}.
-
-I've attached the track "{{trackTitle}}" — you can listen here:
-{{driveLink}}
-
-I believe this would be a great fit for your playlist and listeners. Please let me know if you'd like any additional information.`;
-
 export const DEFAULT_DEMOS_SUBJECT = `Music Submission: {{trackTitle}} for {{artistName}}`;
 export const DEFAULT_FOLLOWUP_SUBJECT = `Following Up: {{trackTitle}} for {{artistName}}`;
 export const DEFAULT_RADIO_SUBJECT = `Music Submission: {{trackTitle}} for {{stationName}}`;
-export const DEFAULT_PLAYLIST_SUBJECT = `Music Submission: {{trackTitle}} for {{curatorName}}`;
 
 export const DEFAULT_SIGN_OFF = `Best regards,
 {{senderName}}`;
 
 export const LOCATION_OPTIONS = ['National', 'ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA', 'International'];
-
-export const PLATFORM_OPTIONS = ['Spotify', 'Apple Music', 'YouTube Music', 'Amazon Music', 'Deezer', 'Tidal', 'SoundCloud'];
 
 // open.spotify.com links are universal links, so mobile browsers hand off to the
 // Spotify app automatically when it's installed; otherwise they fall back to the web player.

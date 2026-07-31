@@ -143,7 +143,7 @@ export interface DemosSectionProps {
   addOutsideArtistToContacts: (a: Artist) => void;
   pitchedEmailMap: Map<string, string[]>;
 
-  setPreviewModalType: (type: 'demos' | 'radio' | 'playlists' | null) => void;
+  setPreviewModalType: (type: 'demos' | 'radio' | null) => void;
   setPreviewModalIdx: (idx: number) => void;
 
   demosDuplicateRecipients: string[];

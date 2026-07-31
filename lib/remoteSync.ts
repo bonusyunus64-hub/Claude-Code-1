@@ -36,9 +36,11 @@ const SYNCED_KEYS = [
   'tp_email_template', 'tp_email_subject',
   'tp_followup_template', 'tp_followup_subject',
   'tp_radio_template', 'tp_radio_subject',
-  'tp_playlist_template', 'tp_playlist_subject',
-  'tp_demos_templates', 'tp_followup_templates', 'tp_radio_templates', 'tp_playlist_templates',
-  'tp_demos_presets', 'tp_radio_presets', 'tp_playlist_presets',
+  // No tp_playlist_* keys: the Playlists tab was removed, so nothing reads or
+  // writes them any more. Values already in Redis from before the removal are
+  // simply left there — harmless, and still present if the tab ever comes back.
+  'tp_demos_templates', 'tp_followup_templates', 'tp_radio_templates',
+  'tp_demos_presets', 'tp_radio_presets',
   'tp_failed_emails', 'tp_custom_contacts',
   'tp_send_delay', 'tp_daily_cap',
   'tp_auto_followup_enabled', 'tp_auto_followup_days',

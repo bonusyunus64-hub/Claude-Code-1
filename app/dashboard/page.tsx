@@ -4,12 +4,12 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { hydrateFromRemote, syncStorage } from '@/lib/remoteSync';
 import { subjectTemplateFor } from '@/lib/recipients';
 import type {
-  Artist, RadioStation, PlaylistCurator, EmailAccount,
+  Artist, RadioStation, EmailAccount,
   CustomContact,
 } from './types';
 import {
-  DEFAULT_DEMOS_TEMPLATE, DEFAULT_FOLLOWUP_TEMPLATE, DEFAULT_RADIO_TEMPLATE, DEFAULT_PLAYLIST_TEMPLATE,
-  DEFAULT_DEMOS_SUBJECT, DEFAULT_FOLLOWUP_SUBJECT, DEFAULT_RADIO_SUBJECT, DEFAULT_PLAYLIST_SUBJECT,
+  DEFAULT_DEMOS_TEMPLATE, DEFAULT_FOLLOWUP_TEMPLATE, DEFAULT_RADIO_TEMPLATE,
+  DEFAULT_DEMOS_SUBJECT, DEFAULT_FOLLOWUP_SUBJECT, DEFAULT_RADIO_SUBJECT,
   DEFAULT_SIGN_OFF,
 } from './constants';
 import {
@@ -34,7 +34,6 @@ export default function Dashboard() {
   const [activeSection, setActiveSection] = useState<'overview' | 'demos' | 'promotion' | 'account' | 'history'>('demos');
   const [demosTab, setDemosTab] = useState<'compose' | 'template'>('compose');
   const [promotionTab, setPromotionTab] = useState<'compose' | 'template'>('compose');
-  const [promotionSection, setPromotionSection] = useState<'radio' | 'playlists'>('radio');
 
   // Shared track details
   const [trackTitle, setTrackTitle] = useState('');
@@ -55,14 +54,12 @@ export default function Dashboard() {
   const [demosFollowUpTemplate, setDemosFollowUpTemplate] = useState(DEFAULT_FOLLOWUP_TEMPLATE);
   const [demosFollowUpSubject, setDemosFollowUpSubject] = useState(DEFAULT_FOLLOWUP_SUBJECT);
 
-  // Track Promotion (Radio/Playlists) — template/subject text stays here since it
+  // Track Promotion (Radio) — template/subject text stays here since it
   // participates in the shared dirty-tracking/save-all below; everything else
   // (genre/secondary-filter selection, preview, send, presets, template library)
-  // is owned by usePromotionChannel, instantiated further down for each channel.
+  // is owned by usePromotionChannel, instantiated further down.
   const [radioTemplate, setRadioTemplate] = useState(DEFAULT_RADIO_TEMPLATE);
   const [radioSubject, setRadioSubject] = useState(DEFAULT_RADIO_SUBJECT);
-  const [playlistTemplate, setPlaylistTemplate] = useState(DEFAULT_PLAYLIST_TEMPLATE);
-  const [playlistSubject, setPlaylistSubject] = useState(DEFAULT_PLAYLIST_SUBJECT);
 
   // Test email — stays here (not in useAccountSettings) since it needs a sample
   // artist from useDemosFlow's preview list; see useAccountSettings's own comment
@@ -81,7 +78,7 @@ export default function Dashboard() {
   const [showAddCustomContact, setShowAddCustomContact] = useState(false);
 
   // Email preview modal
-  const [previewModalType, setPreviewModalType] = useState<'demos' | 'radio' | 'playlists' | null>(null);
+  const [previewModalType, setPreviewModalType] = useState<'demos' | 'radio' | null>(null);
   const [previewModalIdx, setPreviewModalIdx] = useState(0);
 
   // Save tracking
@@ -92,8 +89,6 @@ export default function Dashboard() {
   const [lastSavedFollowUpSubject, setLastSavedFollowUpSubject] = useState(DEFAULT_FOLLOWUP_SUBJECT);
   const [lastSavedRadioTemplate, setLastSavedRadioTemplate] = useState(DEFAULT_RADIO_TEMPLATE);
   const [lastSavedRadioSubject, setLastSavedRadioSubject] = useState(DEFAULT_RADIO_SUBJECT);
-  const [lastSavedPlaylistTemplate, setLastSavedPlaylistTemplate] = useState(DEFAULT_PLAYLIST_TEMPLATE);
-  const [lastSavedPlaylistSubject, setLastSavedPlaylistSubject] = useState(DEFAULT_PLAYLIST_SUBJECT);
   const [lastSavedSignOff, setLastSavedSignOff] = useState(DEFAULT_SIGN_OFF);
   const [lastSavedSignOffImage, setLastSavedSignOffImage] = useState<string | null>(null);
 
@@ -104,7 +99,7 @@ export default function Dashboard() {
   const [saveLocalWarning, setSaveLocalWarning] = useState('');
 
   // Accounts, sign-off, blacklist, failed-sends, send-pacing settings, deliverability —
-  // instantiated first since history/radio/playlists/demos below all read config
+  // instantiated first since history/radio/demos below all read config
   // from it (account.signOff, account.blacklist, account.accountCapError, etc.).
   const account = useAccountSettings();
 
@@ -131,12 +126,14 @@ export default function Dashboard() {
     return map;
   }, [history.campaigns]);
 
-  // Radio and Playlists were near-exact duplicates of each other (genre/secondary-filter
-  // selection, preview, send, presets, template library) — one hook, instantiated twice,
-  // instead of two copies. See usePromotionChannel for what it owns vs. what stays here
-  // (template/subject text, which participates in the dirty-tracking below). Declared
-  // before the initial-load effect below so that effect can hydrate radio/playlists'
-  // presets and template library via the hook's exposed setters.
+  // Radio is the one remaining instantiation of usePromotionChannel — it used to be
+  // shared with an equivalent Playlists channel (genre/secondary-filter selection,
+  // preview, send, presets, template library), removed along with the rest of the
+  // Playlists tab since data/playlists.json has no curator records to send to. The
+  // hook itself stays generic (still named usePromotionChannel, not usePromotionRadio)
+  // in case a future channel needs the same shape again. Declared before the
+  // initial-load effect below so that effect can hydrate Radio's presets and
+  // template library via the hook's exposed setters.
   const radio = usePromotionChannel<RadioStation>({
     campaignType: 'radio',
     genresEndpoint: '/api/radio-genres',
@@ -154,28 +151,11 @@ export default function Dashboard() {
     sendWindowSettings: account.sendWindowSettings,
   });
 
-  const playlists = usePromotionChannel<PlaylistCurator>({
-    campaignType: 'playlists',
-    genresEndpoint: '/api/playlist-genres',
-    previewEndpoint: '/api/playlist-preview',
-    sendEndpoint: '/api/playlist-send',
-    resultsKey: 'curators',
-    secondaryFilterKey: 'platforms',
-    nameVar: 'curatorName',
-    trackTitle, driveLink, senderName,
-    template: playlistTemplate, subject: playlistSubject, setTemplate: setPlaylistTemplate, setSubject: setPlaylistSubject,
-    signOff: account.signOff, signOffImage: account.signOffImage, selectedAccountId: account.selectedAccountId,
-    sendDelay: account.sendDelay, blacklist: account.blacklist, dailySendCap: account.dailySendCap, sendsToday: account.sendsToday,
-    accountCapError: account.accountCapError, refreshSendsToday: account.refreshSendsToday, recordFailedEmails: account.recordFailedEmails,
-    pitchedEmailMap, upsertCampaign: history.upsertCampaign,
-    sendWindowSettings: account.sendWindowSettings,
-  });
-
-  // No twin to share an implementation with (unlike Radio/Playlists) — this is the
-  // one place page.tsx's Demos-tab complexity (audience/Instagram/gender filters,
-  // exclusions, outside-artist search, sort/search, both template libraries) lives
-  // now instead of inline. Declared before the initial-load effect below for the
-  // same reason as radio/playlists above.
+  // No twin to share an implementation with (unlike Radio, which shares
+  // usePromotionChannel) — this is the one place page.tsx's Demos-tab complexity
+  // (audience/Instagram/gender filters, exclusions, outside-artist search,
+  // sort/search, both template libraries) lives now instead of inline. Declared
+  // before the initial-load effect below for the same reason as radio above.
   const demos = useDemosFlow({
     trackTitle, driveLink, senderName,
     demosTemplate, demosSubject, setDemosTemplate, setDemosSubject,
@@ -230,12 +210,6 @@ export default function Dashboard() {
       const savedRadioSubject = localStorage.getItem('tp_radio_subject');
       if (savedRadioSubject !== null) { setRadioSubject(savedRadioSubject); setLastSavedRadioSubject(savedRadioSubject); }
 
-      const savedPlaylistTemplate = localStorage.getItem('tp_playlist_template');
-      if (savedPlaylistTemplate !== null) { setPlaylistTemplate(savedPlaylistTemplate); setLastSavedPlaylistTemplate(savedPlaylistTemplate); }
-
-      const savedPlaylistSubject = localStorage.getItem('tp_playlist_subject');
-      if (savedPlaylistSubject !== null) { setPlaylistSubject(savedPlaylistSubject); setLastSavedPlaylistSubject(savedPlaylistSubject); }
-
       // No tp_blacklist read here any more: the Do Not Contact list moved to a Redis
       // set behind /api/blacklist, which useAccountSettings loads itself on mount.
       // Seeding it from localStorage as well would race that fetch — and a stale
@@ -258,9 +232,6 @@ export default function Dashboard() {
       const savedRadioPresets = localStorage.getItem('tp_radio_presets');
       if (savedRadioPresets) radio.setPresets(JSON.parse(savedRadioPresets));
 
-      const savedPlaylistPresets = localStorage.getItem('tp_playlist_presets');
-      if (savedPlaylistPresets) playlists.setPresets(JSON.parse(savedPlaylistPresets));
-
       const savedDemosTemplates = localStorage.getItem('tp_demos_templates');
       if (savedDemosTemplates) demos.setDemosTemplateLibrary(JSON.parse(savedDemosTemplates));
 
@@ -269,9 +240,6 @@ export default function Dashboard() {
 
       const savedRadioTemplates = localStorage.getItem('tp_radio_templates');
       if (savedRadioTemplates) radio.setTemplateLibrary(JSON.parse(savedRadioTemplates));
-
-      const savedPlaylistTemplates = localStorage.getItem('tp_playlist_templates');
-      if (savedPlaylistTemplates) playlists.setTemplateLibrary(JSON.parse(savedPlaylistTemplates));
 
       const savedDailyCap = localStorage.getItem('tp_daily_cap');
       if (savedDailyCap !== null) account.setDailySendCap(Number(savedDailyCap));
@@ -303,9 +271,9 @@ export default function Dashboard() {
       else account.setSendWindowTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone);
     } catch {}
     })();
-    // account/radio/playlists/demos are plain objects rebuilt every render, so
-    // listing them here would re-run this mount-only hydration on every render;
-    // only their setX setters (stable, from useState) are actually called below.
+    // account/radio/demos are plain objects rebuilt every render, so listing them
+    // here would re-run this mount-only hydration on every render; only their setX
+    // setters (stable, from useState) are actually called below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -325,14 +293,6 @@ export default function Dashboard() {
       .reduce((sum, c) => sum + c.emails.length, 0);
   }, [history.campaigns, trackTitle]);
 
-  const playlistPitchCount = useMemo(() => {
-    const title = trackTitle.trim().toLowerCase();
-    if (!title) return 0;
-    return history.campaigns
-      .filter(c => c.type === 'playlists' && c.trackTitle.trim().toLowerCase() === title)
-      .reduce((sum, c) => sum + c.emails.length, 0);
-  }, [history.campaigns, trackTitle]);
-
   const analyticsStats = useMemo(() => computeAnalyticsStats(history.campaigns), [history.campaigns]);
 
   const isDirty =
@@ -343,8 +303,6 @@ export default function Dashboard() {
     demosFollowUpSubject !== lastSavedFollowUpSubject ||
     radioTemplate !== lastSavedRadioTemplate ||
     radioSubject !== lastSavedRadioSubject ||
-    playlistTemplate !== lastSavedPlaylistTemplate ||
-    playlistSubject !== lastSavedPlaylistSubject ||
     account.signOff !== lastSavedSignOff ||
     account.signOffImage !== lastSavedSignOffImage;
 
@@ -362,8 +320,6 @@ export default function Dashboard() {
     track(syncStorage.setItem('tp_followup_subject', demosFollowUpSubject));
     track(syncStorage.setItem('tp_radio_template', radioTemplate));
     track(syncStorage.setItem('tp_radio_subject', radioSubject));
-    track(syncStorage.setItem('tp_playlist_template', playlistTemplate));
-    track(syncStorage.setItem('tp_playlist_subject', playlistSubject));
     track(syncStorage.setItem('tp_sign_off', account.signOff));
     if (account.signOffImage) track(syncStorage.setItem('tp_sign_off_image', account.signOffImage));
     else syncStorage.removeItem('tp_sign_off_image');
@@ -377,8 +333,6 @@ export default function Dashboard() {
     setLastSavedFollowUpSubject(demosFollowUpSubject);
     setLastSavedRadioTemplate(radioTemplate);
     setLastSavedRadioSubject(radioSubject);
-    setLastSavedPlaylistTemplate(playlistTemplate);
-    setLastSavedPlaylistSubject(playlistSubject);
     setLastSavedSignOff(account.signOff);
     setLastSavedSignOffImage(account.signOffImage);
   }
@@ -391,8 +345,6 @@ export default function Dashboard() {
     setDemosFollowUpSubject(lastSavedFollowUpSubject);
     setRadioTemplate(lastSavedRadioTemplate);
     setRadioSubject(lastSavedRadioSubject);
-    setPlaylistTemplate(lastSavedPlaylistTemplate);
-    setPlaylistSubject(lastSavedPlaylistSubject);
     account.setSignOff(lastSavedSignOff);
     account.setSignOffImage(lastSavedSignOffImage);
     setSaveLocalWarning('');
@@ -524,24 +476,6 @@ export default function Dashboard() {
       });
       return buildPreviewEntries(candidates, PREVIEW_MODAL_RECIPIENT_CAP, render);
     }
-    if (previewModalType === 'playlists') {
-      const render = (vars: Record<string, string>) => {
-        const bodyParts = [renderTemplateClient(playlists.template, vars)];
-        if (account.signOff?.trim()) bodyParts.push(renderTemplateClient(account.signOff, vars));
-        return { subject: renderTemplateClient(playlists.subject, vars), body: bodyParts.join('\n\n') };
-      };
-      const candidates: PreviewCandidate[] = [];
-      playlists.results.forEach(c => {
-        c.emails.forEach(email => {
-          candidates.push({
-            to: email, subject: '', body: '',
-            label: `${c.name} <${email}>`,
-            vars: { curatorName: c.name, trackTitle, driveLink, senderName },
-          });
-        });
-      });
-      return buildPreviewEntries(candidates, PREVIEW_MODAL_RECIPIENT_CAP, render);
-    }
     const render = (vars: Record<string, string>) => {
       const bodyParts = [renderTemplateClient(radio.template, vars)];
       if (account.signOff?.trim()) bodyParts.push(renderTemplateClient(account.signOff, vars));
@@ -558,7 +492,7 @@ export default function Dashboard() {
       });
     });
     return buildPreviewEntries(candidates, PREVIEW_MODAL_RECIPIENT_CAP, render);
-  }, [previewModalType, demos.includedArtists, radio.results, playlists.results, demosTemplate, demosSubject, demosSubjectB, demos.subjectTestEnabled, demosFollowUpTemplate, demosFollowUpSubject, demos.useFollowUp, radio.template, radio.subject, playlists.template, playlists.subject, account.signOff, trackTitle, driveLink, senderName, customContacts]);
+  }, [previewModalType, demos.includedArtists, radio.results, demosTemplate, demosSubject, demosSubjectB, demos.subjectTestEnabled, demosFollowUpTemplate, demosFollowUpSubject, demos.useFollowUp, radio.template, radio.subject, account.signOff, trackTitle, driveLink, senderName, customContacts]);
 
   // Keyboard/focus handling for the preview modal (see the modal markup below):
   // Escape closes it, and focus moves into the dialog on open and back to
@@ -707,13 +641,12 @@ export default function Dashboard() {
             {/* ── Track Promotion ── */}
             {activeSection === 'promotion' && (
               <PromotionSection
-                promotionTab={promotionTab} setPromotionTab={setPromotionTab} promotionSection={promotionSection} setPromotionSection={setPromotionSection}
+                promotionTab={promotionTab} setPromotionTab={setPromotionTab}
                 senderName={senderName} setSenderName={setSenderName} trackTitle={trackTitle} setTrackTitle={setTrackTitle}
                 driveLink={driveLink} setDriveLink={setDriveLink}
                 pitchedEmailMap={pitchedEmailMap} selectedAccount={account.selectedAccount} setActiveSection={setActiveSection}
                 addFailedToBlacklist={account.addFailedToBlacklist} setPreviewModalType={setPreviewModalType} setPreviewModalIdx={setPreviewModalIdx}
                 radio={radio} radioPitchCount={radioPitchCount}
-                playlists={playlists} playlistPitchCount={playlistPitchCount}
               />
             )}
 

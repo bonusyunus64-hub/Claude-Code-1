@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 import { sendDemos, DemosSendPayload } from '@/lib/demosSend';
 import { sendBroadcast, BroadcastSendPayload } from '@/lib/broadcastSend';
 import { filterRadioStations } from '@/lib/radio';
-import { filterPlaylistCurators } from '@/lib/playlists';
 
 /**
  * Runs a queued campaign's saved send in-process, given the `pendingSend.endpoint`
@@ -39,12 +38,6 @@ export async function dispatchQueuedSend(
       const p = payload as unknown as BroadcastSendPayload & { genres?: string[]; locations?: string[]; matchMode?: 'any' | 'all' };
       const stations = filterRadioStations(p.genres ?? [], p.locations ?? [], p.matchMode ?? 'any');
       return sendBroadcast(p, stations, 'stationName');
-    }
-
-    case '/api/playlist-send': {
-      const p = payload as unknown as BroadcastSendPayload & { genres?: string[]; platforms?: string[]; matchMode?: 'any' | 'all' };
-      const curators = filterPlaylistCurators(p.genres ?? [], p.platforms ?? [], p.matchMode ?? 'any');
-      return sendBroadcast(p, curators, 'curatorName');
     }
 
     default:
