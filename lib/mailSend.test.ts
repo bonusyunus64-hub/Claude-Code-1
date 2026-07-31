@@ -16,7 +16,7 @@ vi.mock('nodemailer', () => ({
 
 import {
   paginate, resolveSmtpConfig, sendMessages, sendMessagesPooled, createTransport,
-  dedupeByRecipient, formatFromHeader, type OutboundMessage,
+  dedupeByRecipient, formatFromHeader, assignSubjectVariant, subjectTemplateFor, type OutboundMessage,
 } from './mailSend';
 
 describe('formatFromHeader', () => {
@@ -107,6 +107,60 @@ describe('paginate', () => {
     const { batch, nextOffset } = paginate(items, 20, 4);
     expect(batch).toEqual([]);
     expect(nextOffset).toBeNull();
+  });
+});
+
+describe('assignSubjectVariant', () => {
+  it('is deterministic — the same address always gets the same variant', () => {
+    const first = assignSubjectVariant('manager@example.com');
+    for (let i = 0; i < 20; i++) expect(assignSubjectVariant('manager@example.com')).toBe(first);
+  });
+
+  it('is case-insensitive and trims whitespace, matching dedupeByRecipient\'s address normalization', () => {
+    expect(assignSubjectVariant('Manager@Example.com')).toBe(assignSubjectVariant('manager@example.com'));
+    expect(assignSubjectVariant('  manager@example.com  ')).toBe(assignSubjectVariant('manager@example.com'));
+  });
+
+  it('only ever returns A or B', () => {
+    for (const email of ['a@x.com', 'b@x.com', 'nova@label.com', 'someone.else@thing.io', 'z@z.com']) {
+      expect(['A', 'B']).toContain(assignSubjectVariant(email));
+    }
+  });
+
+  it('splits a realistic list of addresses roughly 50/50, not all into one bucket', () => {
+    const emails = Array.from({ length: 200 }, (_, i) => `recipient${i}@example.com`);
+    const counts = { A: 0, B: 0 };
+    emails.forEach(e => counts[assignSubjectVariant(e)]++);
+    // Not asserting an exact 50/50 split (hashing 200 arbitrary strings won't land
+    // exactly even), just that it's a real split rather than a degenerate one —
+    // both sides need at least 35% for this to count as "roughly uniform".
+    expect(counts.A).toBeGreaterThan(70);
+    expect(counts.B).toBeGreaterThan(70);
+    expect(counts.A + counts.B).toBe(200);
+  });
+});
+
+describe('subjectTemplateFor', () => {
+  it('always returns subjectA when subjectB is undefined — a payload with no B variant is unaffected', () => {
+    expect(subjectTemplateFor('anyone@example.com', 'Subject A', undefined)).toBe('Subject A');
+  });
+
+  it('always returns subjectA when subjectB is blank/whitespace-only', () => {
+    expect(subjectTemplateFor('anyone@example.com', 'Subject A', '   ')).toBe('Subject A');
+  });
+
+  it('picks whichever of A/B assignSubjectVariant assigns this address to', () => {
+    // Any two example addresses will do — what matters is that the choice tracks
+    // assignSubjectVariant exactly, not any particular email landing in A vs B.
+    for (const email of ['sam@example.com', 'jamie@label.io', 'x@y.com']) {
+      const expected = assignSubjectVariant(email) === 'A' ? 'Subject A' : 'Subject B';
+      expect(subjectTemplateFor(email, 'Subject A', 'Subject B')).toBe(expected);
+    }
+  });
+
+  it('gives the same recipient the same subject no matter how many times it\'s called — the deterministic-split guarantee batching/resuming relies on', () => {
+    const results = new Set(Array.from({ length: 10 }, () => subjectTemplateFor('manager@example.com', 'Subject A', 'Subject B')));
+    expect(results.size).toBe(1);
   });
 });
 

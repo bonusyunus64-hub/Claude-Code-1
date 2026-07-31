@@ -37,13 +37,18 @@ export type PreviewEntry = { label: string; to: string; subject: string; body: s
  * Lives here rather than in page.tsx so it's an ordinary importable module: a
  * route entry point isn't the place to hang exported helpers off, and its test
  * shouldn't have to import a page component to reach one pure function.
+ *
+ * `render` also receives the recipient's address, not just their template
+ * vars — needed so a caller doing subject-line A/B testing (lib/recipients.ts's
+ * subjectTemplateFor) can pick the same variant for this preview row that
+ * app/api/send/route.ts will actually use for that address.
  */
 export function buildPreviewEntries(
   candidates: PreviewCandidate[],
   cap: number,
-  render: (vars: Record<string, string>) => { subject: string; body: string }
+  render: (vars: Record<string, string>, to: string) => { subject: string; body: string }
 ): { entries: PreviewEntry[]; total: number } {
   const deduped = dedupeByRecipient(candidates);
-  const entries = deduped.slice(0, cap).map(c => ({ label: c.label, to: c.to, ...render(c.vars) }));
+  const entries = deduped.slice(0, cap).map(c => ({ label: c.label, to: c.to, ...render(c.vars, c.to) }));
   return { entries, total: deduped.length };
 }

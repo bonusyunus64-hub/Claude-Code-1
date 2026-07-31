@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   isCampaignDueForFollowUp, nonRespondedRecipients, buildFollowUpMessage,
   computeFollowUpBudget, mergeEmailList, MAX_CAMPAIGNS_TOUCHED_PER_RUN, followUpStopReason,
+  resolveFollowUpContent,
 } from './autoFollowUp';
 import type { CampaignRecord } from './campaigns';
 
@@ -185,6 +186,32 @@ describe('computeFollowUpBudget', () => {
 
   it('never exceeds the ceiling', () => {
     expect(computeFollowUpBudget(0)).toBeLessThanOrEqual(100);
+  });
+});
+
+describe('resolveFollowUpContent', () => {
+  it('prefers the campaign\'s own snapshot over current settings', () => {
+    const campaign = baseCampaign({ followUpTemplate: 'Snapshot body', followUpSubject: 'Snapshot subject' });
+    expect(resolveFollowUpContent(campaign, 'Current body', 'Current subject'))
+      .toEqual({ template: 'Snapshot body', subject: 'Snapshot subject' });
+  });
+
+  it('falls back to current settings when the campaign has no snapshot (records from before this field existed)', () => {
+    const campaign = baseCampaign();
+    expect(resolveFollowUpContent(campaign, 'Current body', 'Current subject'))
+      .toEqual({ template: 'Current body', subject: 'Current subject' });
+  });
+
+  it('falls back to current settings when the snapshot is blank (the follow-up template was empty at send time)', () => {
+    const campaign = baseCampaign({ followUpTemplate: '   ', followUpSubject: '' });
+    expect(resolveFollowUpContent(campaign, 'Current body', 'Current subject'))
+      .toEqual({ template: 'Current body', subject: 'Current subject' });
+  });
+
+  it('resolves the template and subject independently — one can fall back while the other uses its snapshot', () => {
+    const campaign = baseCampaign({ followUpTemplate: 'Snapshot body', followUpSubject: undefined });
+    expect(resolveFollowUpContent(campaign, 'Current body', 'Current subject'))
+      .toEqual({ template: 'Snapshot body', subject: 'Current subject' });
   });
 });
 

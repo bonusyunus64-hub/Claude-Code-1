@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { hydrateFromRemote, syncStorage } from '@/lib/remoteSync';
+import { subjectTemplateFor } from '@/lib/recipients';
 import type {
   Artist, RadioStation, PlaylistCurator, EmailAccount,
   CustomContact,
@@ -45,6 +46,12 @@ export default function Dashboard() {
   // everything else is owned by useDemosFlow, instantiated further down.
   const [demosTemplate, setDemosTemplate] = useState(DEFAULT_DEMOS_TEMPLATE);
   const [demosSubject, setDemosSubject] = useState(DEFAULT_DEMOS_SUBJECT);
+  // Second subject line for A/B testing (DemosSection's "Test a second subject
+  // line" toggle) — empty by default, same as demosSubject would be for a fresh
+  // account if it didn't have DEFAULT_DEMOS_SUBJECT to fall back to. Lives here
+  // rather than in useDemosFlow for the same reason demosSubject does: it
+  // participates in the shared dirty-tracking/save-all below.
+  const [demosSubjectB, setDemosSubjectB] = useState('');
   const [demosFollowUpTemplate, setDemosFollowUpTemplate] = useState(DEFAULT_FOLLOWUP_TEMPLATE);
   const [demosFollowUpSubject, setDemosFollowUpSubject] = useState(DEFAULT_FOLLOWUP_SUBJECT);
 
@@ -80,6 +87,7 @@ export default function Dashboard() {
   // Save tracking
   const [lastSavedDemosTemplate, setLastSavedDemosTemplate] = useState(DEFAULT_DEMOS_TEMPLATE);
   const [lastSavedDemosSubject, setLastSavedDemosSubject] = useState(DEFAULT_DEMOS_SUBJECT);
+  const [lastSavedDemosSubjectB, setLastSavedDemosSubjectB] = useState('');
   const [lastSavedFollowUpTemplate, setLastSavedFollowUpTemplate] = useState(DEFAULT_FOLLOWUP_TEMPLATE);
   const [lastSavedFollowUpSubject, setLastSavedFollowUpSubject] = useState(DEFAULT_FOLLOWUP_SUBJECT);
   const [lastSavedRadioTemplate, setLastSavedRadioTemplate] = useState(DEFAULT_RADIO_TEMPLATE);
@@ -169,6 +177,7 @@ export default function Dashboard() {
   const demos = useDemosFlow({
     trackTitle, driveLink, senderName,
     demosTemplate, demosSubject, setDemosTemplate, setDemosSubject,
+    demosSubjectB, setDemosSubjectB,
     demosFollowUpTemplate, demosFollowUpSubject, setDemosFollowUpTemplate, setDemosFollowUpSubject,
     signOff: account.signOff, signOffImage: account.signOffImage, selectedAccountId: account.selectedAccountId,
     sendDelay: account.sendDelay, blacklist: account.blacklist, dailySendCap: account.dailySendCap, sendsToday: account.sendsToday,
@@ -202,6 +211,9 @@ export default function Dashboard() {
 
       const savedDemosSubject = localStorage.getItem('tp_email_subject');
       if (savedDemosSubject !== null) { setDemosSubject(savedDemosSubject); setLastSavedDemosSubject(savedDemosSubject); }
+
+      const savedDemosSubjectB = localStorage.getItem('tp_email_subject_b');
+      if (savedDemosSubjectB !== null) { setDemosSubjectB(savedDemosSubjectB); setLastSavedDemosSubjectB(savedDemosSubjectB); }
 
       const savedFollowUp = localStorage.getItem('tp_followup_template');
       if (savedFollowUp !== null) { setDemosFollowUpTemplate(savedFollowUp); setLastSavedFollowUpTemplate(savedFollowUp); }
@@ -303,6 +315,7 @@ export default function Dashboard() {
   const isDirty =
     demosTemplate !== lastSavedDemosTemplate ||
     demosSubject !== lastSavedDemosSubject ||
+    demosSubjectB !== lastSavedDemosSubjectB ||
     demosFollowUpTemplate !== lastSavedFollowUpTemplate ||
     demosFollowUpSubject !== lastSavedFollowUpSubject ||
     radioTemplate !== lastSavedRadioTemplate ||
@@ -321,6 +334,7 @@ export default function Dashboard() {
     const track = (ok: boolean) => { if (!ok) localWriteFailed = true; };
     track(syncStorage.setItem('tp_email_template', demosTemplate));
     track(syncStorage.setItem('tp_email_subject', demosSubject));
+    track(syncStorage.setItem('tp_email_subject_b', demosSubjectB));
     track(syncStorage.setItem('tp_followup_template', demosFollowUpTemplate));
     track(syncStorage.setItem('tp_followup_subject', demosFollowUpSubject));
     track(syncStorage.setItem('tp_radio_template', radioTemplate));
@@ -335,6 +349,7 @@ export default function Dashboard() {
       : '');
     setLastSavedDemosTemplate(demosTemplate);
     setLastSavedDemosSubject(demosSubject);
+    setLastSavedDemosSubjectB(demosSubjectB);
     setLastSavedFollowUpTemplate(demosFollowUpTemplate);
     setLastSavedFollowUpSubject(demosFollowUpSubject);
     setLastSavedRadioTemplate(radioTemplate);
@@ -348,6 +363,7 @@ export default function Dashboard() {
   function discardChanges() {
     setDemosTemplate(lastSavedDemosTemplate);
     setDemosSubject(lastSavedDemosSubject);
+    setDemosSubjectB(lastSavedDemosSubjectB);
     setDemosFollowUpTemplate(lastSavedFollowUpTemplate);
     setDemosFollowUpSubject(lastSavedFollowUpSubject);
     setRadioTemplate(lastSavedRadioTemplate);
@@ -451,8 +467,13 @@ export default function Dashboard() {
     if (!previewModalType) return { entries: [], total: 0 };
     if (previewModalType === 'demos') {
       const tpl = demos.useFollowUp ? demosFollowUpTemplate : demosTemplate;
-      const subjectTpl = demos.useFollowUp ? demosFollowUpSubject : demosSubject;
-      const render = (vars: Record<string, string>) => {
+      const subjectA = demos.useFollowUp ? demosFollowUpSubject : demosSubject;
+      // Mirrors useDemosFlow's handleSend: A/B testing never applies to a
+      // follow-up send, and only kicks in once the toggle is on with real text
+      // in Subject B — matching exactly what a send would actually do.
+      const subjectB = (!demos.useFollowUp && demos.subjectTestEnabled) ? demosSubjectB : undefined;
+      const render = (vars: Record<string, string>, to: string) => {
+        const subjectTpl = subjectTemplateFor(to, subjectA, subjectB);
         const bodyParts = [renderTemplateClient(tpl, vars)];
         if (account.signOff?.trim()) bodyParts.push(renderTemplateClient(account.signOff, vars));
         return { subject: renderTemplateClient(subjectTpl, vars), body: bodyParts.join('\n\n') };
@@ -514,7 +535,7 @@ export default function Dashboard() {
       });
     });
     return buildPreviewEntries(candidates, PREVIEW_MODAL_RECIPIENT_CAP, render);
-  }, [previewModalType, demos.includedArtists, radio.results, playlists.results, demosTemplate, demosSubject, demosFollowUpTemplate, demosFollowUpSubject, demos.useFollowUp, radio.template, radio.subject, playlists.template, playlists.subject, account.signOff, trackTitle, driveLink, senderName, customContacts]);
+  }, [previewModalType, demos.includedArtists, radio.results, playlists.results, demosTemplate, demosSubject, demosSubjectB, demos.subjectTestEnabled, demosFollowUpTemplate, demosFollowUpSubject, demos.useFollowUp, radio.template, radio.subject, playlists.template, playlists.subject, account.signOff, trackTitle, driveLink, senderName, customContacts]);
 
   // Keyboard/focus handling for the preview modal (see the modal markup below):
   // Escape closes it, and focus moves into the dialog on open and back to

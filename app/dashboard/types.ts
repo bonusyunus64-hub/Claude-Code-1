@@ -94,6 +94,25 @@ export interface Campaign {
    *  before this field existed, from the old all-or-nothing send) — i.e. this
    *  campaign needs no further automatic follow-up work. */
   followUpSentAt?: number;
+  /** Follow-up template/subject as configured when this Song Demos campaign was
+   *  sent — mirrors driveLink/senderName above, so a later edit to Account
+   *  settings' follow-up fields can't retroactively change what an
+   *  already-sent campaign follows up with. Missing on older records or when
+   *  the follow-up template was blank at send time; the cron route falls back
+   *  to current settings in either case. */
+  followUpTemplate?: string;
+  followUpSubject?: string;
+  /** Present when this Song Demos send tested two subject lines
+   *  (DemosSection's "Test a second subject line" toggle) — the raw templates
+   *  as configured at send time. `subjectB` non-blank is what marks a
+   *  campaign as having actually run a test. */
+  subjectA?: string;
+  subjectB?: string;
+  /** Lowercased recipient -> which subject variant they were sent, assigned
+   *  deterministically by address (lib/recipients.ts's assignSubjectVariant)
+   *  so analytics can attribute a reply back to the subject that earned it.
+   *  Only populated alongside subjectA/subjectB. */
+  subjectVariants?: Record<string, 'A' | 'B'>;
 }
 
 /**
@@ -171,6 +190,26 @@ export interface RateBreakdown {
   replyRate: number;
 }
 
+/** One Song Demos campaign's subject-line A/B result, for the Overview tab.
+ *  See app/dashboard/utils.ts's subjectTestWinner for how `winner` is decided
+ *  (and why it's null well short of "the reply rates are literally equal"). */
+export interface SubjectTestSummary {
+  campaignId: string;
+  trackTitle: string;
+  date: string;
+  subjectA: string;
+  subjectB: string;
+  sentA: number;
+  respondedA: number;
+  replyRateA: number;
+  sentB: number;
+  respondedB: number;
+  replyRateB: number;
+  /** null = too early to tell; otherwise the variant whose reply rate is far
+   *  enough ahead, given both sample sizes, to trust. */
+  winner: 'A' | 'B' | null;
+}
+
 export interface AnalyticsStats {
   totalCampaigns: number;
   totalEmailsSent: number;
@@ -198,4 +237,7 @@ export interface AnalyticsStats {
   byGenre: RateBreakdown[];
   /** Reply rate per Spotify follower-count bracket, same data dependency as byGenre. */
   byFollowerTier: RateBreakdown[];
+  /** One entry per Song Demos campaign that ran a subject-line A/B test
+   *  (has subjectB/subjectVariants), newest first. Empty when nothing has. */
+  subjectTests: SubjectTestSummary[];
 }

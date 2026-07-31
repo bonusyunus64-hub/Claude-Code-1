@@ -3,7 +3,7 @@ import { getArtistsByGenres, Artist } from '@/lib/roster';
 import { renderTemplate, pronounFor } from '@/lib/emailTemplate';
 import {
   resolveSmtpConfig, sendMessagesPooled, paginate, dedupeByRecipient,
-  DEFAULT_SEND_BATCH_SIZE, OutboundMessage,
+  DEFAULT_SEND_BATCH_SIZE, OutboundMessage, subjectTemplateFor,
 } from '@/lib/mailSend';
 import { resolveAccount } from '@/lib/accounts';
 import { checkCapAllows, recordSends } from '@/lib/sendQuota';
@@ -21,6 +21,14 @@ interface SendPayload {
   genres: string[];
   emailTemplate: string;
   subjectTemplate?: string;
+  /**
+   * Second subject line for two-variant A/B testing (DemosSection's "Test a
+   * second subject line" toggle) — blank/absent means no test is running for
+   * this send, which is the exact behavior a payload from before this feature
+   * existed already has. See subjectTemplateFor (lib/recipients.ts) for how a
+   * recipient is deterministically assigned to one or the other.
+   */
+  subjectTemplateB?: string;
   senderName: string;
   signOff?: string;
   signOffImage?: string;
@@ -52,6 +60,7 @@ function buildEmailsForArtist(
   driveLink: string,
   emailTemplate: string,
   subjectTemplate: string,
+  subjectTemplateB: string | undefined,
   signOff: string,
   senderName: string
 ): OutboundMessage[] {
@@ -69,7 +78,7 @@ function buildEmailsForArtist(
     const bodyParts = [renderTemplate(emailTemplate, vars)];
     if (signOff?.trim()) bodyParts.push(renderTemplate(signOff, vars));
     const body = bodyParts.join('\n\n');
-    const subject = renderTemplate(subjectTemplate, vars);
+    const subject = renderTemplate(subjectTemplateFor(email, subjectTemplate, subjectTemplateB), vars);
     // When one manager covers several matched artists they get a single email, and
     // the biggest artist is the one worth leading with.
     return { to: email, subject, body, rank: artist.spotifyFollowers ?? 0 };
@@ -78,7 +87,7 @@ function buildEmailsForArtist(
 
 export async function POST(req: NextRequest) {
   const {
-    trackTitle, driveLink, genres, emailTemplate, subjectTemplate, senderName,
+    trackTitle, driveLink, genres, emailTemplate, subjectTemplate, subjectTemplateB, senderName,
     signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode, accountId,
     sendDelay, blacklist, excludeEmails, customContacts, threadIds, offset, limit,
   } = await req.json() as SendPayload;
@@ -106,7 +115,7 @@ export async function POST(req: NextRequest) {
     : [];
 
   const artistMessages = artists.flatMap(a =>
-    buildEmailsForArtist(a, trackTitle, driveLink, emailTemplate, subjectTpl, signOff ?? '', senderName)
+    buildEmailsForArtist(a, trackTitle, driveLink, emailTemplate, subjectTpl, subjectTemplateB, signOff ?? '', senderName)
   );
 
   const customMessages: OutboundMessage[] = (customContacts ?? []).map(cc => {
@@ -114,7 +123,7 @@ export async function POST(req: NextRequest) {
     const bodyParts = [renderTemplate(emailTemplate, vars)];
     if (signOff?.trim()) bodyParts.push(renderTemplate(signOff, vars));
     const body = bodyParts.join('\n\n');
-    const subject = renderTemplate(subjectTpl, vars);
+    const subject = renderTemplate(subjectTemplateFor(cc.managerEmail, subjectTpl, subjectTemplateB), vars);
     return { to: cc.managerEmail, subject, body, rank: CUSTOM_CONTACT_RANK };
   });
 

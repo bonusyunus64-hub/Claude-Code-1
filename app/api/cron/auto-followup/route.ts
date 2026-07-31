@@ -7,6 +7,7 @@ import { checkCapAllows, recordSends } from '@/lib/sendQuota';
 import {
   DEFAULT_FOLLOWUP_DAYS, isCampaignDueForFollowUp, nonRespondedRecipients, buildFollowUpMessage,
   computeFollowUpBudget, mergeEmailList, MAX_CAMPAIGNS_TOUCHED_PER_RUN, followUpStopReason,
+  resolveFollowUpContent,
 } from '@/lib/autoFollowUp';
 import { getBlacklist } from '@/lib/unsubscribe';
 
@@ -39,11 +40,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: true, processed: 0, note: 'Auto follow-up is turned off' });
   }
 
-  const followUpTemplate = typeof settings['tp_followup_template'] === 'string' ? settings['tp_followup_template'] : '';
-  if (!followUpTemplate.trim()) {
-    return NextResponse.json({ ok: true, processed: 0, note: 'No follow-up template configured' });
-  }
-  const subjectTemplate = (typeof settings['tp_followup_subject'] === 'string' && settings['tp_followup_subject'].trim())
+  // Fallback only — a campaign's own snapshot (CampaignRecord.followUpTemplate/
+  // followUpSubject, set at send time) wins when it has one; see
+  // resolveFollowUpContent's doc comment. Unlike before this feature, an empty
+  // globalFollowUpTemplate no longer short-circuits the whole run: a due
+  // campaign with its own snapshot can still get its follow-up even if nothing
+  // is currently configured in Account settings.
+  const globalFollowUpTemplate = typeof settings['tp_followup_template'] === 'string' ? settings['tp_followup_template'] : '';
+  const globalSubjectTemplate = (typeof settings['tp_followup_subject'] === 'string' && settings['tp_followup_subject'].trim())
     || 'Following Up: {{trackTitle}} for {{artistName}}';
   const signOff = typeof settings['tp_sign_off'] === 'string' ? settings['tp_sign_off'] : '';
   const sendDelay = Number(settings['tp_send_delay']) || undefined;
@@ -90,6 +94,17 @@ export async function GET(req: NextRequest) {
     // Pure and Redis-free, so computing it before either budget check below costs
     // nothing — nonRespondedRecipients only touches campaign data already loaded.
     const targets = nonRespondedRecipients(campaign, blacklist);
+
+    // Also Redis-free (campaign data is already loaded), so resolved before the
+    // budget check too. A campaign resolving to no template at all — no
+    // snapshot of its own and nothing currently configured to fall back to —
+    // is skipped without touching either budget below: there's no Redis work
+    // to bound here, just like the zero-targets case a little further down.
+    const { template: followUpTemplate, subject: subjectTemplate } = resolveFollowUpContent(campaign, globalFollowUpTemplate, globalSubjectTemplate);
+    if (!followUpTemplate.trim()) {
+      results.push({ campaignId: campaign.id, trackTitle: campaign.trackTitle, sent: 0, done: false, skipped: 'No follow-up template configured' });
+      continue;
+    }
 
     const stop = followUpStopReason(campaignsTouched, MAX_CAMPAIGNS_TOUCHED_PER_RUN, remainingMessageBudget, targets.length > 0);
     if (stop) {

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { sendInBatches, downloadCsv, messageIdsFromResults, payloadForPendingSend } from '../utils';
+import { assignSubjectVariant } from '@/lib/recipients';
 import type { Campaign, CampaignRecipient, EmailAccount, CustomContact, ReplyClassification } from '../types';
 
 export interface CampaignHistoryConfig {
@@ -253,10 +254,23 @@ export function useCampaignHistory(config: CampaignHistoryConfig) {
                 .map(email => ({ email, artistName: '', managerName: '', avatarUrl: '', genres: [], instagramHandle: '', spotifyFollowers: 0 })),
             ]
           : undefined;
+        // c.subjectB is only ever set alongside subjectA/subjectVariants (see
+        // Campaign's doc comment), so its presence is what tells this resume
+        // whether the original send was running a subject test at all — unlike
+        // useDemosFlow's handleSend, resumeSend only sees `newlySent` (this
+        // batch/round), not the campaign's full recipient list, so previously
+        // recorded assignments have to be merged forward rather than
+        // recomputed from scratch. assignSubjectVariant is still a pure
+        // function of the address alone, so a newly-sent recipient lands in
+        // the exact same variant here as it would have in the original send.
+        const subjectVariants = c.subjectB
+          ? { ...(c.subjectVariants ?? {}), ...Object.fromEntries(newlySent.map(email => [email.toLowerCase(), assignSubjectVariant(email)])) }
+          : c.subjectVariants;
         upsertCampaign({
           ...c,
           emails,
           recipients,
+          subjectVariants,
           messageIds: { ...(c.messageIds ?? {}), ...messageIdsFromResults(resultsSoFar) },
           pendingSend: nextOffset != null ? persistedPending : undefined,
         });

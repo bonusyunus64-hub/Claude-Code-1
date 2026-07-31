@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, sendInBatches, findDuplicateRecipients, messageIdsFromResults, computeAnalyticsStats, payloadForPendingSend } from './utils';
+import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, sendInBatches, findDuplicateRecipients, messageIdsFromResults, computeAnalyticsStats, payloadForPendingSend, subjectTestWinner } from './utils';
 import type { Campaign, CampaignRecipient } from './types';
 
 describe('shuffle', () => {
@@ -364,5 +364,82 @@ describe('computeAnalyticsStats', () => {
       campaign({ id: '1', type: 'radio', emails: ['a@x.com'], recipients: [recipient({ email: 'a@x.com', genres: ['Rock'] })] }),
     ]);
     expect(stats.byGenre).toEqual([]);
+  });
+
+  describe('subjectTests', () => {
+    it('is empty when no campaign ran a subject test', () => {
+      const stats = computeAnalyticsStats([campaign({ id: '1', emails: ['a@x.com'] })]);
+      expect(stats.subjectTests).toEqual([]);
+    });
+
+    it('splits sent/responded per variant using subjectVariants, newest campaign first', () => {
+      const stats = computeAnalyticsStats([
+        campaign({
+          id: '1', date: '2026-01-01T00:00:00.000Z',
+          emails: ['a@x.com', 'b@x.com', 'c@x.com'],
+          responded: ['a@x.com'],
+          subjectA: 'Subject A', subjectB: 'Subject B',
+          subjectVariants: { 'a@x.com': 'A', 'b@x.com': 'A', 'c@x.com': 'B' },
+        }),
+        campaign({
+          id: '2', date: '2026-02-01T00:00:00.000Z',
+          emails: ['d@x.com'], subjectA: 'Other A', subjectB: 'Other B',
+          subjectVariants: { 'd@x.com': 'B' },
+        }),
+      ]);
+      expect(stats.subjectTests).toHaveLength(2);
+      expect(stats.subjectTests[0].campaignId).toBe('2'); // newest first
+      expect(stats.subjectTests[1]).toMatchObject({
+        campaignId: '1', subjectA: 'Subject A', subjectB: 'Subject B',
+        sentA: 2, respondedA: 1, sentB: 1, respondedB: 0,
+      });
+    });
+
+    it('excludes campaigns without subjectB (no test ran), even if subjectVariants somehow exists', () => {
+      const stats = computeAnalyticsStats([
+        campaign({ id: '1', emails: ['a@x.com'], subjectVariants: { 'a@x.com': 'A' } }),
+      ]);
+      expect(stats.subjectTests).toEqual([]);
+    });
+
+    it('excludes recipients with no recorded variant from both sides, rather than guessing', () => {
+      const stats = computeAnalyticsStats([
+        campaign({
+          id: '1', emails: ['a@x.com', 'unknown@x.com'],
+          subjectA: 'A', subjectB: 'B', subjectVariants: { 'a@x.com': 'A' },
+        }),
+      ]);
+      expect(stats.subjectTests[0].sentA).toBe(1);
+      expect(stats.subjectTests[0].sentB).toBe(0);
+    });
+  });
+});
+
+describe('subjectTestWinner', () => {
+  it('says too early to tell below the per-variant sample floor, no matter the gap', () => {
+    // 19 sent apiece is just under the floor — even a lopsided-looking gap
+    // shouldn't be called yet.
+    expect(subjectTestWinner(19, 10, 19, 2)).toBeNull();
+  });
+
+  it('the illustrative example this feature was scoped around — 40 total, a 5-point gap — reads as noise', () => {
+    // 20/20 split, 5-point gap (10% vs 15% reply rate): exactly the "too early
+    // to tell" example from this feature's own spec.
+    expect(subjectTestWinner(20, 2, 20, 3)).toBeNull();
+  });
+
+  it('calls a winner once the gap clearly clears the z-threshold at a healthy sample size', () => {
+    // 200 sent apiece, 10% vs 30% reply rate — a real, obvious gap.
+    expect(subjectTestWinner(200, 20, 200, 60)).toBe('B');
+    expect(subjectTestWinner(200, 60, 200, 20)).toBe('A');
+  });
+
+  it('returns null rather than dividing by zero when nobody in either group has replied yet', () => {
+    expect(subjectTestWinner(50, 0, 50, 0)).toBeNull();
+  });
+
+  it('is symmetric: swapping A and B swaps the winner', () => {
+    expect(subjectTestWinner(100, 30, 100, 10)).toBe('A');
+    expect(subjectTestWinner(100, 10, 100, 30)).toBe('B');
   });
 });

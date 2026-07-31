@@ -1,4 +1,4 @@
-import type { SendResultEntry, BatchProgress, Campaign, RateBreakdown, AnalyticsStats } from './types';
+import type { SendResultEntry, BatchProgress, Campaign, RateBreakdown, AnalyticsStats, SubjectTestSummary } from './types';
 export { renderTemplate as renderTemplateClient, pronounFor as pronounForClient } from '@/lib/emailTemplate';
 
 /**
@@ -220,6 +220,47 @@ function replyRateOf(sent: number, responded: number): number {
   return sent > 0 ? responded / sent : 0;
 }
 
+// Minimum recipients *per variant* before a subject test's reply-rate gap is
+// even considered — below this, subjectTestWinner always says "too early to
+// tell" (returns null) regardless of how big the gap looks, since a handful of
+// replies swings a percentage wildly (2 of 5 vs 3 of 5 is a 20-point "gap" that
+// means nothing). 20 per variant — 40 total — is a low bar, not a rigorous one:
+// it exists to rule out the most obviously premature calls, not to certify
+// statistical significance, and it's the same "40 recipients" figure this
+// feature's own spec used as its example of a sample too small to call.
+const SUBJECT_TEST_MIN_PER_VARIANT = 20;
+
+// Once both variants clear the sample floor above, the gap between their reply
+// rates still has to clear this many standard errors of a two-proportion
+// z-test (on the pooled reply rate) before either one is called a winner.
+// Without this, a 40-recipient send with a 5-point gap — again, this feature's
+// own worked example of noise — reads as a confident winner: at n=20/variant
+// and a ~10% pooled reply rate, one standard error is already close to 9
+// points, so a 5-point gap is under 1 SE, nowhere near real. 1.65 is roughly a
+// one-sided 90% confidence threshold — loose enough to be a useful nudge for
+// someone picking between two subject lines, not a claim of scientific
+// significance (this is cold-email reply counts, not a clinical trial).
+const SUBJECT_TEST_Z_THRESHOLD = 1.65;
+
+/**
+ * Whether a subject-line A/B test's gap is real enough to call a winner, and
+ * for which variant — a plain two-proportion z-test on the pooled reply rate.
+ * See the two constants above for what the thresholds are and why. Returns
+ * null ("too early to tell") both below the sample floor and when the gap
+ * doesn't clear the z-threshold — including the degenerate case where nobody
+ * in either group has replied yet (pooled rate 0, so there's no variance to
+ * measure a gap against, even though the raw counts might differ).
+ */
+export function subjectTestWinner(sentA: number, respondedA: number, sentB: number, respondedB: number): 'A' | 'B' | null {
+  if (sentA < SUBJECT_TEST_MIN_PER_VARIANT || sentB < SUBJECT_TEST_MIN_PER_VARIANT) return null;
+  const pooled = (respondedA + respondedB) / (sentA + sentB);
+  const standardError = Math.sqrt(pooled * (1 - pooled) * (1 / sentA + 1 / sentB));
+  if (standardError === 0) return null;
+  const z = (respondedA / sentA - respondedB / sentB) / standardError;
+  if (Math.abs(z) < SUBJECT_TEST_Z_THRESHOLD) return null;
+  return z > 0 ? 'A' : 'B';
+}
+
 /**
  * All the derived numbers behind the Overview tab: totals, a 14-day send chart,
  * reply/bounce rates, and reply-rate breakdowns by campaign type, genre, and
@@ -316,6 +357,34 @@ export function computeAnalyticsStats(campaigns: Campaign[]): AnalyticsStats {
     .filter(b => b.sent > 0)
     .map(b => ({ ...b, replyRate: replyRateOf(b.sent, b.responded) }));
 
+  // subjectVariants is only ever set alongside subjectB (see the field's doc
+  // comment on Campaign) — checking subjectB is enough to identify which
+  // campaigns actually ran a test.
+  const subjectTests: SubjectTestSummary[] = demosCampaigns
+    .filter(c => c.subjectB && c.subjectVariants)
+    .map(c => {
+      const respondedSet = new Set((c.responded ?? []).map(e => e.toLowerCase()));
+      let sentA = 0, respondedA = 0, sentB = 0, respondedB = 0;
+      c.emails.forEach(email => {
+        const key = email.toLowerCase();
+        const variant = c.subjectVariants?.[key];
+        // A recipient with no recorded variant (shouldn't normally happen once a
+        // campaign is fully written, but a send interrupted mid-write could in
+        // principle leave a gap) simply isn't counted for either side, rather
+        // than guessed at.
+        if (variant === 'A') { sentA++; if (respondedSet.has(key)) respondedA++; }
+        else if (variant === 'B') { sentB++; if (respondedSet.has(key)) respondedB++; }
+      });
+      return {
+        campaignId: c.id, trackTitle: c.trackTitle, date: c.date,
+        subjectA: c.subjectA ?? '', subjectB: c.subjectB ?? '',
+        sentA, respondedA, replyRateA: replyRateOf(sentA, respondedA),
+        sentB, respondedB, replyRateB: replyRateOf(sentB, respondedB),
+        winner: subjectTestWinner(sentA, respondedA, sentB, respondedB),
+      };
+    })
+    .sort((a, b) => b.date.localeCompare(a.date));
+
   return {
     totalCampaigns, totalEmailsSent,
     demosCampaignCount: demosCampaigns.length, radioCampaignCount: radioCampaigns.length, playlistCampaignCount: playlistCampaigns.length,
@@ -323,6 +392,6 @@ export function computeAnalyticsStats(campaigns: Campaign[]): AnalyticsStats {
     topTracks, last14Days, maxDayCount,
     lastCampaignDate: campaigns.length ? campaigns.slice().sort((a, b) => b.date.localeCompare(a.date))[0].date : null,
     totalResponded, totalBounced, replyRate, bounceRate, classificationCounts,
-    byType, byGenre, byFollowerTier,
+    byType, byGenre, byFollowerTier, subjectTests,
   };
 }

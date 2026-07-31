@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { syncStorage } from '@/lib/remoteSync';
+import { assignSubjectVariant } from '@/lib/recipients';
 import type { Artist, Campaign, CampaignRecipient, CustomContact, DemosFilterPreset, SavedTemplate } from '../types';
 import { sendInBatches, countUniqueRecipients, findDuplicateRecipients, messageIdsFromResults, checkRecipientsValidity, shuffle, payloadForPendingSend } from '../utils';
 
@@ -17,6 +18,11 @@ export interface DemosFlowConfig {
   demosSubject: string;
   setDemosTemplate: (value: string) => void;
   setDemosSubject: (value: string) => void;
+  /** Second subject line for A/B testing (see subjectTestEnabled below) — a plain
+   *  sibling of demosSubject, owned by the parent the same way for the same
+   *  dirty-tracking/save-all reason. Empty string when the user hasn't set one. */
+  demosSubjectB: string;
+  setDemosSubjectB: (value: string) => void;
   demosFollowUpTemplate: string;
   demosFollowUpSubject: string;
   setDemosFollowUpTemplate: (value: string) => void;
@@ -55,6 +61,7 @@ export function useDemosFlow(config: DemosFlowConfig) {
   const {
     trackTitle, driveLink, senderName,
     demosTemplate, demosSubject, setDemosTemplate, setDemosSubject,
+    demosSubjectB, setDemosSubjectB,
     demosFollowUpTemplate, demosFollowUpSubject, setDemosFollowUpTemplate, setDemosFollowUpSubject,
     signOff, signOffImage, selectedAccountId, sendDelay, blacklist, dailySendCap, sendsToday,
     accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap, upsertCampaign, threadIdsFor,
@@ -79,6 +86,11 @@ export function useDemosFlow(config: DemosFlowConfig) {
   const [maxInstagram, setMaxInstagram] = useState(0);
   const [showInstagram, setShowInstagram] = useState(false);
   const [useFollowUp, setUseFollowUp] = useState(false);
+  // Not persisted (unlike demosSubjectB's text) — same reasoning as useFollowUp
+  // above: whether to run a test is a per-sending-session choice, not a saved
+  // template setting, so it resets to off on reload rather than silently
+  // re-enabling a test the user isn't actively thinking about.
+  const [subjectTestEnabled, setSubjectTestEnabled] = useState(false);
 
   const [previewArtists, setPreviewArtists] = useState<Artist[]>([]);
   const [excludedArtistNames, setExcludedArtistNames] = useState<Set<string>>(new Set());
@@ -205,10 +217,19 @@ export function useDemosFlow(config: DemosFlowConfig) {
       const campaignId = Date.now().toString();
       const campaignDate = new Date().toISOString();
       const sendEndpoint = '/api/send';
+      // A/B testing only ever applies to the initial pitch subject, never the
+      // follow-up one: the follow-up template/subject pair has no B field of its
+      // own, and threading a follow-up onto whichever variant a recipient
+      // originally got is a stronger reason to leave it alone than a reason to
+      // add a second random split on top of it. subjectTemplateB simply isn't
+      // sent when useFollowUp is on, or when there's no B text to test against —
+      // both cases behave exactly like a payload from before this feature existed.
+      const subjectTestActive = !useFollowUp && subjectTestEnabled && demosSubjectB.trim() !== '';
       const sendPayload = {
         trackTitle, driveLink, genres: selectedGenres,
         emailTemplate: useFollowUp ? demosFollowUpTemplate : demosTemplate,
         subjectTemplate: useFollowUp ? demosFollowUpSubject : demosSubject,
+        subjectTemplateB: subjectTestActive ? demosSubjectB : undefined,
         senderName, signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram,
         matchMode: demosMatchMode,
         sendDelay: sendDelay > 0 ? sendDelay : undefined,
@@ -243,6 +264,21 @@ export function useDemosFlow(config: DemosFlowConfig) {
           // itself (with the image intact) keeps driving sendInBatches above.
           pendingSend: nextOffset != null ? { endpoint: sendEndpoint, payload: payloadForPendingSend(sendPayload) } : undefined,
           driveLink, senderName,
+          // Snapshot of the follow-up template/subject as currently configured —
+          // see lib/campaigns.ts's doc comment on these fields for why the cron
+          // route needs its own copy rather than reading current settings later.
+          followUpTemplate: demosFollowUpTemplate, followUpSubject: demosFollowUpSubject,
+          // subjectVariants is recomputed from `sentEmails` (the full cumulative
+          // list-so-far, not just this batch — see sendInBatches's doc comment on
+          // resultsSoFar) on every tick rather than merged incrementally: since
+          // assignSubjectVariant is a pure function of the address alone, redoing
+          // it is exactly as correct as merging and doesn't need `campaigns`
+          // (the pre-update record) in scope here the way resumeSend's merge does.
+          ...(subjectTestActive ? {
+            subjectA: demosSubject,
+            subjectB: demosSubjectB,
+            subjectVariants: Object.fromEntries(sentEmails.map(email => [email.toLowerCase(), assignSubjectVariant(email)])),
+          } : {}),
         });
       });
       if (!outcome.ok) { setSendError(outcome.error); }
@@ -362,6 +398,7 @@ export function useDemosFlow(config: DemosFlowConfig) {
 
   return {
     demosTemplate, demosSubject, setDemosTemplate, setDemosSubject,
+    demosSubjectB, setDemosSubjectB, subjectTestEnabled, setSubjectTestEnabled,
     demosTemplateLibrary, newDemosTemplateName, setNewDemosTemplateName,
     saveDemosTemplateToLibrary, loadDemosTemplateFromLibrary, deleteDemosTemplateFromLibrary,
 

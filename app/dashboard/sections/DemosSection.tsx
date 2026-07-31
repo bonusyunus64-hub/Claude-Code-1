@@ -43,6 +43,10 @@ export interface DemosSectionProps {
 
   demosSubject: string;
   setDemosSubject: (value: string) => void;
+  demosSubjectB: string;
+  setDemosSubjectB: (value: string) => void;
+  subjectTestEnabled: boolean;
+  setSubjectTestEnabled: (updater: (prev: boolean) => boolean) => void;
   demosTemplate: string;
   setDemosTemplate: (value: string) => void;
   demosTemplateLibrary: SavedTemplate[];
@@ -174,7 +178,8 @@ export interface DemosSectionProps {
 export function DemosSection(props: DemosSectionProps) {
   const {
     demosTab, setDemosTab,
-    demosSubject, setDemosSubject, demosTemplate, setDemosTemplate, demosTemplateLibrary,
+    demosSubject, setDemosSubject, demosSubjectB, setDemosSubjectB, subjectTestEnabled, setSubjectTestEnabled,
+    demosTemplate, setDemosTemplate, demosTemplateLibrary,
     newDemosTemplateName, setNewDemosTemplateName, saveDemosTemplateToLibrary, loadDemosTemplateFromLibrary, deleteDemosTemplateFromLibrary,
     demosFollowUpSubject, setDemosFollowUpSubject, demosFollowUpTemplate, setDemosFollowUpTemplate, followUpTemplateLibrary,
     newFollowUpTemplateName, setNewFollowUpTemplateName, saveFollowUpTemplateToLibrary, loadFollowUpTemplateFromLibrary, deleteFollowUpTemplateFromLibrary,
@@ -222,9 +227,35 @@ export function DemosSection(props: DemosSectionProps) {
               </div>
             </div>
             <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1.5">Subject line</label>
+              <label className="block text-xs font-medium text-zinc-400 mb-1.5">Subject line{subjectTestEnabled ? ' (A)' : ''}</label>
               <input type="text" value={demosSubject} onChange={e => setDemosSubject(e.target.value)}
                 className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+              {subjectTestEnabled && <div className="mt-1.5"><SpamScoreBadge template={demosSubject} /></div>}
+            </div>
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 cursor-pointer select-none w-fit">
+                <div
+                  onClick={() => setSubjectTestEnabled(p => !p)}
+                  className={`relative w-9 h-5 rounded-full transition ${subjectTestEnabled ? 'bg-violet-600' : 'bg-zinc-700'}`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${subjectTestEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
+                </div>
+                <span className="text-xs text-zinc-400">Test a second subject line</span>
+              </label>
+              {subjectTestEnabled && (
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-medium text-zinc-400">Subject line (B)</label>
+                  <input type="text" value={demosSubjectB} onChange={e => setDemosSubjectB(e.target.value)}
+                    placeholder="Try a different subject line here"
+                    className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2.5 text-sm text-white font-mono placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition" />
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <p className="text-xs text-zinc-500 max-w-md">
+                      About half your recipients will get Subject A, half will get Subject B — split by their email address, so it stays the same person-to-subject match up even if you send in several batches. Check the Overview tab after sending to see which one got more replies.
+                    </p>
+                    {demosSubjectB.trim() && <SpamScoreBadge template={demosSubjectB} />}
+                  </div>
+                </div>
+              )}
             </div>
             <textarea value={demosTemplate} onChange={e => setDemosTemplate(e.target.value)} rows={14}
               className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
@@ -871,6 +902,13 @@ export function DemosSection(props: DemosSectionProps) {
             </label>
             {useFollowUp && (
               <span className="text-xs text-amber-400 bg-amber-600/15 border border-amber-600/30 px-2 py-0.5 rounded-full">Using follow-up template</span>
+            )}
+            {subjectTestEnabled && demosSubjectB.trim() && (
+              useFollowUp ? (
+                <span className="text-xs text-zinc-500">Subject line test is skipped for follow-up sends</span>
+              ) : (
+                <span className="text-xs text-violet-400 bg-violet-600/15 border border-violet-600/30 px-2 py-0.5 rounded-full">Testing 2 subject lines</span>
+              )
             )}
           </div>
           <div className="flex flex-col sm:flex-row sm:items-center gap-3">

@@ -99,4 +99,18 @@ describe('buildPreviewEntries', () => {
   it('returns an empty result for an empty candidate list', () => {
     expect(buildPreviewEntries([], 20, passthroughRender)).toEqual({ entries: [], total: 0 });
   });
+
+  it('passes the deduped recipient\'s address to render, not just their vars', () => {
+    // Needed for subject-line A/B testing (lib/recipients.ts's subjectTemplateFor):
+    // a caller has to know which address it's rendering for to pick the same
+    // subject variant the server will actually send.
+    const candidates: PreviewCandidate[] = [
+      candidate({ to: 'a@x.com', rank: 1 }),
+      candidate({ to: 'b@x.com' }),
+    ];
+    const seenAddresses: string[] = [];
+    const recordingRender = (vars: Record<string, string>, to: string) => { seenAddresses.push(to); return passthroughRender(vars); };
+    buildPreviewEntries(candidates, 20, recordingRender);
+    expect(seenAddresses.sort()).toEqual(['a@x.com', 'b@x.com']);
+  });
 });

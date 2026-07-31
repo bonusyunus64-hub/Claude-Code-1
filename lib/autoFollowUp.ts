@@ -41,6 +41,26 @@ export function nonRespondedRecipients(campaign: CampaignRecord, blacklist: Set<
 }
 
 /**
+ * Resolves which follow-up template/subject the cron route should use for a
+ * campaign: its own snapshot (CampaignRecord.followUpTemplate/followUpSubject,
+ * taken at send time — see lib/campaigns.ts's doc comment on those fields) when
+ * present, falling back to whatever's currently configured
+ * (tp_followup_template/tp_followup_subject) for campaigns saved before that
+ * snapshot existed, or where the follow-up template was blank at send time. A
+ * resolved template that's still blank either way means there's genuinely
+ * nothing to send this campaign.
+ */
+export function resolveFollowUpContent(
+  campaign: CampaignRecord,
+  globalTemplate: string,
+  globalSubject: string
+): { template: string; subject: string } {
+  const template = campaign.followUpTemplate?.trim() ? campaign.followUpTemplate : globalTemplate;
+  const subject = campaign.followUpSubject?.trim() ? campaign.followUpSubject : globalSubject;
+  return { template, subject };
+}
+
+/**
  * Builds one follow-up message for a recipient. Recipient metadata (artist/manager
  * name) comes from campaign.recipients when available; a recipient added before
  * that was tracked, or a custom contact, falls back to blank fields the same way

@@ -225,4 +225,4 @@ export async function sendMessagesPooled(
 // lib/recipients.ts because the preview modal in the browser needs the same
 // dedupe logic, and importing it from here would drag nodemailer into the client
 // bundle — see that file's header for the full reasoning.
-export { dedupeByRecipient, paginate, DEFAULT_SEND_BATCH_SIZE } from '@/lib/recipients';
+export { dedupeByRecipient, paginate, DEFAULT_SEND_BATCH_SIZE, assignSubjectVariant, subjectTemplateFor } from '@/lib/recipients';

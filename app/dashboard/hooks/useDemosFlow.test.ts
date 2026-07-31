@@ -7,6 +7,7 @@ vi.mock('@/lib/remoteSync', () => ({
 }));
 
 import { useDemosFlow, DemosFlowConfig } from './useDemosFlow';
+import { assignSubjectVariant } from '@/lib/recipients';
 import type { Artist, Campaign, CustomContact } from '../types';
 
 function artist(overrides: Partial<Artist> = {}): Artist {
@@ -23,11 +24,13 @@ function artist(overrides: Partial<Artist> = {}): Artist {
 function useHarness(overrides: Partial<DemosFlowConfig> & { upsertCampaign: (c: Campaign) => void }) {
   const [demosTemplate, setDemosTemplate] = useState('Hi {{managerName}}, check out {{trackTitle}}: {{driveLink}}');
   const [demosSubject, setDemosSubject] = useState('Submission: {{trackTitle}}');
+  const [demosSubjectB, setDemosSubjectB] = useState('');
   const [demosFollowUpTemplate, setDemosFollowUpTemplate] = useState('Following up on {{trackTitle}}');
   const [demosFollowUpSubject, setDemosFollowUpSubject] = useState('Following Up: {{trackTitle}}');
   const config: DemosFlowConfig = {
     trackTitle: 'Track', driveLink: 'https://drive.example.com/x', senderName: 'Sender',
     demosTemplate, demosSubject, setDemosTemplate, setDemosSubject,
+    demosSubjectB, setDemosSubjectB,
     demosFollowUpTemplate, demosFollowUpSubject, setDemosFollowUpTemplate, setDemosFollowUpSubject,
     signOff: '', signOffImage: null, selectedAccountId: 'acct-1', sendDelay: 0, blacklist: [],
     dailySendCap: 0, sendsToday: 0,
@@ -265,6 +268,108 @@ describe('useDemosFlow', () => {
 
       expect(upsertCampaign).toHaveBeenCalledWith(expect.objectContaining({ type: 'demos', trackTitle: 'Track' }));
       expect(recordFailedEmails).toHaveBeenCalledWith(['sam@example.com']);
+    });
+
+    it('snapshots the follow-up template/subject onto the campaign record, independent of useFollowUp', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const upsertCampaign = vi.fn();
+      const { result } = renderDemos({ upsertCampaign });
+      await act(async () => { await result.current.handlePreview(); });
+
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true, json: async () => ({ results: [{ to: 'sam@example.com', success: true }], total: 1, nextOffset: null }),
+      })));
+      await act(async () => { await result.current.handleSend(); });
+
+      expect(upsertCampaign).toHaveBeenCalledWith(expect.objectContaining({
+        followUpTemplate: result.current.demosFollowUpTemplate,
+        followUpSubject: result.current.demosFollowUpSubject,
+      }));
+    });
+  });
+
+  describe('subject-line A/B testing', () => {
+    it('does not send subjectTemplateB when the test toggle is off, matching a pre-A/B-testing payload', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const { result } = renderDemos();
+      await act(async () => { await result.current.handlePreview(); });
+
+      const sendFetch = vi.fn<(url: string, init?: RequestInit) => Promise<{ ok: boolean; json: () => Promise<unknown> }>>()
+        .mockImplementation(async () => ({
+          ok: true, json: async () => ({ results: [{ to: 'sam@example.com', success: true }], total: 1, nextOffset: null }),
+        }));
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      const body = JSON.parse((sendFetch.mock.calls[0][1] as RequestInit).body as string);
+      expect('subjectTemplateB' in body).toBe(false);
+    });
+
+    it('does not send subjectTemplateB when the toggle is on but Subject B is left blank', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const { result } = renderDemos();
+      await act(async () => { await result.current.handlePreview(); });
+      act(() => result.current.setSubjectTestEnabled(true));
+
+      const sendFetch = vi.fn<(url: string, init?: RequestInit) => Promise<{ ok: boolean; json: () => Promise<unknown> }>>()
+        .mockImplementation(async () => ({
+          ok: true, json: async () => ({ results: [{ to: 'sam@example.com', success: true }], total: 1, nextOffset: null }),
+        }));
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      const body = JSON.parse((sendFetch.mock.calls[0][1] as RequestInit).body as string);
+      expect('subjectTemplateB' in body).toBe(false);
+    });
+
+    it('sends subjectTemplateB and snapshots subjectA/subjectB/subjectVariants once the toggle is on and Subject B has text', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const upsertCampaign = vi.fn();
+      const { result } = renderDemos({ upsertCampaign });
+      await act(async () => { await result.current.handlePreview(); });
+      act(() => result.current.setSubjectTestEnabled(true));
+      act(() => result.current.setDemosSubjectB('Alternate subject: {{trackTitle}}'));
+
+      const sendFetch = vi.fn<(url: string, init?: RequestInit) => Promise<{ ok: boolean; json: () => Promise<unknown> }>>()
+        .mockImplementation(async () => ({
+          ok: true, json: async () => ({ results: [{ to: 'sam@example.com', success: true }], total: 1, nextOffset: null }),
+        }));
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      const body = JSON.parse((sendFetch.mock.calls[0][1] as RequestInit).body as string);
+      expect(body.subjectTemplateB).toBe('Alternate subject: {{trackTitle}}');
+
+      expect(upsertCampaign).toHaveBeenCalledWith(expect.objectContaining({
+        subjectA: result.current.demosSubject,
+        subjectB: 'Alternate subject: {{trackTitle}}',
+        subjectVariants: { 'sam@example.com': assignSubjectVariant('sam@example.com') },
+      }));
+    });
+
+    it('never runs the test on a follow-up send, even with the toggle on and Subject B filled in', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const upsertCampaign = vi.fn();
+      const { result } = renderDemos({ upsertCampaign });
+      await act(async () => { await result.current.handlePreview(); });
+      act(() => result.current.setSubjectTestEnabled(true));
+      act(() => result.current.setDemosSubjectB('Alternate subject'));
+      act(() => result.current.setUseFollowUp(true));
+
+      const sendFetch = vi.fn<(url: string, init?: RequestInit) => Promise<{ ok: boolean; json: () => Promise<unknown> }>>()
+        .mockImplementation(async () => ({
+          ok: true, json: async () => ({ results: [{ to: 'sam@example.com', success: true }], total: 1, nextOffset: null }),
+        }));
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      const body = JSON.parse((sendFetch.mock.calls[0][1] as RequestInit).body as string);
+      expect('subjectTemplateB' in body).toBe(false);
+
+      const upserted = upsertCampaign.mock.calls[0][0] as Campaign;
+      expect(upserted.subjectA).toBeUndefined();
+      expect(upserted.subjectB).toBeUndefined();
+      expect(upserted.subjectVariants).toBeUndefined();
     });
   });
 

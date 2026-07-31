@@ -8,6 +8,7 @@ vi.mock('../utils', async (importOriginal) => {
 });
 
 import { useCampaignHistory } from './useCampaignHistory';
+import { assignSubjectVariant } from '@/lib/recipients';
 import type { Campaign, EmailAccount, CustomContact } from '../types';
 
 function campaign(overrides: Partial<Campaign> = {}): Campaign {
@@ -351,6 +352,48 @@ describe('useCampaignHistory', () => {
       await act(async () => { await result.current.resumeSend(pending); });
 
       expect(result.current.campaigns[0].pendingSend).toBeUndefined();
+    });
+
+    it('merges newly-sent addresses into subjectVariants when the original send ran a subject test', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ campaigns: [] }) })));
+      const { result } = renderHistory();
+      await waitFor(() => expect(result.current.campaigns).toEqual([]));
+
+      const sendFetch = vi.fn(async () => ({
+        ok: true, json: async () => ({ results: [{ to: 'b@example.com', success: true }], total: 1, nextOffset: null }),
+      }));
+      vi.stubGlobal('fetch', sendFetch);
+
+      const pending = campaign({
+        emails: ['a@example.com'],
+        subjectA: 'Subject A', subjectB: 'Subject B',
+        subjectVariants: { 'a@example.com': assignSubjectVariant('a@example.com') },
+        pendingSend: { endpoint: '/api/send', payload: { subjectTemplate: 'Subject A', subjectTemplateB: 'Subject B' } },
+      });
+      await act(async () => { await result.current.resumeSend(pending); });
+
+      // The newly-sent recipient from this resume gets the exact same variant
+      // assignSubjectVariant would give them anywhere else — a resume can't move
+      // anyone between variants, only add whoever's newly sent to the map.
+      expect(result.current.campaigns[0].subjectVariants).toEqual({
+        'a@example.com': assignSubjectVariant('a@example.com'),
+        'b@example.com': assignSubjectVariant('b@example.com'),
+      });
+    });
+
+    it('leaves subjectVariants untouched for a campaign that never ran a subject test', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ campaigns: [] }) })));
+      const { result } = renderHistory();
+      await waitFor(() => expect(result.current.campaigns).toEqual([]));
+
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true, json: async () => ({ results: [{ to: 'b@example.com', success: true }], total: 1, nextOffset: null }),
+      })));
+
+      const pending = campaign({ emails: ['a@example.com'], pendingSend: { endpoint: '/api/send', payload: {} } });
+      await act(async () => { await result.current.resumeSend(pending); });
+
+      expect(result.current.campaigns[0].subjectVariants).toBeUndefined();
     });
   });
 });

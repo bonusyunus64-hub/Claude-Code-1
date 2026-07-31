@@ -61,6 +61,46 @@ export interface CampaignRecord {
    * from a single unbatched send — they're left alone and stay done.
    */
   followUpSentAt?: number;
+  /**
+   * The follow-up template/subject as configured (Account settings' Automatic
+   * Follow-ups fields, tp_followup_template/tp_followup_subject) at the moment
+   * this Song Demos campaign was sent — mirrors driveLink/senderName above, for
+   * the same reason: app/api/cron/auto-followup/route.ts renders and sends the
+   * follow-up days after the original pitch, and without a snapshot it would
+   * silently pick up whatever the user has since edited those settings to,
+   * making a campaign that already went out inconsistent with what it actually
+   * follows up on. Only ever set on `demos` campaigns — radio/playlists never
+   * get an automatic follow-up (see isCampaignDueForFollowUp). Missing on
+   * records saved before this field existed, or wherever the follow-up template
+   * was blank at send time; the cron route falls back to whatever's currently
+   * configured in either case, exactly matching this field's absence to its
+   * pre-snapshot behavior.
+   */
+  followUpTemplate?: string;
+  followUpSubject?: string;
+  /**
+   * Present when this Song Demos send tested two subject lines against each
+   * other (DemosSection's "Test a second subject line" toggle) — the raw
+   * templates (with {{variables}} unrendered) as configured at send time,
+   * snapshotted for the same driveLink/senderName reason: the Overview tab
+   * reports on these later, and a template edit made afterwards shouldn't
+   * rewrite what a finished test says it compared. `subjectB` (non-blank) is
+   * what marks a campaign as having actually run a test — a send with the
+   * toggle off, or with B left empty, has neither field set and behaves exactly
+   * as a send always has.
+   */
+  subjectA?: string;
+  subjectB?: string;
+  /**
+   * Lowercased recipient -> which subject variant ('A' or 'B') they were sent,
+   * assigned deterministically by address (lib/recipients.ts's
+   * assignSubjectVariant) so a batched or resumed send can never move someone
+   * between variants after the fact. Lets computeAnalyticsStats attribute each
+   * recipient's reply (`responded`) back to the subject they actually got. Only
+   * populated alongside subjectA/subjectB — absent entirely for a campaign that
+   * didn't run a test.
+   */
+  subjectVariants?: Record<string, 'A' | 'B'>;
 }
 
 // Campaign history used to live as one JSON array under a single settings field,
