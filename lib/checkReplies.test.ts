@@ -1,5 +1,18 @@
-import { describe, it, expect } from 'vitest';
-import { resolveImapConfig, sendersFromEnvelope, matchResponders, isBounceSender, extractFailedRecipients, classifyReply } from './checkReplies';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// checkReplies.ts's classifyReplies() delegates AI classification to
+// lib/replyClassifier.ts — mocked here so these tests exercise the pre-filtering,
+// fallback, and batch-plumbing logic in checkReplies.ts without any real network
+// call. lib/replyClassifier.test.ts covers the AI-calling module itself.
+const mockClassifyRepliesWithAI = vi.fn();
+vi.mock('./replyClassifier', () => ({
+  classifyRepliesWithAI: (...args: unknown[]) => mockClassifyRepliesWithAI(...args),
+}));
+
+import {
+  resolveImapConfig, sendersFromEnvelope, matchResponders, isBounceSender,
+  extractFailedRecipients, classifyReply, classifyReplies,
+} from './checkReplies';
 
 describe('resolveImapConfig', () => {
   it('derives the imap host from an smtp.* host', () => {
@@ -158,5 +171,96 @@ describe('classifyReply', () => {
       body: '<div><p>We are <b>not interested</b> right now, thanks.</p></div>',
     });
     expect(classifyReply(source)).toBe('pass');
+  });
+});
+
+describe('classifyReplies', () => {
+  beforeEach(() => {
+    mockClassifyRepliesWithAI.mockReset();
+    mockClassifyRepliesWithAI.mockResolvedValue({});
+  });
+
+  it('classifies a header-based auto-reply without ever calling the AI classifier', async () => {
+    const source = fakeMessage({ headers: 'Auto-Submitted: auto-replied', body: 'I love this, send it over!' });
+    const labels = await classifyReplies([{ uid: 1, sender: 'a@example.com', source }]);
+    expect(labels.get(1)).toBe('auto-reply');
+    expect(mockClassifyRepliesWithAI).not.toHaveBeenCalled();
+  });
+
+  it('classifies a subject-based auto-reply without ever calling the AI classifier', async () => {
+    const source = fakeMessage({ subject: 'Automatic reply: Out of Office', body: 'Away until Monday.' });
+    const labels = await classifyReplies([{ uid: 1, sender: 'a@example.com', source }]);
+    expect(labels.get(1)).toBe('auto-reply');
+    expect(mockClassifyRepliesWithAI).not.toHaveBeenCalled();
+  });
+
+  it('does not call the AI classifier at all when every pending message is an auto-reply', async () => {
+    const source = fakeMessage({ headers: 'Auto-Submitted: auto-replied' });
+    await classifyReplies([
+      { uid: 1, sender: 'a@example.com', source },
+      { uid: 2, sender: 'b@example.com', source },
+    ]);
+    expect(mockClassifyRepliesWithAI).not.toHaveBeenCalled();
+  });
+
+  it('uses the AI classification when the classifier returns a label for the message (successful classification)', async () => {
+    mockClassifyRepliesWithAI.mockResolvedValue({ '7': 'interested' });
+    const source = fakeMessage({ body: "We'd need to hear the stems first, but keen." });
+    const labels = await classifyReplies([{ uid: 7, sender: 'a@example.com', source }]);
+    expect(labels.get(7)).toBe('interested');
+  });
+
+  it('sends only non-auto-reply messages to the AI classifier, keyed by uid, with headers/quoting already stripped', async () => {
+    const s1 = fakeMessage({ body: 'Sounds interesting, tell me more.' });
+    const s2 = fakeMessage({ headers: 'Auto-Submitted: auto-replied', body: 'Out of office' });
+    await classifyReplies([
+      { uid: 1, sender: 'a@example.com', source: s1 },
+      { uid: 2, sender: 'b@example.com', source: s2 },
+    ]);
+    expect(mockClassifyRepliesWithAI).toHaveBeenCalledTimes(1);
+    expect(mockClassifyRepliesWithAI).toHaveBeenCalledWith([
+      { key: '1', text: 'Sounds interesting, tell me more.' },
+    ]);
+  });
+
+  it('batches every non-auto-reply message from one call into a single classifyRepliesWithAI invocation', async () => {
+    const s1 = fakeMessage({ body: 'Sounds interesting, tell me more.' });
+    const s2 = fakeMessage({ body: 'Not for us.' });
+    const s3 = fakeMessage({ body: 'Who is this?' });
+    await classifyReplies([
+      { uid: 1, sender: 'a@example.com', source: s1 },
+      { uid: 2, sender: 'b@example.com', source: s2 },
+      { uid: 3, sender: 'c@example.com', source: s3 },
+    ]);
+    expect(mockClassifyRepliesWithAI).toHaveBeenCalledTimes(1);
+    const [batchArg] = mockClassifyRepliesWithAI.mock.calls[0] as [{ key: string }[]];
+    expect(batchArg.map(r => r.key)).toEqual(['1', '2', '3']);
+  });
+
+  it('falls back to the keyword classifier for a message the AI classifier returns no label for (API failure or no key configured)', async () => {
+    // classifyRepliesWithAI itself never throws — a missing API key or a failed
+    // request both surface as the key simply being absent from its result, which
+    // is exactly what the default mockResolvedValue({}) in beforeEach simulates.
+    const source = fakeMessage({ body: "This sounds great, we'd love to hear more. Please send it over!" });
+    const labels = await classifyReplies([{ uid: 1, sender: 'a@example.com', source }]);
+    expect(labels.get(1)).toBe('interested');
+  });
+
+  it('falls back to unclassified via keywords when the AI classifier has no label and no keyword matches either', async () => {
+    const source = fakeMessage({ body: 'Thanks for reaching out, who is this?' });
+    const labels = await classifyReplies([{ uid: 1, sender: 'a@example.com', source }]);
+    expect(labels.get(1)).toBe('unclassified');
+  });
+
+  it('falls back per-message: an AI label for one uid does not affect a sibling message the classifier omitted', async () => {
+    mockClassifyRepliesWithAI.mockResolvedValue({ '1': 'interested' });
+    const s1 = fakeMessage({ body: 'Ambiguous but AI says interested.' });
+    const s2 = fakeMessage({ body: "We're not interested, but the AI classifier didn't return anything for this one." });
+    const labels = await classifyReplies([
+      { uid: 1, sender: 'a@example.com', source: s1 },
+      { uid: 2, sender: 'b@example.com', source: s2 },
+    ]);
+    expect(labels.get(1)).toBe('interested'); // from the mocked AI response
+    expect(labels.get(2)).toBe('pass'); // AI classifier returned nothing for uid 2 -> keyword fallback
   });
 });

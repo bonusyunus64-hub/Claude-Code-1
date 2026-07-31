@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
     "@upstash/redis": "^1.38.0",
     "cookie": "^1.1.1",
     "imapflow": "^1.5.0",

@@ -1,4 +1,5 @@
 import { ImapFlow } from 'imapflow';
+import { classifyRepliesWithAI, type ClassifiableReply } from './replyClassifier';
 
 export interface ImapConfig {
   host: string;
@@ -128,31 +129,92 @@ function extractSubject(headerBlock: string): string {
   return match ? match[1].trim() : '';
 }
 
-/**
- * Best-effort keyword classification of a reply — not a real language model, just
- * enough to separate "clearly a vacation responder" and "clearly said yes/no" from
- * the replies worth a human actually reading. Anything ambiguous falls through to
- * 'unclassified' rather than guessing.
- */
-export function classifyReply(source: string): ReplyClassification {
-  const { headerBlock, body } = splitHeadersAndBody(source);
+/** Whether a message's headers or subject line mark it as an automated response (vacation responder, etc.) rather than a human reply. Deterministic, free, and reliable, so this always runs before any AI call — an out-of-office should never cost an API round trip. */
+function isAutoReplyMessage(headerBlock: string): boolean {
   const headerMatch = headerBlock.match(AUTO_REPLY_HEADER_RE);
-  if (headerMatch && isAutoReplyHeaderValue(headerMatch[1])) return 'auto-reply';
+  if (headerMatch && isAutoReplyHeaderValue(headerMatch[1])) return true;
 
   const subject = extractSubject(headerBlock).toLowerCase();
-  if (AUTO_REPLY_SUBJECT_PHRASES.some(p => subject.includes(p))) return 'auto-reply';
+  return AUTO_REPLY_SUBJECT_PHRASES.some(p => subject.includes(p));
+}
 
-  // Strip HTML tags (in case the reply is HTML-only) and drop quoted history below
-  // the new text, so a "yes!" isn't drowned out by the entire original pitch quoted
-  // back underneath it.
+/**
+ * Strips HTML tags (in case the reply is HTML-only) and drops quoted history below
+ * the new text, so a "yes!" isn't drowned out by the entire original pitch quoted
+ * back underneath it, then truncates to a length that's plenty for judging intent
+ * without paying for — or handing a model — an entire quoted email thread. Shared
+ * by both classifyReply below and the AI classifier's batching in classifyReplies,
+ * so the two never disagree about what text they're each looking at.
+ */
+function extractPlainReplyBody(body: string): string {
   const plain = body.replace(/<[^>]+>/g, ' ').split(/\r?\n\s*(?:>|On .{0,80} wrote:)/i)[0];
-  const lowerBody = plain.slice(0, 4000).toLowerCase();
+  return plain.slice(0, 4000);
+}
 
+/** Best-effort keyword match against an already-cleaned reply body (see extractPlainReplyBody). Anything ambiguous falls through to 'unclassified' rather than guessing. */
+function classifyByKeywords(plainBody: string): ReplyClassification {
+  const lowerBody = plainBody.toLowerCase();
   const interested = INTERESTED_PHRASES.some(p => lowerBody.includes(p));
   const pass = PASS_PHRASES.some(p => lowerBody.includes(p));
   if (interested && !pass) return 'interested';
   if (pass && !interested) return 'pass';
   return 'unclassified';
+}
+
+/**
+ * Best-effort keyword classification of a reply — not a real language model, just
+ * enough to separate "clearly a vacation responder" and "clearly said yes/no" from
+ * the replies worth a human actually reading. This is the classifier used directly
+ * when no AI classifier is configured, and per-reply whenever the AI classifier
+ * (see classifyReplies below) didn't return a label for that message.
+ */
+export function classifyReply(source: string): ReplyClassification {
+  const { headerBlock, body } = splitHeadersAndBody(source);
+  if (isAutoReplyMessage(headerBlock)) return 'auto-reply';
+  return classifyByKeywords(extractPlainReplyBody(body));
+}
+
+/** One IMAP message worth classifying: its UID, the recipient it's attributed to, and its raw source. */
+export interface PendingReply {
+  uid: number;
+  sender: string;
+  source: string;
+}
+
+/**
+ * Classifies a batch of raw message sources, keyed by UID. Auto-replies are
+ * decided deterministically from headers/subject first (isAutoReplyMessage) —
+ * the same rule classifyReply applies — so an out-of-office is never even sent to
+ * the model. Every other message is handed to the Claude-based classifier
+ * (lib/replyClassifier.ts) in as few batched requests as that module allows;
+ * anything it didn't return a label for (no API key configured, its request
+ * failed, or the model simply omitted that entry) falls back to classifyByKeywords
+ * — the same keyword logic classifyReply itself runs on, just applied per-message
+ * here instead of through that public single-message wrapper.
+ */
+export async function classifyReplies(pending: PendingReply[]): Promise<Map<number, ReplyClassification>> {
+  const labels = new Map<number, ReplyClassification>();
+  const forModel: ClassifiableReply[] = [];
+  const plainBodies = new Map<number, string>();
+
+  for (const { uid, source } of pending) {
+    const { headerBlock, body } = splitHeadersAndBody(source);
+    if (isAutoReplyMessage(headerBlock)) {
+      labels.set(uid, 'auto-reply');
+      continue;
+    }
+    const plainBody = extractPlainReplyBody(body);
+    plainBodies.set(uid, plainBody);
+    forModel.push({ key: String(uid), text: plainBody });
+  }
+
+  const aiLabels = forModel.length > 0 ? await classifyRepliesWithAI(forModel) : {};
+
+  for (const [uid, plainBody] of plainBodies) {
+    labels.set(uid, aiLabels[String(uid)] ?? classifyByKeywords(plainBody));
+  }
+
+  return labels;
 }
 
 export interface CheckRepliesResult {
@@ -226,14 +288,24 @@ export async function findResponders(config: ImapConfig, emails: string[], since
         }
       }
       if (responderUidToSender.size > 0) {
+        const pending: PendingReply[] = [];
         for await (const msg of client.fetch([...responderUidToSender.keys()], { source: true }, { uid: true })) {
           if (typeof msg.uid !== 'number') continue;
           const sender = responderUidToSender.get(msg.uid);
           if (!sender) continue;
-          const source = msg.source?.toString('utf8') ?? '';
+          pending.push({ uid: msg.uid, sender, source: msg.source?.toString('utf8') ?? '' });
+        }
+
+        // Classification happens after every source is fetched (not per-message
+        // inside the loop above) so the batched AI classifier call below runs once
+        // the IMAP connection's fetch work is already done, rather than interleaving
+        // network round trips to two different servers.
+        const labels = await classifyReplies(pending);
+        for (const { uid, sender } of pending) {
           // A later message (higher UID = more recent) overwrites an earlier
           // classification from the same sender, so a follow-up reply wins.
-          classifications[sender] = classifyReply(source);
+          const label = labels.get(uid);
+          if (label) classifications[sender] = label;
         }
       }
     }
