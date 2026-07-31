@@ -231,7 +231,19 @@ export interface AnalyticsStats {
 
   totalResponded: number;
   totalBounced: number;
+  /** Denominator behind `replyRate`: total emails sent minus confirmed bounces
+   *  (see app/dashboard/utils.ts's deliveredCount) — everyone a send actually
+   *  reached, summed across campaigns. */
+  totalDelivered: number;
+  /** How many `responded` addresses were excluded from `totalResponded` (and
+   *  therefore `replyRate`) because their reply was classified as an
+   *  auto-reply / vacation responder. 0 for records with no classifications
+   *  at all, not just genuinely zero auto-replies. */
+  totalAutoReplies: number;
   replyRate: number;
+  /** Bounce rate divides by every email attempted, not totalDelivered — it's
+   *  legitimately "of everything we tried to send, how much bounced," a
+   *  different question from replyRate's delivered-only denominator. */
   bounceRate: number;
   classificationCounts: { interested: number; pass: number; autoReply: number; unclassified: number };
   /** Reply rate per campaign type — always available (doesn't need recipient metadata). */

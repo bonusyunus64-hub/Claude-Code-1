@@ -158,7 +158,10 @@ export function OverviewSection({ analyticsStats }: { analyticsStats: AnalyticsS
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
               <p className="text-2xl font-bold text-emerald-400">{pct(analyticsStats.replyRate)}</p>
-              <p className="text-xs text-zinc-500 mt-1">Reply rate ({analyticsStats.totalResponded} of {analyticsStats.totalEmailsSent})</p>
+              <p className="text-xs text-zinc-500 mt-1">Reply rate ({analyticsStats.totalResponded} of {analyticsStats.totalDelivered} delivered)</p>
+              {analyticsStats.totalAutoReplies > 0 && (
+                <p className="text-xs text-zinc-600 mt-0.5">{analyticsStats.totalAutoReplies} auto-repl{analyticsStats.totalAutoReplies === 1 ? 'y' : 'ies'} excluded</p>
+              )}
             </div>
             <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
               <p className="text-2xl font-bold text-red-400">{pct(analyticsStats.bounceRate)}</p>

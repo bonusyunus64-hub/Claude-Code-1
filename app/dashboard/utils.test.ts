@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, sendInBatches, findDuplicateRecipients, messageIdsFromResults, computeAnalyticsStats, payloadForPendingSend, subjectTestWinner } from './utils';
+import { csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, sendInBatches, findDuplicateRecipients, messageIdsFromResults, computeAnalyticsStats, payloadForPendingSend, subjectTestWinner, countedResponders, deliveredCount } from './utils';
 import type { Campaign, CampaignRecipient } from './types';
 
 describe('shuffle', () => {
@@ -281,6 +281,46 @@ describe('messageIdsFromResults', () => {
   });
 });
 
+describe('countedResponders', () => {
+  function campaign(overrides: Partial<Campaign> = {}): Campaign {
+    return { id: '1', trackTitle: 'Track', date: new Date().toISOString(), type: 'demos', emails: [], ...overrides };
+  }
+
+  it('excludes addresses classified as auto-reply, matching case-insensitively against lowercased classification keys', () => {
+    const c = campaign({ responded: ['A@x.com', 'b@x.com'], classifications: { 'a@x.com': 'auto-reply', 'b@x.com': 'interested' } });
+    expect(countedResponders(c)).toEqual(['b@x.com']);
+  });
+
+  it('keeps every responder unchanged when the campaign has no classifications at all (older records)', () => {
+    const c = campaign({ responded: ['a@x.com', 'b@x.com'] });
+    expect(countedResponders(c)).toEqual(['a@x.com', 'b@x.com']);
+  });
+
+  it('returns an empty list when responded is missing', () => {
+    expect(countedResponders(campaign())).toEqual([]);
+  });
+});
+
+describe('deliveredCount', () => {
+  function campaign(overrides: Partial<Campaign> = {}): Campaign {
+    return { id: '1', trackTitle: 'Track', date: new Date().toISOString(), type: 'demos', emails: [], ...overrides };
+  }
+
+  it('subtracts bounced addresses that appear in emails, case-insensitively', () => {
+    const c = campaign({ emails: ['a@x.com', 'B@x.com', 'c@x.com'], bounced: ['b@x.com'] });
+    expect(deliveredCount(c)).toBe(2);
+  });
+
+  it('does not under- or over-subtract when bounced names an address not present in emails (stale record)', () => {
+    const c = campaign({ emails: ['a@x.com'], bounced: ['a@x.com', 'ghost@x.com'] });
+    expect(deliveredCount(c)).toBe(0);
+  });
+
+  it('equals emails.length when nothing bounced', () => {
+    expect(deliveredCount(campaign({ emails: ['a@x.com', 'b@x.com'] }))).toBe(2);
+  });
+});
+
 describe('computeAnalyticsStats', () => {
   function recipient(overrides: Partial<CampaignRecipient> = {}): CampaignRecipient {
     return { email: 'a@example.com', artistName: 'Nova', managerName: 'Sam', avatarUrl: '', genres: [], instagramHandle: '', spotifyFollowers: 0, ...overrides };
@@ -309,8 +349,50 @@ describe('computeAnalyticsStats', () => {
     expect(stats.totalEmailsSent).toBe(4);
     expect(stats.totalResponded).toBe(1);
     expect(stats.totalBounced).toBe(1);
-    expect(stats.replyRate).toBe(0.25);
+    // replyRate divides by totalDelivered (4 emails - 1 bounced = 3), not totalEmailsSent.
+    expect(stats.totalDelivered).toBe(3);
+    expect(stats.replyRate).toBe(1 / 3);
+    // bounceRate deliberately keeps dividing by every email sent, bounces included.
     expect(stats.bounceRate).toBe(0.25);
+  });
+
+  it('excludes auto-reply classified responders from totalResponded/replyRate, and reports them as totalAutoReplies', () => {
+    const stats = computeAnalyticsStats([
+      campaign({
+        id: '1', emails: ['a@x.com', 'b@x.com', 'c@x.com'],
+        responded: ['a@x.com', 'b@x.com'],
+        classifications: { 'a@x.com': 'interested', 'b@x.com': 'auto-reply' },
+      }),
+    ]);
+    expect(stats.totalResponded).toBe(1);
+    expect(stats.totalAutoReplies).toBe(1);
+    expect(stats.totalDelivered).toBe(3);
+    expect(stats.replyRate).toBe(1 / 3);
+  });
+
+  it('excludes bounced addresses from the reply-rate denominator (totalDelivered), but bounceRate still divides by every email sent', () => {
+    const stats = computeAnalyticsStats([
+      campaign({
+        id: '1', emails: ['a@x.com', 'b@x.com', 'c@x.com', 'd@x.com'],
+        responded: ['a@x.com'],
+        bounced: ['d@x.com'],
+      }),
+    ]);
+    expect(stats.totalEmailsSent).toBe(4);
+    expect(stats.totalDelivered).toBe(3);
+    expect(stats.replyRate).toBe(1 / 3);
+    expect(stats.bounceRate).toBe(0.25);
+  });
+
+  it('behaves exactly as before when a campaign has no classifications and no bounces at all (backward compatibility with older records)', () => {
+    const stats = computeAnalyticsStats([
+      campaign({ id: '1', emails: ['a@x.com', 'b@x.com'], responded: ['a@x.com'] }),
+    ]);
+    expect(stats.totalResponded).toBe(1);
+    expect(stats.totalAutoReplies).toBe(0);
+    expect(stats.totalDelivered).toBe(2);
+    expect(stats.replyRate).toBe(0.5);
+    expect(stats.bounceRate).toBe(0);
   });
 
   it('breaks reply rate down by campaign type, excluding types with no sends', () => {
@@ -357,6 +439,25 @@ describe('computeAnalyticsStats', () => {
       { label: 'Under 10K', sent: 1, responded: 1, replyRate: 1 },
       { label: '100K–1M', sent: 1, responded: 0, replyRate: 0 },
     ]));
+  });
+
+  it('excludes bounced recipients from the genre/follower-tier `sent` counts, and auto-replies from `responded`', () => {
+    const stats = computeAnalyticsStats([
+      campaign({
+        id: '1', type: 'demos',
+        emails: ['a@x.com', 'b@x.com', 'c@x.com'],
+        responded: ['a@x.com', 'c@x.com'],
+        bounced: ['b@x.com'],
+        classifications: { 'c@x.com': 'auto-reply' },
+        recipients: [
+          recipient({ email: 'a@x.com', genres: ['Pop'], spotifyFollowers: 5_000 }),
+          recipient({ email: 'b@x.com', genres: ['Pop'], spotifyFollowers: 5_000 }), // bounced — excluded entirely
+          recipient({ email: 'c@x.com', genres: ['Pop'], spotifyFollowers: 5_000 }), // auto-reply — counted as sent, not responded
+        ],
+      }),
+    ]);
+    expect(stats.byGenre).toEqual([{ label: 'Pop', sent: 2, responded: 1, replyRate: 0.5 }]);
+    expect(stats.byFollowerTier).toEqual([{ label: 'Under 10K', sent: 2, responded: 1, replyRate: 0.5 }]);
   });
 
   it('ignores recipient metadata from non-Demos campaigns for genre/follower-tier breakdowns', () => {
@@ -411,6 +512,45 @@ describe('computeAnalyticsStats', () => {
       ]);
       expect(stats.subjectTests[0].sentA).toBe(1);
       expect(stats.subjectTests[0].sentB).toBe(0);
+    });
+
+    it('excludes a bounced recipient from sentA/sentB and an auto-reply from respondedA/respondedB, feeding subjectTestWinner the corrected counts', () => {
+      const aEmails = Array.from({ length: 25 }, (_, i) => `a${i}@x.com`);
+      const bEmails = Array.from({ length: 25 }, (_, i) => `b${i}@x.com`);
+      const bouncedExtra = 'bbounced@x.com'; // assigned to B, bounced — must not land in sentB
+      const autoReplyExtra = 'bauto@x.com'; // assigned to B, replied but classified auto-reply — must not land in respondedB
+
+      const subjectVariants: Record<string, 'A' | 'B'> = {};
+      aEmails.forEach(e => { subjectVariants[e] = 'A'; });
+      bEmails.forEach(e => { subjectVariants[e] = 'B'; });
+      subjectVariants[bouncedExtra] = 'B';
+      subjectVariants[autoReplyExtra] = 'B';
+
+      const respondedA = aEmails.slice(0, 10); // 10 of 25 => 40% reply rate
+      const respondedBGenuine = bEmails.slice(0, 5); // 5 of 25 => 20% reply rate
+
+      const stats = computeAnalyticsStats([
+        campaign({
+          id: '1',
+          emails: [...aEmails, ...bEmails, bouncedExtra, autoReplyExtra],
+          subjectA: 'Subject A', subjectB: 'Subject B', subjectVariants,
+          responded: [...respondedA, ...respondedBGenuine, autoReplyExtra],
+          bounced: [bouncedExtra],
+          classifications: { [autoReplyExtra]: 'auto-reply' },
+        }),
+      ]);
+
+      const test = stats.subjectTests[0];
+      expect(test.sentA).toBe(25);
+      expect(test.respondedA).toBe(10);
+      // bouncedExtra never landed, so it's excluded from sentB entirely; autoReplyExtra
+      // *was* delivered (it didn't bounce), so it still counts toward sentB — only its
+      // reply is excluded, from respondedB.
+      expect(test.sentB).toBe(26);
+      expect(test.respondedB).toBe(5); // auto-reply extra excluded from the numerator
+      // The winner call downstream must be made on these corrected counts, not
+      // the raw sentB=27/respondedB=6 that ignoring bounces/auto-replies would produce.
+      expect(test.winner).toBe(subjectTestWinner(25, 10, 26, 5));
     });
   });
 });

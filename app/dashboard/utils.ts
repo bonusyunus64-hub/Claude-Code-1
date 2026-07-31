@@ -220,6 +220,32 @@ function replyRateOf(sent: number, responded: number): number {
   return sent > 0 ? responded / sent : 0;
 }
 
+/**
+ * Addresses that genuinely replied — `responded` minus anyone whose reply was
+ * classified as an auto-reply (vacation responder). `responded` entries keep
+ * their original casing while `classifications` keys are lowercased (see
+ * lib/checkReplies.ts's classifyReply), so the lookup has to lowercase each
+ * address before checking. Campaigns with no `classifications` at all (older
+ * records, or ones never checked) simply keep every responder — nothing here
+ * gets excluded unless it was positively classified as an auto-reply.
+ */
+export function countedResponders(campaign: Campaign): string[] {
+  return (campaign.responded ?? []).filter(email => campaign.classifications?.[email.toLowerCase()] !== 'auto-reply');
+}
+
+/**
+ * Recipients a send actually reached: everyone mailed, minus confirmed
+ * bounces. Computed by checking which `emails` entries appear in `bounced`
+ * (case-insensitively) rather than just subtracting `bounced.length` — a
+ * stale record could in principle list a bounce for an address no longer (or
+ * never) present in `emails`, which would under-count or even go negative.
+ */
+export function deliveredCount(campaign: Campaign): number {
+  const bouncedSet = new Set((campaign.bounced ?? []).map(e => e.toLowerCase()));
+  const bouncedDeliveries = campaign.emails.filter(e => bouncedSet.has(e.toLowerCase())).length;
+  return campaign.emails.length - bouncedDeliveries;
+}
+
 // Minimum recipients *per variant* before a subject test's reply-rate gap is
 // even considered — below this, subjectTestWinner always says "too early to
 // tell" (returns null) regardless of how big the gap looks, since a handful of
@@ -296,9 +322,16 @@ export function computeAnalyticsStats(campaigns: Campaign[]): AnalyticsStats {
   });
   const maxDayCount = Math.max(1, ...last14Days.map(d => d.count));
 
-  const totalResponded = campaigns.reduce((s, c) => s + (c.responded?.length ?? 0), 0);
+  const totalRespondedRaw = campaigns.reduce((s, c) => s + (c.responded?.length ?? 0), 0);
+  const totalResponded = campaigns.reduce((s, c) => s + countedResponders(c).length, 0);
+  const totalAutoReplies = totalRespondedRaw - totalResponded;
   const totalBounced = campaigns.reduce((s, c) => s + (c.bounced?.length ?? 0), 0);
-  const replyRate = replyRateOf(totalEmailsSent, totalResponded);
+  const totalDelivered = campaigns.reduce((s, c) => s + deliveredCount(c), 0);
+  const replyRate = replyRateOf(totalDelivered, totalResponded);
+  // Bounce rate deliberately stays "of everything we attempted" (totalEmailsSent),
+  // not totalDelivered — it's answering a different question than replyRate
+  // ("how much of what we tried to send bounced" vs. "how much of what actually
+  // landed got a reply"), so the two rates use different denominators on purpose.
   const bounceRate = totalEmailsSent > 0 ? totalBounced / totalEmailsSent : 0;
 
   const classificationCounts = { interested: 0, pass: 0, autoReply: 0, unclassified: 0 };
@@ -314,8 +347,8 @@ export function computeAnalyticsStats(campaigns: Campaign[]): AnalyticsStats {
   const byType: RateBreakdown[] = ([
     ['Song Demos', demosCampaigns], ['Track Promotion (Radio)', radioCampaigns], ['Playlist Curators', playlistCampaigns],
   ] as const).map(([label, list]) => {
-    const sent = list.reduce((s, c) => s + c.emails.length, 0);
-    const responded = list.reduce((s, c) => s + (c.responded?.length ?? 0), 0);
+    const sent = list.reduce((s, c) => s + deliveredCount(c), 0);
+    const responded = list.reduce((s, c) => s + countedResponders(c).length, 0);
     return { label, sent, responded, replyRate: replyRateOf(sent, responded) };
   }).filter(b => b.sent > 0);
 
@@ -329,8 +362,13 @@ export function computeAnalyticsStats(campaigns: Campaign[]): AnalyticsStats {
   const tierTotals = new Map<string, { sent: number; responded: number }>(FOLLOWER_TIERS.map(([label]) => [label, { sent: 0, responded: 0 }]));
 
   demosCampaigns.forEach(c => {
-    const respondedSet = new Set((c.responded ?? []).map(e => e.toLowerCase()));
+    const respondedSet = new Set(countedResponders(c).map(e => e.toLowerCase()));
+    const bouncedSet = new Set((c.bounced ?? []).map(e => e.toLowerCase()));
     (c.recipients ?? []).forEach(r => {
+      // A bounced recipient never actually received anything, so they shouldn't
+      // count toward this breakdown's `sent` (or its `responded`, though a
+      // genuinely bounced address replying back is already a contradiction).
+      if (bouncedSet.has(r.email.toLowerCase())) return;
       const didRespond = respondedSet.has(r.email.toLowerCase());
       r.genres.forEach(genre => {
         const entry = genreTotals.get(genre) ?? { sent: 0, responded: 0 };
@@ -363,10 +401,15 @@ export function computeAnalyticsStats(campaigns: Campaign[]): AnalyticsStats {
   const subjectTests: SubjectTestSummary[] = demosCampaigns
     .filter(c => c.subjectB && c.subjectVariants)
     .map(c => {
-      const respondedSet = new Set((c.responded ?? []).map(e => e.toLowerCase()));
+      // Auto-replies are unrelated to which subject line was used, so they're
+      // pure noise in an A/B comparison; bounced addresses never received
+      // either subject line, so they don't belong in sentA/sentB at all.
+      const respondedSet = new Set(countedResponders(c).map(e => e.toLowerCase()));
+      const bouncedSet = new Set((c.bounced ?? []).map(e => e.toLowerCase()));
       let sentA = 0, respondedA = 0, sentB = 0, respondedB = 0;
       c.emails.forEach(email => {
         const key = email.toLowerCase();
+        if (bouncedSet.has(key)) return;
         const variant = c.subjectVariants?.[key];
         // A recipient with no recorded variant (shouldn't normally happen once a
         // campaign is fully written, but a send interrupted mid-write could in
@@ -391,7 +434,7 @@ export function computeAnalyticsStats(campaigns: Campaign[]): AnalyticsStats {
     demosEmailsSent, radioEmailsSent, playlistEmailsSent,
     topTracks, last14Days, maxDayCount,
     lastCampaignDate: campaigns.length ? campaigns.slice().sort((a, b) => b.date.localeCompare(a.date))[0].date : null,
-    totalResponded, totalBounced, replyRate, bounceRate, classificationCounts,
+    totalResponded, totalBounced, totalDelivered, totalAutoReplies, replyRate, bounceRate, classificationCounts,
     byType, byGenre, byFollowerTier, subjectTests,
   };
 }
