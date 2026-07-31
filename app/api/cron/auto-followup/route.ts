@@ -120,7 +120,7 @@ export async function GET(req: NextRequest) {
     // Send at most what's left of this run's budget, not the full remaining
     // target list — a campaign bigger than one run's budget gets worked through
     // over several days instead of running long enough to blow past maxDuration.
-    const batchTargets = targets.slice(0, Math.min(targets.length, remainingMessageBudget));
+    let batchTargets = targets.slice(0, Math.min(targets.length, remainingMessageBudget));
     // True exactly when the budget, not the target list itself, decided the batch
     // size — used below to tell "stopped because the run ran out of message
     // budget" apart from "this batch simply had some permanent send failures in it".
@@ -130,14 +130,21 @@ export async function GET(req: NextRequest) {
     // 400-recipient campaign under a 100/day cap should still make progress today
     // instead of being skipped wholesale every single run.
     const capCheck = await checkCapAllows(batchTargets.length, campaign.accountId);
-    if (!capCheck.ok) {
-      // The cap blocking even a reduced batch means nothing more can go out today
-      // for anyone — later campaigns in `due` would just hit the same wall, so
-      // stop the run here rather than recording an identical skip for each of them.
+    if (capCheck.allowed === 0) {
+      // The cap has no room left at all, even for a single message — nothing more
+      // can go out today for anyone, so stop the run here rather than recording an
+      // identical skip for each remaining campaign in `due`.
       results.push({ campaignId: campaign.id, trackTitle: campaign.trackTitle, sent: 0, done: false, skipped: capCheck.error });
       stopReason = 'cap';
       break;
     }
+    // A partial allowance still lets this campaign make progress today — trim the
+    // batch down and let it send, rather than treating "some room left" the same
+    // as "no room left". Whether this batch itself was cap-limited (as opposed to
+    // message-budget-limited above) is checked again after the send below, since
+    // that's what decides whether the *next* campaign in `due` gets a turn.
+    const capLimited = capCheck.allowed < batchTargets.length;
+    if (capLimited) batchTargets = batchTargets.slice(0, capCheck.allowed);
 
     const account = await getAccount(campaign.accountId!).catch(() => null);
     if (!account) {
@@ -198,6 +205,15 @@ export async function GET(req: NextRequest) {
     });
 
     remainingMessageBudget -= batchTargets.length;
+    if (capLimited) {
+      // The send/account cap allowed this batch but had no room for the rest of
+      // what was intended — it's now exhausted for the day, so every later
+      // campaign in `due` would hit the identical wall. Stop the run here, same
+      // as the allowed === 0 case above, but only after this partial batch has
+      // already been sent and persisted rather than before it.
+      stopReason = 'cap';
+      break;
+    }
     if (budgetLimited) {
       // The batch was capped by the message budget, not by the target list running
       // out, so remainingMessageBudget is now exactly 0 — stop here rather than

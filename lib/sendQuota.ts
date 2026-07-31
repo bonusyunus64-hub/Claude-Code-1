@@ -58,6 +58,13 @@ export async function getDailyCap(): Promise<number> {
   return Number.isFinite(cap) && cap > 0 ? cap : 0;
 }
 
+export interface CapAllowance {
+  /** How many of the requested messages may actually go out now. 0 means the cap is genuinely exhausted. */
+  allowed: number;
+  /** Set only when `allowed` is 0 — a user-facing explanation of which cap blocked it. */
+  error?: string;
+}
+
 /**
  * Checked once per batch, before that batch goes out, so a long send stops at the
  * cap instead of blowing past it partway through.
@@ -65,31 +72,47 @@ export async function getDailyCap(): Promise<number> {
  * Two independent caps can apply: the global daily cap (all accounts combined),
  * and a per-account cap set on the account itself (Account settings) — the
  * warmup-style limit for spreading volume so no single mailbox takes the full
- * load. Either one being hit stops the batch.
+ * load.
+ *
+ * Rather than refusing the whole batch outright when it would cross either cap
+ * (which used to mean a user sitting at 45/50 with a 10-message batch got
+ * refused entirely, even though 5 sends were still available), this returns how
+ * many of `batchSize` may actually go out right now — the minimum of the batch
+ * size and whatever headroom is left under each cap, floored at 0 so a counter
+ * that has somehow overshot its cap can't produce a negative allowance. Callers
+ * are responsible for trimming their batch to `allowed` and making sure the
+ * untrimmed remainder is picked up later rather than silently dropped.
  */
-export async function checkCapAllows(batchSize: number, accountId?: string): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function checkCapAllows(batchSize: number, accountId?: string): Promise<CapAllowance> {
   const [cap, accountCap, sendsToday] = await Promise.all([
     getDailyCap(),
     accountId ? getAccountDailyCap(accountId) : Promise.resolve(0),
     getSendsToday(),
   ]);
 
-  if (cap > 0 && sendsToday.count + batchSize > cap) {
+  const globalRemaining = cap > 0 ? Math.max(0, cap - sendsToday.count) : Infinity;
+  const accountCount = accountId ? (sendsToday.byAccount[accountId] ?? 0) : 0;
+  const accountRemaining = accountId && accountCap > 0 ? Math.max(0, accountCap - accountCount) : Infinity;
+
+  const allowed = Math.max(0, Math.min(batchSize, globalRemaining, accountRemaining));
+  if (allowed > 0) return { allowed };
+
+  // allowed === 0: name whichever cap is actually out of room, checking the
+  // global cap first — the same precedence the checks above apply — so the
+  // message doesn't blame the global cap when it was the account cap that
+  // was actually binding (or vice versa).
+  if (cap > 0 && globalRemaining <= 0) {
     return {
-      ok: false,
+      allowed: 0,
       error: `Daily send limit reached (${sendsToday.count}/${cap} sent today). Wait until tomorrow or raise the limit in Account settings.`,
     };
   }
-
-  if (accountId && accountCap > 0) {
-    const accountCount = sendsToday.byAccount[accountId] ?? 0;
-    if (accountCount + batchSize > accountCap) {
-      return {
-        ok: false,
-        error: `This account has reached its daily limit (${accountCount}/${accountCap} sent today). Switch accounts, wait until tomorrow, or raise its limit in Account settings.`,
-      };
-    }
+  if (accountId && accountCap > 0 && accountRemaining <= 0) {
+    return {
+      allowed: 0,
+      error: `This account has reached its daily limit (${accountCount}/${accountCap} sent today). Switch accounts, wait until tomorrow, or raise its limit in Account settings.`,
+    };
   }
-
-  return { ok: true };
+  // Neither cap is actually exhausted — batchSize itself must have been 0.
+  return { allowed: 0 };
 }

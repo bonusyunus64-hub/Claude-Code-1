@@ -134,14 +134,26 @@ export async function sendDemos(payload: DemosSendPayload) {
     return threadId ? { ...msg, inReplyTo: threadId } : msg;
   });
 
-  const { batch, total, nextOffset } = paginate(allMessages, offset ?? 0, limit ?? DEFAULT_SEND_BATCH_SIZE);
+  const { batch, total, nextOffset: pageNextOffset } = paginate(allMessages, offset ?? 0, limit ?? DEFAULT_SEND_BATCH_SIZE);
 
   const capCheck = await checkCapAllows(batch.length, accountId);
-  if (!capCheck.ok) return NextResponse.json({ error: capCheck.error }, { status: 429 });
+  if (capCheck.allowed === 0) return NextResponse.json({ error: capCheck.error }, { status: 429 });
+
+  // The cap may allow fewer than the full page (e.g. 5 of a 10-message batch).
+  // Trim to what's actually allowed and make sure the untrimmed remainder isn't
+  // dropped: since checkCapAllows clamps `allowed` to at most `batch.length`, a
+  // partial allowance means there's more of this same page left over, so
+  // nextOffset must point past only what actually went out rather than the
+  // full page — the client pages by an exclusion set built from `results`
+  // (see sendInBatches in app/dashboard/utils.ts), so a `results` entry only
+  // for what was actually sent, plus a non-null nextOffset, is what makes the
+  // leftover get retried on the next request instead of silently skipped.
+  const sendBatch = capCheck.allowed < batch.length ? batch.slice(0, capCheck.allowed) : batch;
+  const nextOffset = capCheck.allowed < batch.length ? (offset ?? 0) + sendBatch.length : pageNextOffset;
 
   const results = await sendMessagesPooled(
     { smtpHost, smtpPort, smtpUser, smtpPass },
-    batch,
+    sendBatch,
     { fromName, fromEmail: fromEmail as string, signOffImage, sendDelay }
   );
 
@@ -149,5 +161,5 @@ export async function sendDemos(payload: DemosSendPayload) {
   const failed = results.filter(r => !r.success).length;
   await recordSends(sent, accountId);
 
-  return NextResponse.json({ sent, failed, total, batchTotal: batch.length, nextOffset, results });
+  return NextResponse.json({ sent, failed, total, batchTotal: sendBatch.length, nextOffset, results });
 }

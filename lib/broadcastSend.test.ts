@@ -45,7 +45,7 @@ describe('sendBroadcast', () => {
       account: { id: 'acct-1', name: 'Sender', email: 'sender@example.com', smtpHost: 'smtp.example.com', smtpPort: 465, smtpUser: 'user', smtpPass: 'pass' },
       error: null,
     });
-    checkCapAllows.mockResolvedValue({ ok: true });
+    checkCapAllows.mockResolvedValue({ allowed: Infinity });
     getBlacklist.mockResolvedValue(new Set());
     sendMessagesPooled.mockImplementation(async (_config, messages) =>
       messages.map((m: { to: string }) => ({ to: m.to, success: true, messageId: `<${m.to}>` }))
@@ -88,10 +88,25 @@ describe('sendBroadcast', () => {
     expect(body.total).toBe(1);
   });
 
-  it('stops with a 429 when the send cap is exceeded', async () => {
-    checkCapAllows.mockResolvedValue({ ok: false, error: 'Daily send limit reached' });
+  it('stops with a 429 when the send cap allows nothing at all', async () => {
+    checkCapAllows.mockResolvedValue({ allowed: 0, error: 'Daily send limit reached' });
     const res = await sendBroadcast(BASE_PAYLOAD, TARGETS, 'stationName');
     expect(res.status).toBe(429);
     expect(sendMessagesPooled).not.toHaveBeenCalled();
+  });
+
+  it('trims the batch to a partial cap allowance instead of refusing it outright', async () => {
+    // Two targets, but the cap only has room for one — the send should still go
+    // out for the one it has room for, and the response should signal there's
+    // more left (a non-null nextOffset) rather than silently dropping it.
+    checkCapAllows.mockResolvedValue({ allowed: 1 });
+    const res = await sendBroadcast(BASE_PAYLOAD, TARGETS, 'stationName');
+    const body = await res.json();
+    expect(body.sent).toBe(1);
+    expect(body.batchTotal).toBe(1);
+    expect(body.nextOffset).not.toBeNull();
+    const sentMessages = sendMessagesPooled.mock.calls[0][1];
+    expect(sentMessages).toHaveLength(1);
+    expect(recordSends).toHaveBeenCalledWith(1, undefined);
   });
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // In-memory stand-in for the Upstash client so the cap logic can be tested without
 // live Redis. Mocked at the module boundary (lib/kv) rather than reaching into
@@ -47,24 +47,35 @@ describe('sendQuota', () => {
     kvConfigured = true;
   });
 
-  it('imposes no limit when the cap is unset (0)', async () => {
+  it('imposes no limit when the cap is unset (0) — allowed equals the full batch size', async () => {
     await hset('trackpitch:settings', { tp_daily_cap: '0' });
     const result = await checkCapAllows(1000);
-    expect(result.ok).toBe(true);
+    expect(result).toEqual({ allowed: 1000 });
   });
 
-  it('blocks a batch that would push the day past the cap', async () => {
+  it('grants only the remaining headroom instead of refusing the whole batch', async () => {
+    // 45/50 sent, batch of 10 — there are still 5 sends of room today, so this
+    // should NOT refuse outright (the old behavior); it should hand back exactly
+    // what's left.
     await hset('trackpitch:settings', { tp_daily_cap: '50' });
     await recordSends(45);
     const result = await checkCapAllows(10);
-    expect(result).toEqual({ ok: false, error: expect.stringContaining('45/50') });
+    expect(result).toEqual({ allowed: 5 });
   });
 
   it('allows a batch that lands exactly on the cap', async () => {
     await hset('trackpitch:settings', { tp_daily_cap: '50' });
     await recordSends(40);
     const result = await checkCapAllows(10);
-    expect(result.ok).toBe(true);
+    expect(result).toEqual({ allowed: 10 });
+  });
+
+  it('allows 0 with a named-cap error once the global cap is genuinely exhausted', async () => {
+    await hset('trackpitch:settings', { tp_daily_cap: '50' });
+    await recordSends(50);
+    const result = await checkCapAllows(10);
+    expect(result.allowed).toBe(0);
+    expect(result.error).toEqual(expect.stringContaining('50/50'));
   });
 
   it('tracks per-account totals alongside the overall total', async () => {
@@ -76,10 +87,10 @@ describe('sendQuota', () => {
     expect(byAccount).toEqual({ 'acct-1': 7, 'acct-2': 3 });
   });
 
-  it('never blocks when KV is not configured', async () => {
+  it('never limits when KV is not configured', async () => {
     kvConfigured = false;
     const result = await checkCapAllows(1_000_000);
-    expect(result.ok).toBe(true);
+    expect(result).toEqual({ allowed: 1_000_000 });
     expect(await getDailyCap()).toBe(0);
   });
 
@@ -87,42 +98,80 @@ describe('sendQuota', () => {
     expect(todayKey()).toBe(new Date().toISOString().slice(0, 10));
   });
 
+  it('floors the allowance at 0 rather than going negative when the counter has overshot the cap', async () => {
+    // Can happen if the cap was lowered after some sends already went out today.
+    await hset('trackpitch:settings', { tp_daily_cap: '50' });
+    await recordSends(60);
+    const result = await checkCapAllows(10);
+    expect(result.allowed).toBe(0);
+    expect(result.error).toEqual(expect.stringContaining('60/50'));
+  });
+
   describe('per-account caps', () => {
-    it('blocks a batch that would push one account past its own cap, even with no global cap set', async () => {
+    it('grants only the remaining per-account headroom, even with no global cap set', async () => {
       await storeAccount('acct-1', 20);
       await recordSends(18, 'acct-1');
       const result = await checkCapAllows(5, 'acct-1');
-      expect(result).toEqual({ ok: false, error: expect.stringContaining('18/20') });
+      expect(result).toEqual({ allowed: 2 });
     });
 
-    it('does not block a different account sharing the same day', async () => {
+    it('returns 0 with a named account-cap error once the account cap is genuinely exhausted', async () => {
+      await storeAccount('acct-1', 20);
+      await recordSends(20, 'acct-1');
+      const result = await checkCapAllows(5, 'acct-1');
+      expect(result.allowed).toBe(0);
+      expect(result.error).toEqual(expect.stringContaining('20/20'));
+      expect(result.error).toEqual(expect.stringContaining('This account'));
+    });
+
+    it('does not limit a different account sharing the same day', async () => {
       await storeAccount('acct-1', 20);
       await storeAccount('acct-2', 20);
       await recordSends(18, 'acct-1');
       const result = await checkCapAllows(5, 'acct-2');
-      expect(result.ok).toBe(true);
+      expect(result).toEqual({ allowed: 5 });
     });
 
     it('imposes no per-account limit when the account has none set', async () => {
       await storeAccount('acct-1', undefined);
       await recordSends(1000, 'acct-1');
       const result = await checkCapAllows(1000, 'acct-1');
-      expect(result.ok).toBe(true);
+      expect(result).toEqual({ allowed: 1000 });
     });
 
-    it('still enforces the global cap even when the per-account cap has room', async () => {
+    it('the global cap binds tighter than the per-account cap: allowance and error reflect the global numbers', async () => {
       await hset('trackpitch:settings', { tp_daily_cap: '50' });
       await storeAccount('acct-1', 1000);
       await recordSends(45, 'acct-1');
       const result = await checkCapAllows(10, 'acct-1');
-      expect(result).toEqual({ ok: false, error: expect.stringContaining('45/50') });
+      // Global: 45/50 -> 5 left. Account: 45/1000 -> plenty left. Global binds.
+      expect(result).toEqual({ allowed: 5 });
+    });
+
+    it('the account cap binds tighter than the global cap: allowance and error reflect the account numbers', async () => {
+      await hset('trackpitch:settings', { tp_daily_cap: '1000' });
+      await storeAccount('acct-1', 20);
+      await recordSends(18, 'acct-1');
+      const result = await checkCapAllows(10, 'acct-1');
+      // Global: 18/1000 -> plenty left. Account: 18/20 -> 2 left. Account binds.
+      expect(result).toEqual({ allowed: 2 });
+    });
+
+    it('reports the account-cap error (not the global one) when the account cap is the one exhausted', async () => {
+      await hset('trackpitch:settings', { tp_daily_cap: '1000' });
+      await storeAccount('acct-1', 20);
+      await recordSends(20, 'acct-1');
+      const result = await checkCapAllows(5, 'acct-1');
+      expect(result.allowed).toBe(0);
+      expect(result.error).toEqual(expect.stringContaining('20/20'));
+      expect(result.error).toEqual(expect.stringContaining('This account'));
     });
 
     it('is a no-op when no accountId is passed', async () => {
       await storeAccount('acct-1', 5);
       await recordSends(5, 'acct-1');
       const result = await checkCapAllows(1000);
-      expect(result.ok).toBe(true);
+      expect(result).toEqual({ allowed: 1000 });
     });
   });
 });
