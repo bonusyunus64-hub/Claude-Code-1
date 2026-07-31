@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { AUTH_COOKIE, getSessionToken, passwordMatches } from '@/lib/auth';
+import { AUTH_COOKIE, SESSION_MAX_AGE_MS, getSessionToken, passwordMatches } from '@/lib/auth';
 import { checkLoginRateLimit, clearLoginAttempts, clientIp, recordFailedLogin } from '@/lib/rateLimit';
 
 export async function POST(req: NextRequest) {
@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
-    maxAge: 60 * 60 * 24 * 7, // 7 days
+    maxAge: SESSION_MAX_AGE_MS / 1000, // seconds; kept in lockstep with the server-side check in lib/auth.ts
     path: '/',
   });
   return res;

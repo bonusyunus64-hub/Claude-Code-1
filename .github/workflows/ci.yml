@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+        # `next build` is the important step here: it's the only one of the three
+        # that catches a Node-only import leaking into the client bundle (see the
+        # header comment of lib/recipients.ts for why tsc and vitest can't catch
+        # that class of bug). Verified locally that the build succeeds without any
+        # environment variables set — every process.env read in the app falls back
+        # gracefully at runtime instead of throwing at build/import time — so no
+        # placeholder secrets are configured here.

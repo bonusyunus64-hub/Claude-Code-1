@@ -202,14 +202,6 @@ export async function sendMessages(
  * The `finally` here is the important part: a batch that throws (or whose messages
  * all fail) must close the transport exactly the same as a batch that succeeds, or
  * the error path leaks the connection.
- *
- * As of this change, the three current call sites (app/api/send/route.ts,
- * lib/broadcastSend.ts, app/api/cron/auto-followup/route.ts) still call
- * `createTransport()` + `sendMessages()` directly and don't close the transport —
- * they're out of scope for this change and need migrating to this wrapper separately.
- * Until they are, every pooled send from those routes leaves its connection open for
- * the rest of the function's lifetime (Vercel will eventually reclaim it, but not
- * before burning execution time for nothing).
  */
 export async function sendMessagesPooled(
   config: { smtpHost: string; smtpPort: number; smtpUser: string; smtpPass: string },
