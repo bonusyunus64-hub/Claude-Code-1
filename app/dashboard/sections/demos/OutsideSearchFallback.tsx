@@ -39,6 +39,10 @@ export function OutsideSearchFallback(props: OutsideSearchFallbackProps) {
                 <div className="flex items-center gap-2.5 min-w-0">
                   <div className="shrink-0 w-9 h-9 rounded-full overflow-hidden bg-zinc-700">
                     {a.avatarUrl ? (
+                      // See the note on the same element in RecipientsPreviewList.tsx:
+                      // decorative roster thumbnails, deliberately not routed through
+                      // next/image.
+                      // eslint-disable-next-line @next/next/no-img-element
                       <img src={a.avatarUrl} alt={a.name} width={36} height={36} className="w-full h-full object-cover" />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-zinc-500 text-xs font-bold">{a.name.charAt(0)}</div>

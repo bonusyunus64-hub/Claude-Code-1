@@ -218,6 +218,9 @@ export function AccountSection(props: AccountSectionProps) {
           className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition resize-y" />
         {signOffImage ? (
           <div className="flex items-start gap-3 pt-1">
+            {/* A base64 data URI held in settings, not a served asset — next/image has no
+                URL to fetch, resize or cache, so it would optimize nothing. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={signOffImage} alt="Signature" className="max-h-20 max-w-xs rounded border border-zinc-700 object-contain bg-zinc-800" />
             <button onClick={() => setSignOffImage(null)} className="text-xs text-red-400 hover:text-red-300 transition mt-1">Remove image</button>
           </div>

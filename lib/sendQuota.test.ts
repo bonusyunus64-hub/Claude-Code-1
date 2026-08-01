@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // In-memory stand-in for the Upstash client so the cap logic can be tested without
 // live Redis. Mocked at the module boundary (lib/kv) rather than reaching into

@@ -806,6 +806,10 @@ export default function Dashboard() {
                   <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg px-4 py-3 space-y-3">
                     <pre className="text-sm text-zinc-200 whitespace-pre-wrap font-sans leading-relaxed">{previewModalEntries[previewModalIdx].body}</pre>
                     {account.signOffImage && (
+                      // A base64 data URI held in settings, not a served asset — next/image
+                      // has no URL to fetch, resize or cache, so it would add a wrapper and
+                      // optimize nothing.
+                      // eslint-disable-next-line @next/next/no-img-element
                       <img src={account.signOffImage} alt="Signature" className="max-h-24 max-w-xs rounded border border-zinc-700 object-contain bg-zinc-800" />
                     )}
                   </div>

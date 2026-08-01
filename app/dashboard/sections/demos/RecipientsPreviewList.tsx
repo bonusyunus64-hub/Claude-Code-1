@@ -100,6 +100,14 @@ export function RecipientsPreviewList(props: RecipientsPreviewListProps) {
                   className="shrink-0 w-4 h-4 rounded border-zinc-600 bg-zinc-800 text-violet-600 focus:ring-2 focus:ring-violet-500 focus:ring-offset-0 cursor-pointer accent-violet-600" />
                 <div className="shrink-0 w-10 h-10 rounded-full overflow-hidden bg-zinc-700">
                   {a.avatarUrl ? (
+                    // Deliberately a plain <img>, though next/image would work here — every
+                    // roster avatar is an i.scdn.co URL, which next.config.ts already
+                    // allowlists. These are decorative 40px thumbnails that Spotify's CDN
+                    // already serves and caches for free, and the roster holds ~3000 distinct
+                    // ones; routing them through the optimizer would spend this project's
+                    // Vercel image quota to shave bytes off a thumbnail nobody waits on.
+                    // Explicit width/height already prevent layout shift.
+                    // eslint-disable-next-line @next/next/no-img-element
                     <img src={a.avatarUrl} alt={a.name} width={40} height={40} className="w-full h-full object-cover" />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center text-zinc-500 text-xs font-bold">{a.name.charAt(0)}</div>

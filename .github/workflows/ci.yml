@@ -24,6 +24,14 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
+      - name: Lint
+        run: npx eslint --max-warnings=0
+        # --max-warnings=0 rather than plain `eslint`, which exits 0 on warnings
+        # and would let this step pass while the count crept back up. The repo is
+        # at zero warnings as of this commit, so anything this reports is new.
+        # A warning that turns out to be a deliberate choice gets an inline
+        # eslint-disable with the reasoning, not a raised threshold here.
+
       - name: Run tests
         run: npm test
 
