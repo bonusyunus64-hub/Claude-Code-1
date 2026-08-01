@@ -442,6 +442,91 @@ export function campaignsNeedingFollowUp(
 }
 
 /**
+ * One reply worth a human's attention, flattened out of whichever campaign it
+ * came from — enough to act on it (who, what track, their email) without going
+ * back to History and expanding that campaign. Feeds the Overview tab's
+ * cross-campaign "Replies to chase" worklist (collectInterestedReplies below).
+ */
+export interface ReplyToChase {
+  /** `${campaignId}:${lowercased email}` — the identity this reply is tracked
+   *  under for the "handled" worklist state (see collectInterestedReplies'
+   *  `handled` param). Deliberately doesn't fold in the classification or
+   *  lastChecked: both can change the next time this campaign is re-checked for
+   *  replies (a reply reclassified from unclassified to interested, a later
+   *  lastChecked timestamp), and a mark-as-handled has to survive that — only
+   *  the campaign and the recipient address are stable across a re-check. */
+  key: string;
+  campaignId: string;
+  email: string;
+  artistName: string;
+  managerName: string;
+  trackTitle: string;
+  classification: 'interested' | 'unclassified';
+  /** Best available stand-in for "when this reply came in": individual replies
+   *  don't carry their own timestamp (lib/checkReplies.ts's classifications is
+   *  just a lowercased-recipient -> label map), so this is the campaign's
+   *  lastChecked — the moment the reply was actually discovered. null on the
+   *  (in practice never-hit) case of a campaign carrying classifications
+   *  without a lastChecked; useCampaignHistory's checkReplies always writes
+   *  both in the same update, so this is just defensive against a malformed
+   *  or hand-edited record rather than a real code path. */
+  lastChecked: number | null;
+}
+
+/**
+ * Cross-campaign worklist of replies still worth a human's attention — the
+ * question per-campaign History can't answer without expanding every campaign
+ * in turn. Two buckets, each newest-checked first: `interested` (the
+ * actionable one — someone said yes) and `unclassified` (classifyReply/
+ * classifyReplies couldn't tell what they said, so a human still has to read
+ * it). Kept as two separate lists rather than one merged, sorted-by-recency
+ * list so a pile of ambiguous replies can never bury the interested ones —
+ * the whole point of this view is "which yeses haven't I dealt with," and
+ * that should never require scrolling past noise. `pass` and `auto-reply`
+ * never appear here at all: there's nothing to chase either way.
+ *
+ * `handled` is this worklist's own "done" state (see app/dashboard/page.tsx's
+ * handledReplies, persisted through lib/remoteSync.ts's tp_handled_replies) —
+ * a reply whose key is present is dropped from both buckets regardless of its
+ * classification, which is what lets this list empty out as things get dealt
+ * with instead of only ever growing.
+ */
+export function collectInterestedReplies(
+  campaigns: Campaign[],
+  handled: Record<string, number>
+): { interested: ReplyToChase[]; unclassified: ReplyToChase[] } {
+  const interested: ReplyToChase[] = [];
+  const unclassified: ReplyToChase[] = [];
+
+  for (const campaign of campaigns) {
+    if (!campaign.classifications) continue;
+    const recipientsByEmail = new Map((campaign.recipients ?? []).map(r => [r.email.toLowerCase(), r]));
+    for (const [emailLower, classification] of Object.entries(campaign.classifications)) {
+      if (classification !== 'interested' && classification !== 'unclassified') continue;
+      const key = `${campaign.id}:${emailLower}`;
+      if (handled[key]) continue;
+      // classifications is always keyed off an address findResponders matched
+      // against this campaign's own `emails` (see lib/checkReplies.ts), so the
+      // original-cased address is guaranteed to be in there — this just
+      // recovers the casing the lowercased classification key threw away.
+      const email = campaign.emails.find(e => e.toLowerCase() === emailLower) ?? emailLower;
+      const recipient = recipientsByEmail.get(emailLower);
+      const row: ReplyToChase = {
+        key, campaignId: campaign.id, email,
+        artistName: recipient?.artistName ?? '', managerName: recipient?.managerName ?? '',
+        trackTitle: campaign.trackTitle, classification, lastChecked: campaign.lastChecked ?? null,
+      };
+      (classification === 'interested' ? interested : unclassified).push(row);
+    }
+  }
+
+  const byMostRecentlyChecked = (a: ReplyToChase, b: ReplyToChase) => (b.lastChecked ?? 0) - (a.lastChecked ?? 0);
+  interested.sort(byMostRecentlyChecked);
+  unclassified.sort(byMostRecentlyChecked);
+  return { interested, unclassified };
+}
+
+/**
  * All the derived numbers behind the Overview tab: totals, a 14-day send chart,
  * reply/bounce rates, and reply-rate breakdowns by campaign type, genre, and
  * follower tier. Genre/follower-tier breakdowns only make sense against recipient

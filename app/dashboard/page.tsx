@@ -14,6 +14,7 @@ import {
 } from './constants';
 import {
   parseContactsCsv, renderTemplateClient, pronounForClient, computeAnalyticsStats, buildLastContactedMap,
+  collectInterestedReplies,
 } from './utils';
 import {
   buildPreviewEntries, PREVIEW_MODAL_RECIPIENT_CAP, CUSTOM_CONTACT_RANK,
@@ -77,6 +78,15 @@ export default function Dashboard() {
   const [newCustomContact, setNewCustomContact] = useState({ artistName: '', managerName: '', managerEmail: '' });
   const [showAddCustomContact, setShowAddCustomContact] = useState(false);
 
+  // Overview tab's cross-campaign "Replies to chase" worklist — which interested/
+  // unclassified replies (collectInterestedReplies in utils.ts) the user has
+  // already dealt with. Keyed by `${campaignId}:${email}` (see ReplyToChase's doc
+  // comment) rather than anything derived from the reply's content, so a mark
+  // survives that campaign later being re-checked for replies. Synced like every
+  // other tp_* setting (tp_handled_replies in lib/remoteSync.ts's SYNCED_KEYS) so
+  // "handled" travels with the user across devices, not just this browser.
+  const [handledReplies, setHandledReplies] = useState<Record<string, number>>({});
+
   // Email preview modal
   const [previewModalType, setPreviewModalType] = useState<'demos' | 'radio' | null>(null);
   const [previewModalIdx, setPreviewModalIdx] = useState(0);
@@ -132,6 +142,15 @@ export default function Dashboard() {
   // across every track/channel. Built the same way (once per campaigns list) so
   // it's cheap to recompute per render without redoing the work per keystroke.
   const lastContactedMap = useMemo(() => buildLastContactedMap(history.campaigns), [history.campaigns]);
+
+  // Overview tab's "Replies to chase" panel — recomputed only when the campaign
+  // list or the handled-state changes, not on every render, since this walks
+  // every campaign's classifications the same way pitchedEmailMap/lastContactedMap
+  // above walk every campaign's emails.
+  const repliesToChase = useMemo(
+    () => collectInterestedReplies(history.campaigns, handledReplies),
+    [history.campaigns, handledReplies]
+  );
 
   // Radio is the one remaining instantiation of usePromotionChannel — it used to be
   // shared with an equivalent Playlists channel (genre/secondary-filter selection,
@@ -232,6 +251,9 @@ export default function Dashboard() {
 
       const savedCustomContacts = localStorage.getItem('tp_custom_contacts');
       if (savedCustomContacts) setCustomContacts(JSON.parse(savedCustomContacts));
+
+      const savedHandledReplies = localStorage.getItem('tp_handled_replies');
+      if (savedHandledReplies) setHandledReplies(JSON.parse(savedHandledReplies));
 
       const savedSendDelay = localStorage.getItem('tp_send_delay');
       if (savedSendDelay !== null) account.setSendDelay(Number(savedSendDelay));
@@ -377,6 +399,22 @@ export default function Dashboard() {
     const updated = customContacts.filter(c => c.id !== id);
     setCustomContacts(updated);
     syncStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
+  }
+
+  /** Marks one reply (see ReplyToChase.key) dealt with, dropping it out of the
+   *  Overview tab's worklist. unmarkReplyHandled below is what backs that
+   *  panel's brief "Undo" affordance for an accidental click. */
+  function markReplyHandled(key: string) {
+    const updated = { ...handledReplies, [key]: Date.now() };
+    setHandledReplies(updated);
+    syncStorage.setItem('tp_handled_replies', JSON.stringify(updated));
+  }
+
+  function unmarkReplyHandled(key: string) {
+    const updated = { ...handledReplies };
+    delete updated[key];
+    setHandledReplies(updated);
+    syncStorage.setItem('tp_handled_replies', JSON.stringify(updated));
   }
 
   function addOutsideArtistToContacts(a: Artist) {
@@ -642,6 +680,9 @@ export default function Dashboard() {
                 followUpSendingId={history.followUpSendingId}
                 followUpProgress={history.followUpProgress}
                 followUpError={history.followUpError}
+                repliesToChase={repliesToChase}
+                markReplyHandled={markReplyHandled}
+                unmarkReplyHandled={unmarkReplyHandled}
               />
             )}
 

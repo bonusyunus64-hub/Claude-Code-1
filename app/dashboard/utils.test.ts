@@ -3,7 +3,7 @@ import {
   csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, countSendableRecipients, sendInBatches,
   findDuplicateRecipients, messageIdsFromResults, permanentlyFailedEmails, computeAnalyticsStats,
   payloadForPendingSend, subjectTestWinner, countedResponders, deliveredCount, campaignsNeedingFollowUp,
-  buildLastContactedMap, findCooldownRecipients,
+  buildLastContactedMap, findCooldownRecipients, collectInterestedReplies,
 } from './utils';
 import type { Campaign, CampaignRecipient, SendResultEntry } from './types';
 
@@ -558,6 +558,90 @@ describe('buildLastContactedMap / findCooldownRecipients', () => {
       expect(findDuplicateRecipients(pitchedEmailMap, 'New Track', ['a@example.com'])).toEqual([]);
       expect(findCooldownRecipients(lastContactedMap, 30, ['a@example.com'], NOW)).toEqual(['a@example.com']);
     });
+  });
+});
+
+describe('collectInterestedReplies', () => {
+  function recipient(overrides: Partial<CampaignRecipient> = {}): CampaignRecipient {
+    return { email: 'a@x.com', artistName: 'Nova', managerName: 'Sam', avatarUrl: '', genres: [], instagramHandle: '', spotifyFollowers: 0, ...overrides };
+  }
+
+  function campaign(overrides: Partial<Campaign> = {}): Campaign {
+    return { id: 'c1', trackTitle: 'Midnight Drive', date: new Date().toISOString(), type: 'demos', emails: ['a@x.com'], ...overrides };
+  }
+
+  it('puts an interested reply in the interested bucket', () => {
+    const c = campaign({ classifications: { 'a@x.com': 'interested' }, recipients: [recipient()] });
+    const { interested, unclassified } = collectInterestedReplies([c], {});
+    expect(unclassified).toEqual([]);
+    expect(interested).toHaveLength(1);
+    expect(interested[0]).toMatchObject({
+      key: 'c1:a@x.com', campaignId: 'c1', email: 'a@x.com',
+      artistName: 'Nova', managerName: 'Sam', trackTitle: 'Midnight Drive', classification: 'interested',
+    });
+  });
+
+  it('puts an unclassified reply in the unclassified bucket, separate from interested', () => {
+    const c = campaign({ classifications: { 'a@x.com': 'unclassified' } });
+    const { interested, unclassified } = collectInterestedReplies([c], {});
+    expect(interested).toEqual([]);
+    expect(unclassified).toHaveLength(1);
+    expect(unclassified[0].classification).toBe('unclassified');
+  });
+
+  it('excludes pass and auto-reply classifications entirely', () => {
+    const c = campaign({ classifications: { 'a@x.com': 'pass', 'b@x.com': 'auto-reply' }, emails: ['a@x.com', 'b@x.com'] });
+    const { interested, unclassified } = collectInterestedReplies([c], {});
+    expect(interested).toEqual([]);
+    expect(unclassified).toEqual([]);
+  });
+
+  it('recovers the original casing of the email from campaign.emails', () => {
+    const c = campaign({ emails: ['Manager@X.com'], classifications: { 'manager@x.com': 'interested' } });
+    const { interested } = collectInterestedReplies([c], {});
+    expect(interested[0].email).toBe('Manager@X.com');
+  });
+
+  it('falls back to blank artist/manager name when no recipient metadata is on record', () => {
+    const c = campaign({ classifications: { 'a@x.com': 'interested' } });
+    const { interested } = collectInterestedReplies([c], {});
+    expect(interested[0]).toMatchObject({ artistName: '', managerName: '' });
+  });
+
+  it('drops a reply whose key is present in `handled`, regardless of classification', () => {
+    const c = campaign({ classifications: { 'a@x.com': 'interested' } });
+    const { interested } = collectInterestedReplies([c], { 'c1:a@x.com': Date.now() });
+    expect(interested).toEqual([]);
+  });
+
+  it('sorts each bucket by most recently checked first', () => {
+    const older = campaign({ id: 'old', lastChecked: 1000, classifications: { 'a@x.com': 'interested' } });
+    const newer = campaign({ id: 'new', lastChecked: 2000, classifications: { 'a@x.com': 'interested' } });
+    const { interested } = collectInterestedReplies([older, newer], {});
+    expect(interested.map(r => r.campaignId)).toEqual(['new', 'old']);
+  });
+
+  it('sorts a campaign with no lastChecked last rather than crashing the compare', () => {
+    const noTimestamp = campaign({ id: 'untimed', lastChecked: undefined, classifications: { 'a@x.com': 'interested' } });
+    const timed = campaign({ id: 'timed', lastChecked: 500, classifications: { 'a@x.com': 'interested' } });
+    const { interested } = collectInterestedReplies([noTimestamp, timed], {});
+    expect(interested.map(r => r.campaignId)).toEqual(['timed', 'untimed']);
+  });
+
+  it('collects across multiple campaigns, keeping keys distinct per campaign', () => {
+    const c1 = campaign({ id: 'c1', classifications: { 'a@x.com': 'interested' } });
+    const c2 = campaign({ id: 'c2', emails: ['a@x.com'], classifications: { 'a@x.com': 'interested' } });
+    const { interested } = collectInterestedReplies([c1, c2], {});
+    expect(interested.map(r => r.key).sort()).toEqual(['c1:a@x.com', 'c2:a@x.com']);
+  });
+
+  it('returns empty buckets for a campaign with no classifications at all', () => {
+    const c = campaign({ classifications: undefined });
+    expect(collectInterestedReplies([c], {})).toEqual({ interested: [], unclassified: [] });
+  });
+
+  it('returns empty buckets for no campaigns', () => {
+    expect(collectInterestedReplies([], {})).toEqual({ interested: [], unclassified: [] });
   });
 });
 

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { AnalyticsStats, Campaign, RateBreakdown, SubjectTestSummary } from '../types';
-import { campaignsNeedingFollowUp } from '../utils';
+import { campaignsNeedingFollowUp, type ReplyToChase } from '../utils';
+import { CopyableName } from '../components/CopyableName';
+import { CopyChip } from '../components/CopyChip';
 
 function pct(rate: number): string {
   return `${Math.round(rate * 100)}%`;
@@ -181,9 +183,141 @@ function NeedsFollowUpPanel({
   );
 }
 
+/** How long the "Undo" link after marking a reply handled stays up — long enough
+ *  to catch a misclick, short enough that it doesn't linger as clutter once the
+ *  moment's passed. Not persisted anywhere; purely local UI state (see
+ *  RepliesToChasePanel below), unlike the mark itself. */
+const UNDO_WINDOW_MS = 8_000;
+
+/** One row in the RepliesToChasePanel worklist below — who replied, what track,
+ *  and the two actions available: copy their email (CopyChip, reused from the
+ *  variable-copy chips elsewhere in this app) and mark it dealt with. */
+function ReplyToChaseRow({ reply, onMarkHandled }: { reply: ReplyToChase; onMarkHandled: (reply: ReplyToChase) => void }) {
+  return (
+    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3 rounded-lg border border-zinc-800 bg-zinc-950/40 px-4 py-3">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <CopyableName name={reply.artistName || reply.managerName || reply.email} className="text-sm font-medium text-white" />
+          <span className={`text-[11px] px-1.5 py-0.5 rounded-full font-medium border shrink-0 ${
+            reply.classification === 'interested'
+              ? 'bg-emerald-600/20 text-emerald-400 border-emerald-600/30'
+              : 'bg-sky-600/20 text-sky-400 border-sky-600/30'
+          }`}>
+            {reply.classification === 'interested' ? 'Interested' : 'Unread reply'}
+          </span>
+        </div>
+        <p className="text-xs text-zinc-500 mt-0.5 truncate">
+          {reply.managerName && reply.artistName && <>{reply.managerName} · </>}
+          &ldquo;{reply.trackTitle}&rdquo;
+          {reply.lastChecked && <> · found {new Date(reply.lastChecked).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</>}
+        </p>
+      </div>
+      <div className="flex items-center gap-2 shrink-0 pl-0 sm:pl-3">
+        <CopyChip value={reply.email} />
+        <button
+          onClick={() => onMarkHandled(reply)}
+          className="rounded-lg bg-zinc-800 hover:bg-emerald-900/40 border border-zinc-700 hover:border-emerald-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:text-emerald-400 transition whitespace-nowrap"
+        >
+          Mark handled
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Cross-campaign "which interested replies haven't I dealt with yet" worklist —
+ * the counterpart to HistorySection's per-campaign reply list, built from
+ * collectInterestedReplies (app/dashboard/utils.ts) so the grouping/sorting/
+ * "handled" filtering logic is unit-tested independent of this rendering. The
+ * `interested` bucket is the main list; `unclassified` (replies neither
+ * classifyReply's keywords nor the AI classifier could call) renders underneath
+ * as a visually secondary group, so an ambiguous reply is still surfaced —
+ * someone still has to read it — without crowding out the actionable "yes"es
+ * above it.
+ *
+ * Distinguishes two empty states rather than collapsing them into one "nothing
+ * here" card: a campaign history that's never been checked for replies at all
+ * (nudges toward History) reads very differently from "checked plenty, nothing
+ * outstanding right now" (a quiet all-clear).
+ */
+function RepliesToChasePanel({
+  campaigns, repliesToChase, markReplyHandled, unmarkReplyHandled,
+}: {
+  campaigns: Campaign[];
+  repliesToChase: { interested: ReplyToChase[]; unclassified: ReplyToChase[] };
+  markReplyHandled: (key: string) => void;
+  unmarkReplyHandled: (key: string) => void;
+}) {
+  // Brief "Undo" affordance for the reply just marked handled — it disappears
+  // from the list immediately (a worklist that empties is the entire point),
+  // but a misclick shouldn't be unrecoverable short of digging back through
+  // History. Deliberately local/unpersisted state: only the mark itself
+  // (handledReplies in page.tsx) needs to survive a reload or another device.
+  const [lastHandled, setLastHandled] = useState<{ key: string; label: string } | null>(null);
+  useEffect(() => {
+    if (!lastHandled) return;
+    const id = setTimeout(() => setLastHandled(null), UNDO_WINDOW_MS);
+    return () => clearTimeout(id);
+  }, [lastHandled]);
+
+  function handleMark(reply: ReplyToChase) {
+    markReplyHandled(reply.key);
+    setLastHandled({ key: reply.key, label: reply.artistName || reply.email });
+  }
+
+  function handleUndo() {
+    if (!lastHandled) return;
+    unmarkReplyHandled(lastHandled.key);
+    setLastHandled(null);
+  }
+
+  const { interested, unclassified } = repliesToChase;
+
+  return (
+    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Replies to chase</h3>
+        {lastHandled && (
+          <button onClick={handleUndo} className="text-xs text-zinc-500 hover:text-zinc-300 transition underline shrink-0">
+            Marked &ldquo;{lastHandled.label}&rdquo; handled · Undo
+          </button>
+        )}
+      </div>
+
+      {interested.length === 0 && unclassified.length === 0 ? (
+        campaigns.some(c => c.lastChecked != null) ? (
+          <p className="text-xs text-zinc-600">Nothing outstanding — every reply on record has been dealt with.</p>
+        ) : (
+          <p className="text-xs text-zinc-600">
+            No reply data yet — use &ldquo;Check for replies&rdquo; on a campaign in History to look for responses.
+          </p>
+        )
+      ) : (
+        <div className="space-y-3">
+          {interested.length > 0 && (
+            <div className="space-y-2">
+              {interested.map(reply => <ReplyToChaseRow key={reply.key} reply={reply} onMarkHandled={handleMark} />)}
+            </div>
+          )}
+          {unclassified.length > 0 && (
+            <div className="space-y-2 pt-1">
+              <p className="text-[11px] text-zinc-600 uppercase tracking-wider">
+                {unclassified.length} more repl{unclassified.length === 1 ? 'y' : 'ies'} nobody&rsquo;s read yet
+              </p>
+              {unclassified.map(reply => <ReplyToChaseRow key={reply.key} reply={reply} onMarkHandled={handleMark} />)}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function OverviewSection({
   analyticsStats, campaigns, followUpDays, blacklist, followUpRemindersEnabled,
   sendFollowUp, followUpSendingId, followUpProgress, followUpError,
+  repliesToChase, markReplyHandled, unmarkReplyHandled,
 }: {
   analyticsStats: AnalyticsStats;
   campaigns: Campaign[];
@@ -194,6 +328,9 @@ export function OverviewSection({
   followUpSendingId: string | null;
   followUpProgress: { campaignId: string; sent: number; total: number } | null;
   followUpError: string;
+  repliesToChase: { interested: ReplyToChase[]; unclassified: ReplyToChase[] };
+  markReplyHandled: (key: string) => void;
+  unmarkReplyHandled: (key: string) => void;
 }) {
   return (
     <div className="space-y-5 pb-6">
@@ -206,6 +343,11 @@ export function OverviewSection({
       <NeedsFollowUpPanel
         campaigns={campaigns} followUpDays={followUpDays} blacklist={blacklist} remindersEnabled={followUpRemindersEnabled}
         sendFollowUp={sendFollowUp} followUpSendingId={followUpSendingId} followUpProgress={followUpProgress} followUpError={followUpError}
+      />
+
+      <RepliesToChasePanel
+        campaigns={campaigns} repliesToChase={repliesToChase}
+        markReplyHandled={markReplyHandled} unmarkReplyHandled={unmarkReplyHandled}
       />
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">

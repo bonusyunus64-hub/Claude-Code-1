@@ -45,6 +45,14 @@ const SYNCED_KEYS = [
   'tp_send_delay', 'tp_daily_cap', 'tp_contact_cooldown_days',
   'tp_auto_followup_enabled', 'tp_auto_followup_days',
   'tp_send_window_enabled', 'tp_send_window_start_hour', 'tp_send_window_end_hour', 'tp_send_window_timezone',
+  // Lowercased "campaignId:email" -> the epoch ms it was marked handled, for the
+  // Overview tab's cross-campaign replies worklist (collectInterestedReplies in
+  // app/dashboard/utils.ts). Keyed by campaign+recipient rather than anything
+  // deeper (the classification itself, a message id) so a mark survives that
+  // campaign later being re-checked for replies — checkReplies only ever adds to
+  // or overwrites `classifications`, it never changes the campaign id or the
+  // recipient address a key is built from.
+  'tp_handled_replies',
 ];
 
 export async function hydrateFromRemote(): Promise<void> {
