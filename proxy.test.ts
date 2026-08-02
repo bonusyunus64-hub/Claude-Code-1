@@ -24,7 +24,6 @@ describe('proxy', () => {
     const publicApiPaths = [
       '/api/auth',
       '/api/logout',
-      '/api/unsubscribe',
       '/api/cron/refresh-replies',
       '/api/cron/drain-send-window',
     ];
@@ -38,10 +37,17 @@ describe('proxy', () => {
       const res = proxy(reqFor('/'));
       expect(res.status).toBe(200);
     });
+  });
 
-    it('lets an unauthenticated request through to the unsubscribe landing page ("/unsubscribe")', () => {
-      const res = proxy(reqFor('/unsubscribe'));
-      expect(res.status).toBe(200);
+  // The unsubscribe link, its landing page and its API route were all removed along with
+  // the footer in outgoing mail (see lib/doNotContact.ts). What matters here is that the
+  // route didn't just stop being *used* while staying open: /api/unsubscribe is off the
+  // public allowlist, so it's now gated like any other API path rather than sitting there
+  // unauthenticated. Nothing a pitch recipient receives points at this app any more.
+  describe('the removed unsubscribe endpoints are no longer publicly reachable', () => {
+    it('gates /api/unsubscribe behind a session like any other API route', () => {
+      const res = proxy(reqFor('/api/unsubscribe'));
+      expect(res.status).toBe(401);
     });
   });
 

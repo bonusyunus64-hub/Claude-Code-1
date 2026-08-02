@@ -27,7 +27,7 @@
 // generic settings blob.
 //
 // tp_blacklist isn't here either, for a related but distinct reason: the Do Not Contact
-// list moved to its own Redis set (lib/unsubscribe.ts) so concurrent unsubscribes can't
+// list moved to its own Redis set (lib/doNotContact.ts) so concurrent unsubscribes can't
 // lose one to a read-modify-write race the way this key-value blob would. The dashboard
 // reads/writes it through /api/blacklist instead — see useAccountSettings.ts.
 const SYNCED_KEYS = [

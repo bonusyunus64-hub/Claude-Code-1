@@ -241,7 +241,7 @@ export default function Dashboard() {
       // Seeding it from localStorage as well would race that fetch — and a stale
       // local copy winning is exactly the bug the move to a server-authoritative
       // list was meant to end, since it would silently un-blacklist an address
-      // someone had already unsubscribed.
+      // someone was already on the Do Not Contact list.
 
       // parseFailedEmails tolerates both the current shape and the legacy plain
       // string[] a device may still have saved from before permanent/transient

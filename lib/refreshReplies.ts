@@ -1,7 +1,7 @@
 import { listCampaigns, saveCampaign, type CampaignRecord } from '@/lib/campaigns';
 import { getAccount, type StoredAccount } from '@/lib/accounts';
 import { findResponders, resolveImapConfig, type CheckRepliesResult, type ReplyClassification, type ImapConfig } from '@/lib/checkReplies';
-import { addManyToBlacklistServerSide } from '@/lib/unsubscribe';
+import { addManyToBlacklistServerSide } from '@/lib/doNotContact';
 
 /**
  * Campaigns older than this are treated as done, not just "not checked yet" —

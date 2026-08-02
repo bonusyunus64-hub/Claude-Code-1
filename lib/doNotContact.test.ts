@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const hashStore = new Map<string, Record<string, string>>();
 const setStore = new Map<string, Set<string>>();
@@ -48,77 +48,13 @@ vi.mock('@/lib/kv', () => ({
   getRedis: () => ({ hget, hset, hdel, sadd, srem, smembers }),
 }));
 
-import { unsubscribeToken, verifyUnsubscribeToken, buildUnsubscribeUrl, buildUnsubscribeApiUrl } from './unsubscribe';
-
-describe('unsubscribeToken / verifyUnsubscribeToken', () => {
-  beforeEach(() => {
-    vi.stubEnv('SITE_PASSWORD', 'correct-horse-battery-staple');
-    vi.stubEnv('ACCOUNTS_SECRET', '');
-  });
-  afterEach(() => vi.unstubAllEnvs());
-
-  it('produces a verifiable token for an address', () => {
-    const token = unsubscribeToken('manager@example.com');
-    expect(token).not.toBeNull();
-    expect(verifyUnsubscribeToken('manager@example.com', token!)).toBe(true);
-  });
-
-  it('is case-insensitive on the email', () => {
-    const token = unsubscribeToken('Manager@Example.com');
-    expect(verifyUnsubscribeToken('manager@example.com', token!)).toBe(true);
-  });
-
-  it('rejects a token for a different address', () => {
-    const token = unsubscribeToken('manager@example.com');
-    expect(verifyUnsubscribeToken('other@example.com', token!)).toBe(false);
-  });
-
-  it('rejects a token minted under a different secret', () => {
-    const token = unsubscribeToken('manager@example.com');
-    vi.stubEnv('SITE_PASSWORD', 'a-different-secret');
-    expect(verifyUnsubscribeToken('manager@example.com', token!)).toBe(false);
-  });
-
-  it('rejects an empty or garbage token', () => {
-    expect(verifyUnsubscribeToken('manager@example.com', '')).toBe(false);
-    expect(verifyUnsubscribeToken('manager@example.com', 'not-a-real-token')).toBe(false);
-  });
-
-  it('returns null when no secret is configured at all', () => {
-    vi.unstubAllEnvs();
-    expect(unsubscribeToken('manager@example.com')).toBeNull();
-  });
-});
-
-describe('buildUnsubscribeUrl / buildUnsubscribeApiUrl', () => {
-  beforeEach(() => vi.stubEnv('SITE_PASSWORD', 'secret'));
-  afterEach(() => vi.unstubAllEnvs());
-
-  it('builds a human-facing /unsubscribe URL with email and token', () => {
-    const url = buildUnsubscribeUrl('https://example.com', 'manager@example.com');
-    expect(url).toMatch(/^https:\/\/example\.com\/unsubscribe\?email=manager%40example\.com&token=[0-9a-f]+$/);
-  });
-
-  it('builds a machine-facing /api/unsubscribe URL with the same token', () => {
-    const pageUrl = new URL(buildUnsubscribeUrl('https://example.com', 'manager@example.com')!);
-    const apiUrl = new URL(buildUnsubscribeApiUrl('https://example.com', 'manager@example.com')!);
-    expect(apiUrl.pathname).toBe('/api/unsubscribe');
-    expect(apiUrl.searchParams.get('token')).toBe(pageUrl.searchParams.get('token'));
-  });
-
-  it('returns null when no secret is configured', () => {
-    vi.unstubAllEnvs();
-    expect(buildUnsubscribeUrl('https://example.com', 'manager@example.com')).toBeNull();
-  });
-});
-
 // The module keeps a one-time "have I already migrated" flag as internal state (same
 // shape as migrateLegacyAccounts()/migrateLegacyCampaigns()), so each test needs a fresh
 // module instance — otherwise whichever test runs first consumes the migration for every
 // test that follows it in this file. Mirrors the pattern in lib/campaigns.test.ts.
-async function freshUnsubscribeModule() {
+async function freshDoNotContactModule() {
   vi.resetModules();
-  return import('./unsubscribe');
+  return import('./doNotContact');
 }
 
 describe('the Do Not Contact set (SADD/SREM/SMEMBERS)', () => {
@@ -128,65 +64,65 @@ describe('the Do Not Contact set (SADD/SREM/SMEMBERS)', () => {
     kvConfigured = true;
   });
 
-  describe('addToBlacklistServerSide', () => {
+  describe('adding a single address', () => {
     it('adds a new, lowercased/trimmed address', async () => {
-      const { addToBlacklistServerSide, getBlacklist } = await freshUnsubscribeModule();
-      await addToBlacklistServerSide('  Manager@Example.com  ');
+      const { addManyToBlacklistServerSide, getBlacklist } = await freshDoNotContactModule();
+      await addManyToBlacklistServerSide(['  Manager@Example.com  ']);
       expect(await getBlacklist()).toEqual(new Set(['manager@example.com']));
     });
 
     it('adding the same address twice only stores it once — this is the whole point of using a set', async () => {
-      const { addToBlacklistServerSide, getBlacklist } = await freshUnsubscribeModule();
-      await addToBlacklistServerSide('manager@example.com');
-      await addToBlacklistServerSide('Manager@Example.com'); // same address, different casing
+      const { addManyToBlacklistServerSide, getBlacklist } = await freshDoNotContactModule();
+      await addManyToBlacklistServerSide(['manager@example.com']);
+      await addManyToBlacklistServerSide(['Manager@Example.com']); // same address, different casing
       expect(await getBlacklist()).toEqual(new Set(['manager@example.com']));
       expect(Array.from(setStore.get('trackpitch:blacklist') ?? [])).toHaveLength(1);
     });
 
     it('two "concurrent" adds for different addresses both land — the race the old read/modify/write blob lost', async () => {
-      const { addToBlacklistServerSide, getBlacklist } = await freshUnsubscribeModule();
+      const { addManyToBlacklistServerSide, getBlacklist } = await freshDoNotContactModule();
       // Fire both without sequencing them — this is exactly the interleaving that lost a
       // write under the old "read whole array, push, write whole array back" scheme.
       await Promise.all([
-        addToBlacklistServerSide('a@example.com'),
-        addToBlacklistServerSide('b@example.com'),
+        addManyToBlacklistServerSide(['a@example.com']),
+        addManyToBlacklistServerSide(['b@example.com']),
       ]);
       expect(await getBlacklist()).toEqual(new Set(['a@example.com', 'b@example.com']));
     });
 
     it('is a no-op when KV is not configured', async () => {
       kvConfigured = false;
-      const { addToBlacklistServerSide, getBlacklist } = await freshUnsubscribeModule();
-      await addToBlacklistServerSide('manager@example.com');
+      const { addManyToBlacklistServerSide, getBlacklist } = await freshDoNotContactModule();
+      await addManyToBlacklistServerSide(['manager@example.com']);
       expect(await getBlacklist()).toEqual(new Set());
     });
   });
 
   describe('removeFromBlacklistServerSide', () => {
     it('removes a single address without touching the rest of the set', async () => {
-      const { addToBlacklistServerSide, removeFromBlacklistServerSide, getBlacklist } = await freshUnsubscribeModule();
-      await addToBlacklistServerSide('a@example.com');
-      await addToBlacklistServerSide('b@example.com');
+      const { addManyToBlacklistServerSide, removeFromBlacklistServerSide, getBlacklist } = await freshDoNotContactModule();
+      await addManyToBlacklistServerSide(['a@example.com']);
+      await addManyToBlacklistServerSide(['b@example.com']);
       await removeFromBlacklistServerSide('A@Example.com');
       expect(await getBlacklist()).toEqual(new Set(['b@example.com']));
     });
 
     it('is a no-op removing an address that was never on the list', async () => {
-      const { removeFromBlacklistServerSide, getBlacklist } = await freshUnsubscribeModule();
+      const { removeFromBlacklistServerSide, getBlacklist } = await freshDoNotContactModule();
       await removeFromBlacklistServerSide('nobody@example.com');
       expect(await getBlacklist()).toEqual(new Set());
     });
   });
 
-  describe('addManyToBlacklistServerSide', () => {
+  describe('adding a batch in one call', () => {
     it('adds a whole batch in one call, lowercased/trimmed and deduped', async () => {
-      const { addManyToBlacklistServerSide, getBlacklist } = await freshUnsubscribeModule();
+      const { addManyToBlacklistServerSide, getBlacklist } = await freshDoNotContactModule();
       await addManyToBlacklistServerSide(['A@Example.com', 'b@example.com', 'a@example.com', '  ']);
       expect(await getBlacklist()).toEqual(new Set(['a@example.com', 'b@example.com']));
     });
 
     it('is a no-op on an empty (or all-blank) list', async () => {
-      const { addManyToBlacklistServerSide, getBlacklist } = await freshUnsubscribeModule();
+      const { addManyToBlacklistServerSide, getBlacklist } = await freshDoNotContactModule();
       await addManyToBlacklistServerSide([]);
       await addManyToBlacklistServerSide(['   ']);
       expect(await getBlacklist()).toEqual(new Set());
@@ -195,19 +131,19 @@ describe('the Do Not Contact set (SADD/SREM/SMEMBERS)', () => {
 
   describe('getBlacklist', () => {
     it('returns a lowercased set of the stored members', async () => {
-      const { addToBlacklistServerSide, getBlacklist } = await freshUnsubscribeModule();
-      await addToBlacklistServerSide('Manager@Example.com');
+      const { addManyToBlacklistServerSide, getBlacklist } = await freshDoNotContactModule();
+      await addManyToBlacklistServerSide(['Manager@Example.com']);
       expect(await getBlacklist()).toEqual(new Set(['manager@example.com']));
     });
 
     it('returns an empty set when nothing is stored', async () => {
-      const { getBlacklist } = await freshUnsubscribeModule();
+      const { getBlacklist } = await freshDoNotContactModule();
       expect(await getBlacklist()).toEqual(new Set());
     });
 
     it('returns an empty set when KV is not configured', async () => {
       kvConfigured = false;
-      const { getBlacklist } = await freshUnsubscribeModule();
+      const { getBlacklist } = await freshDoNotContactModule();
       expect(await getBlacklist()).toEqual(new Set());
     });
   });
@@ -215,7 +151,7 @@ describe('the Do Not Contact set (SADD/SREM/SMEMBERS)', () => {
   describe('legacy tp_blacklist migration', () => {
     it('migrates the legacy JSON array from the settings blob into the set on first use, then purges the old field', async () => {
       await hset('trackpitch:settings', { tp_blacklist: JSON.stringify(['Legacy1@Example.com', 'legacy2@example.com', 'legacy1@example.com']) });
-      const { getBlacklist } = await freshUnsubscribeModule();
+      const { getBlacklist } = await freshDoNotContactModule();
 
       expect(await getBlacklist()).toEqual(new Set(['legacy1@example.com', 'legacy2@example.com']));
       // The plaintext blob field should be gone after migration.
@@ -224,16 +160,16 @@ describe('the Do Not Contact set (SADD/SREM/SMEMBERS)', () => {
 
     it('runs once per module instance: a later add lands alongside the migrated addresses, not instead of them', async () => {
       await hset('trackpitch:settings', { tp_blacklist: JSON.stringify(['legacy@example.com']) });
-      const { addToBlacklistServerSide, getBlacklist } = await freshUnsubscribeModule();
+      const { addManyToBlacklistServerSide, getBlacklist } = await freshDoNotContactModule();
 
       await getBlacklist(); // triggers migration
-      await addToBlacklistServerSide('new@example.com');
+      await addManyToBlacklistServerSide(['new@example.com']);
       expect(await getBlacklist()).toEqual(new Set(['legacy@example.com', 'new@example.com']));
     });
 
     it('is harmless when there is nothing legacy to migrate', async () => {
-      const { addToBlacklistServerSide, getBlacklist } = await freshUnsubscribeModule();
-      await addToBlacklistServerSide('a@example.com');
+      const { addManyToBlacklistServerSide, getBlacklist } = await freshDoNotContactModule();
+      await addManyToBlacklistServerSide(['a@example.com']);
       expect(await getBlacklist()).toEqual(new Set(['a@example.com']));
     });
   });

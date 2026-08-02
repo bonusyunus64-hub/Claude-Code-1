@@ -5,7 +5,7 @@ import { resolveAccount } from '@/lib/accounts';
 import { resolveSmtpConfig, sendMessagesPooled, paginate, DEFAULT_SEND_BATCH_SIZE } from '@/lib/mailSend';
 import { checkCapAllows, recordSends } from '@/lib/sendQuota';
 import { nonRespondedRecipients, resolveFollowUpContent, buildFollowUpMessage, mergeEmailList } from '@/lib/autoFollowUp';
-import { getBlacklist } from '@/lib/unsubscribe';
+import { getBlacklist } from '@/lib/doNotContact';
 
 export interface FollowUpSendPayload {
   campaignId: string;

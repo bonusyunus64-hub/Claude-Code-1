@@ -2,17 +2,21 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isAuthed } from '@/lib/auth';
 
 // /api/auth and /api/logout must stay reachable while logged out.
-// /api/unsubscribe must stay reachable by anyone who received a pitch email —
-// they have no dashboard session, and its own token (not a login) is what
-// authorizes the request. See lib/unsubscribe.ts.
 // /api/cron/refresh-replies and /api/cron/drain-send-window are invoked by
 // Vercel Cron, which has no dashboard session either — each authenticates itself
 // with a CRON_SECRET bearer token instead (lib/cronAuth.ts), checked inside the
 // route.
-const PUBLIC_API_PATHS = new Set(['/api/auth', '/api/logout', '/api/unsubscribe', '/api/cron/refresh-replies', '/api/cron/drain-send-window']);
+//
+// /api/unsubscribe used to be here too, as the one route a pitch recipient could
+// reach without a session of any kind. It's gone along with the unsubscribe link
+// itself (see the header comment in lib/doNotContact.ts), so this allowlist no
+// longer exposes anything at all to the recipients of outgoing mail — every
+// remaining entry is either part of the login flow or a cron route that
+// authenticates with its own secret.
+const PUBLIC_API_PATHS = new Set(['/api/auth', '/api/logout', '/api/cron/refresh-replies', '/api/cron/drain-send-window']);
 
-// Deliberately NOT here: the three send routes (/api/send, /api/radio-send,
-// /api/playlist-send) or the manual follow-up send route. Draining the
+// Deliberately NOT here: the send routes (/api/send, /api/radio-send) or the
+// manual follow-up send route. Draining the
 // send-window queue needs to run a send without a browser session, and the
 // obvious way to allow that would be to let a CRON_SECRET bearer token through to
 // the send routes directly. That's a bad trade: /api/send accepts an arbitrary

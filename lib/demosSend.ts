@@ -7,7 +7,7 @@ import {
 } from '@/lib/mailSend';
 import { resolveAccount } from '@/lib/accounts';
 import { checkCapAllows, recordSends } from '@/lib/sendQuota';
-import { getBlacklist } from '@/lib/unsubscribe';
+import { getBlacklist } from '@/lib/doNotContact';
 
 export interface DemosSendPayload {
   trackTitle: string;
@@ -123,7 +123,7 @@ export async function sendDemos(payload: DemosSendPayload) {
 
   // The client-supplied lists cover session-local exclusions (e.g. "just sent to
   // this address"); the server blacklist is the authoritative Do Not Contact
-  // record from unsubscribes, which a stale client tab can't be trusted to know
+  // record from bounces and hand-added entries, which a stale client tab can't be trusted to know
   // about — union them rather than replacing either.
   const serverBlacklist = await getBlacklist();
   const bl = new Set([...(blacklist ?? []), ...(excludeEmails ?? []), ...serverBlacklist].map(e => e.toLowerCase()));

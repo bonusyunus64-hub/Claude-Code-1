@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
 
-// Real in-memory Redis-set fake (mirrors lib/unsubscribe.test.ts's own store), not a
-// stubbed lib/unsubscribe.ts — the point of this route is that it writes the atomic
+// Real in-memory Redis-set fake (mirrors lib/doNotContact.test.ts's own store), not a
+// stubbed lib/doNotContact.ts — the point of this route is that it writes the atomic
 // Redis SET (SADD/SREM/SMEMBERS), not the legacy JSON-blob settings field, so the test
 // needs real set semantics underneath to catch a regression back to the blob.
 const hashStore = new Map<string, Record<string, string>>();

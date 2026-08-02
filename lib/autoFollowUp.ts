@@ -25,10 +25,10 @@ export function isCampaignDueForFollowUp(campaign: CampaignRecord, cutoffMs: num
 }
 
 /**
- * Recipients who neither replied nor bounced nor unsubscribed nor already got a
+ * Recipients who neither replied nor bounced nor landed on Do Not Contact nor already got a
  * follow-up — the ones still worth a nudge. `blacklist` should be the Do Not
  * Contact list (lowercased); skipping it isn't optional, since following up with
- * someone who opted out defeats the point of having an unsubscribe link at all.
+ * someone already on the Do Not Contact list is the one mistake this list exists to prevent.
  *
  * Also excludes `campaign.followUpSent`, so a campaign that a previous cron run
  * only got partway through (because it hit the per-run message budget or the

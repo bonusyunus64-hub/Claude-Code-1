@@ -1,14 +1,11 @@
 import nodemailer from 'nodemailer';
 import { textToHtml } from '@/lib/emailTemplate';
-import { buildUnsubscribeUrl, buildUnsubscribeApiUrl } from '@/lib/unsubscribe';
 import type { OutboundMessage } from '@/lib/recipients';
 
 // Same fallback used by /api/test-email — the real deployed URL when NEXT_PUBLIC_BASE_URL
-// isn't set, so unsubscribe links in outbound mail are never accidentally localhost.
-// Exported so app/api/cron/drain-send-window/route.ts can resolve the same base URL
-// to call this deployment's own /api/send, /api/radio-send, /api/playlist-send —
-// one definition of "where this app is deployed" rather than a third copy of the
-// same fallback string.
+// isn't set, so the "back to TrackPitch" link in a test email is never accidentally
+// localhost. One definition of "where this app is deployed" rather than a second copy of
+// the same fallback string.
 export const SITE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://music-distribution-website.vercel.app';
 
 export interface FromAccount {
@@ -139,28 +136,17 @@ export async function sendMessages(
     // tearing it down and reconnecting — cheaper than before, not different in kind.
     if (i > 0 && opts.sendDelay && opts.sendDelay > 0) await new Promise<void>(r => setTimeout(r, opts.sendDelay));
     try {
-      // Both null together when ACCOUNTS_SECRET/SITE_PASSWORD isn't set — degrades
-      // to sending without an unsubscribe link rather than failing the send.
-      const unsubUrl = buildUnsubscribeUrl(SITE_URL, msg.to);
-      const apiUnsubUrl = buildUnsubscribeApiUrl(SITE_URL, msg.to);
-      const textBody = unsubUrl ? `${msg.body}\n\n---\nDon't want to hear from us? Unsubscribe: ${unsubUrl}` : msg.body;
-
+      // No unsubscribe footer and no RFC 8058 List-Unsubscribe header: a pitch goes to a
+      // handful of hand-picked contacts a week, and at that volume both mark an email that
+      // is meant to read as personally written as a mass mailing instead. See the header
+      // comment in lib/doNotContact.ts for the full reasoning and for what still suppresses
+      // an address (bounces, hard rejections, the operator's own Do Not Contact list).
       const mailOptions: Parameters<typeof transporter.sendMail>[0] = {
         from: formatFromHeader(opts.fromName, opts.fromEmail),
         to: msg.to,
         subject: msg.subject,
-        text: textBody,
+        text: msg.body,
       };
-      if (apiUnsubUrl) {
-        // RFC 8058: this pair is what lets Gmail/Outlook/Yahoo show their own
-        // built-in "Unsubscribe" button next to the sender instead of relying on
-        // the recipient to find the footer link — a real deliverability signal for
-        // bulk senders, not just a courtesy.
-        mailOptions.headers = {
-          'List-Unsubscribe': `<${apiUnsubUrl}>`,
-          'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
-        };
-      }
       // Threading a follow-up onto the original pitch takes both headers: In-Reply-To
       // is what most clients read, References is what keeps the whole chain grouped.
       if (msg.inReplyTo) {
@@ -169,10 +155,7 @@ export async function sendMessages(
       }
       if (opts.signOffImage) {
         const imageData = opts.signOffImage.replace(/^data:image\/\w+;base64,/, '');
-        const unsubHtml = unsubUrl
-          ? `<p style="font-size:12px;color:#999;margin-top:24px">Don't want to hear from us? <a href="${unsubUrl}" style="color:#999">Unsubscribe</a></p>`
-          : '';
-        mailOptions.html = `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#333">${textToHtml(msg.body)}<img src="cid:signature@trackpitch" alt="Signature" style="max-width:600px;display:block;margin-top:8px">${unsubHtml}</div>`;
+        mailOptions.html = `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#333">${textToHtml(msg.body)}<img src="cid:signature@trackpitch" alt="Signature" style="max-width:600px;display:block;margin-top:8px"></div>`;
         mailOptions.attachments = [{ filename: 'signature.png', content: Buffer.from(imageData, 'base64'), cid: 'signature@trackpitch' }];
       }
       const messageId = await sendWithRetry(transporter, mailOptions);

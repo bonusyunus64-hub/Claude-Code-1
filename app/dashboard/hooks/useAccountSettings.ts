@@ -204,7 +204,7 @@ export function useAccountSettings() {
   const [newBlacklistEmail, setNewBlacklistEmail] = useState('');
 
   // The Do Not Contact list is authoritative server-side (a Redis set, see
-  // lib/unsubscribe.ts) rather than synced through the generic settings blob like the
+  // lib/doNotContact.ts) rather than synced through the generic settings blob like the
   // rest of this hook's state — see remoteSync.ts's SYNCED_KEYS comment for why. So unlike
   // everything else here, it isn't seeded by page.tsx's initial-load effect (that effect
   // still does a legacy `localStorage.getItem('tp_blacklist')` + setBlacklist() for

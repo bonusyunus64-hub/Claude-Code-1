@@ -70,7 +70,7 @@ export function getTodayDateStr(): string {
 // Send routes rebuild their recipient list from scratch on every request — including
 // a fresh read of the server-side Do Not Contact blacklist (see getBlacklist in
 // app/api/send/route.ts and lib/broadcastSend.ts). If an address gets blacklisted
-// mid-send (an unsubscribe click, an auto-blacklisted bounce) while paging by a plain
+// mid-send (an auto-blacklisted bounce, a hand-added Do Not Contact entry) while paging by a plain
 // numeric offset, the rebuilt list shrinks and every index after the removed one
 // shifts down — the batch that follows silently skips whoever moved into the gap.
 //
@@ -407,7 +407,7 @@ export function findCooldownRecipients(
  * (`followUpSentAt`); it isn't mid-send (`pendingSend`); it's old enough
  * (`followUpDays`, compared in raw elapsed ms so the boundary is exact rather than
  * calendar-day-rounded); and it still has at least one recipient who hasn't
- * replied, bounced, unsubscribed (blacklisted), or already gotten a follow-up.
+ * replied, bounced, landed on Do Not Contact, or already gotten a follow-up.
  *
  * That last check reuses nonRespondedRecipients from lib/autoFollowUp.ts — the
  * same function the server uses to decide who a follow-up send actually reaches —

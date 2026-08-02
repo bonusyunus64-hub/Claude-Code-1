@@ -14,7 +14,7 @@ vi.mock('@/lib/sendQuota', () => ({
   checkCapAllows: (...args: unknown[]) => checkCapAllows(...args),
   recordSends: (...args: unknown[]) => recordSends(...args),
 }));
-vi.mock('@/lib/unsubscribe', () => ({ getBlacklist: (...args: unknown[]) => getBlacklist(...args) }));
+vi.mock('@/lib/doNotContact', () => ({ getBlacklist: (...args: unknown[]) => getBlacklist(...args) }));
 vi.mock('@/lib/campaigns', () => ({
   listCampaigns: (...args: unknown[]) => listCampaigns(...args),
   saveCampaign: (...args: unknown[]) => saveCampaign(...args),

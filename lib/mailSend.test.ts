@@ -256,26 +256,44 @@ describe('sendMessages', () => {
     expect(sendMail).toHaveBeenCalledTimes(3); // 1 initial + 2 retries
   });
 
-  describe('unsubscribe link and headers', () => {
+  // A pitch is sent to a handful of hand-picked contacts a week and is meant to read as
+  // personally written, so it carries no unsubscribe footer and no RFC 8058
+  // List-Unsubscribe header — see lib/doNotContact.ts's header comment. These assert the
+  // absence rather than just omitting the old tests: re-adding either one is a silent,
+  // outward-facing change to every email that goes out, so it should fail here first.
+  describe('no unsubscribe footer or headers', () => {
     afterEach(() => vi.unstubAllEnvs());
 
-    it('appends an unsubscribe footer and List-Unsubscribe headers when a secret is configured', async () => {
-      vi.stubEnv('ACCOUNTS_SECRET', 'test-secret');
+    it('sends the body verbatim, with no footer appended', async () => {
       const sendMail = vi.fn().mockResolvedValue(undefined);
       await sendMessages(fakeTransport(sendMail), messages, { fromName: 'F', fromEmail: 'f@example.com' });
       const sentOptions = sendMail.mock.calls[0][0];
-      expect(sentOptions.text).toContain('Unsubscribe:');
-      expect(sentOptions.text).toContain('/unsubscribe?email=a%40example.com&token=');
-      expect(sentOptions.headers['List-Unsubscribe']).toContain('/api/unsubscribe?email=a%40example.com&token=');
-      expect(sentOptions.headers['List-Unsubscribe-Post']).toBe('List-Unsubscribe=One-Click');
+      expect(sentOptions.text).toBe('Body');
+      expect(sentOptions.text).not.toContain('Unsubscribe');
+      expect(sentOptions.headers).toBeUndefined();
     });
 
-    it('sends without an unsubscribe link or headers when no secret is configured', async () => {
+    it('still sends no footer or headers when an encryption secret IS configured', async () => {
+      // The footer used to be gated on this secret being present, so a send with one set
+      // is the case that would regress if the old token-signing path ever came back.
+      vi.stubEnv('ACCOUNTS_SECRET', 'test-secret');
       const sendMail = vi.fn().mockResolvedValue(undefined);
       await sendMessages(fakeTransport(sendMail), messages, { fromName: 'F', fromEmail: 'f@example.com' });
       const sentOptions = sendMail.mock.calls[0][0];
       expect(sentOptions.text).toBe('Body');
       expect(sentOptions.headers).toBeUndefined();
+    });
+
+    it('omits the footer from the HTML part of a signature-image send too', async () => {
+      vi.stubEnv('ACCOUNTS_SECRET', 'test-secret');
+      const sendMail = vi.fn().mockResolvedValue(undefined);
+      await sendMessages(fakeTransport(sendMail), messages, {
+        fromName: 'F', fromEmail: 'f@example.com',
+        signOffImage: 'data:image/png;base64,aGk=',
+      });
+      const sentOptions = sendMail.mock.calls[0][0];
+      expect(sentOptions.html).toContain('cid:signature@trackpitch');
+      expect(sentOptions.html).not.toContain('Unsubscribe');
     });
   });
 });

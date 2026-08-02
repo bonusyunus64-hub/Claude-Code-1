@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isKvConfigured } from '@/lib/kv';
-import { getBlacklist, addManyToBlacklistServerSide, removeFromBlacklistServerSide } from '@/lib/unsubscribe';
+import { getBlacklist, addManyToBlacklistServerSide, removeFromBlacklistServerSide } from '@/lib/doNotContact';
 
 // The dashboard's own view of the Do Not Contact list (Account settings). Reads/writes go
-// straight through the atomic SADD/SREM/SMEMBERS in lib/unsubscribe.ts — the same
-// operations /api/unsubscribe uses when a recipient opts out themselves — rather than the
+// straight through the atomic SADD/SREM/SMEMBERS in lib/doNotContact.ts — the same
+// operations the bounce sweep in lib/refreshReplies.ts uses — rather than the
 // settings blob's read-whole-array/write-whole-array pattern used elsewhere in this app.
-// That pattern is what let two concurrent unsubscribes silently lose one, which is exactly
+// That pattern is what let two concurrent writes silently lose one, which is exactly
 // the failure mode this particular list can least afford. No isAuthed() check needed here:
 // proxy.ts already gates everything under /api/ behind a session except its small public
 // allowlist, and this path isn't on it.

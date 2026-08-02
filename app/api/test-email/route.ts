@@ -89,7 +89,7 @@ export async function POST(req: NextRequest) {
     await transporter.sendMail(mailOptions);
     // Not routed through sendMessagesPooled like the bulk paths: this builds its own
     // one-off mailOptions (test subject prefix, sample-variable rendering, no
-    // unsubscribe footer) rather than an OutboundMessage batch. It still needs the
+    // signature handling) rather than an OutboundMessage batch. It still needs the
     // explicit close in the finally below, though — createTransport pools now, so the
     // socket outlives the send and would otherwise keep the function alive after the
     // response has already gone out.

@@ -212,9 +212,9 @@ describe('sendInBatches', () => {
       call++;
       const body = JSON.parse(init.body as string) as { excludeEmails?: string[] };
       const exclude = new Set((body.excludeEmails ?? []).map(e => e.toLowerCase()));
-      // After the first round lands, someone unsubscribes r9 (still un-attempted) —
+      // After the first round lands, r9 (still un-attempted) lands on Do Not Contact —
       // the server's rebuilt list no longer contains it from here on, same as a
-      // real mid-send unsubscribe/bounce.
+      // real mid-send bounce or Do Not Contact addition.
       const serverList = call > 1 ? list.filter(e => e !== 'r9@example.com') : list;
       const remaining = serverList.filter(e => !exclude.has(e.toLowerCase()));
       const batch = remaining.slice(0, 4);
@@ -228,7 +228,7 @@ describe('sendInBatches', () => {
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     const sentTo = outcome.results.map(r => r.to).sort();
-    // Every recipient except the one that unsubscribed mid-send — none skipped,
+    // Every recipient except the one suppressed mid-send — none skipped,
     // none duplicated. (The old offset-based bug would have silently dropped a
     // *different*, still-eligible recipient here instead.)
     expect(sentTo).toEqual(list.filter(e => e !== 'r9@example.com').sort());
