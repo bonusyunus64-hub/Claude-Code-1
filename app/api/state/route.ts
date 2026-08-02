@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRedis, isKvConfigured, STATE_KEY, STATE_TOMBSTONES_KEY } from '@/lib/kv';
 import { isAuthed } from '@/lib/auth';
+import { readJsonBody } from '@/lib/readJsonBody';
 
 // A signature image is the largest legitimate value stored here — see
 // SIGN_OFF_IMAGE_MAX_BYTES in app/dashboard/hooks/useAccountSettings.ts, which caps the
@@ -60,7 +61,10 @@ export async function POST(req: NextRequest) {
   if (!isAuthed(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   if (!isKvConfigured()) return NextResponse.json({ error: 'Sync storage not configured' }, { status: 500 });
 
-  const { key, value } = await req.json() as { key?: string; value?: string };
+  const parsed = await readJsonBody<{ key?: string; value?: string }>(req);
+  if (!parsed.ok) return parsed.response;
+
+  const { key, value } = parsed.data;
   if (!key || typeof value !== 'string') {
     return NextResponse.json({ error: 'Missing key or value' }, { status: 400 });
   }

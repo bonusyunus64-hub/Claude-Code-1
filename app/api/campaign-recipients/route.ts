@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRoster } from '@/lib/roster';
+import { readJsonBody } from '@/lib/readJsonBody';
 
 // Backfills artist details for campaigns sent before recipient snapshots were
 // captured at send time — matches historical recipient emails against the
 // current roster. Artists who left the roster or emails that were never in
 // it (custom contacts) simply come back with blank fields.
 export async function POST(req: NextRequest) {
-  const { emails } = await req.json() as { emails?: string[] };
+  const parsed = await readJsonBody<{ emails?: string[] }>(req);
+  if (!parsed.ok) return parsed.response;
+
+  const { emails } = parsed.data;
   if (!emails || !emails.length) return NextResponse.json({ recipients: [] });
 
   const { artists } = getRoster();

@@ -1,4 +1,5 @@
 import type { NextRequest } from 'next/server';
+import { timingSafeStringEqual } from './auth';
 
 /**
  * Shared by every Vercel Cron route (app/api/cron/refresh-replies,
@@ -18,5 +19,8 @@ import type { NextRequest } from 'next/server';
 export function isAuthorizedCronRequest(req: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) return false;
-  return req.headers.get('authorization') === `Bearer ${secret}`;
+  // Timing-safe comparison for consistency with session validation in lib/auth.ts.
+  // Avoids runtime depending on how many leading characters matched.
+  const expectedAuth = `Bearer ${secret}`;
+  return timingSafeStringEqual(req.headers.get('authorization') ?? '', expectedAuth);
 }

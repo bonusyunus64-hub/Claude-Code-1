@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isKvConfigured } from '@/lib/kv';
 import { listAccounts, saveAccount, deleteAccount, type StoredAccount } from '@/lib/accounts';
+import { readJsonBody } from '@/lib/readJsonBody';
 
 // Accounts live server-side so the browser never holds an SMTP password. The
 // client works purely with account ids; the send routes look the credentials up
@@ -16,8 +17,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Account storage is not configured on the server.' }, { status: 500 });
   }
 
-  const body = await req.json() as Partial<StoredAccount>;
-  const { id, name, email, smtpHost, smtpPort, smtpUser, smtpPass, dailyCap } = body;
+  const parsed = await readJsonBody<Partial<StoredAccount>>(req);
+  if (!parsed.ok) return parsed.response;
+
+  const { id, name, email, smtpHost, smtpPort, smtpUser, smtpPass, dailyCap } = parsed.data;
 
   if (!name || !smtpUser || !smtpPass) {
     return NextResponse.json({ error: 'Name, SMTP user and password are required.' }, { status: 400 });

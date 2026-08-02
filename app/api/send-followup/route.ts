@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { sendFollowUp, FollowUpSendPayload } from '@/lib/followUpSend';
+import { readJsonBody } from '@/lib/readJsonBody';
 
 // Same reasoning as app/api/send/route.ts: a batch of DEFAULT_SEND_BATCH_SIZE
 // emails with SMTP retries and a configurable inter-message sendDelay can
@@ -12,6 +13,8 @@ export const maxDuration = 60;
 // accept a CRON_SECRET, unlike the old auto-followup cron this replaces. See the
 // long comment in proxy.ts on why send routes stay session-only.
 export async function POST(req: NextRequest) {
-  const payload = await req.json() as FollowUpSendPayload;
-  return sendFollowUp(payload);
+  const parsed = await readJsonBody<FollowUpSendPayload>(req);
+  if (!parsed.ok) return parsed.response;
+
+  return sendFollowUp(parsed.data);
 }

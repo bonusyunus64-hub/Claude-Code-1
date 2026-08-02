@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { resolveSmtpConfig } from '@/lib/mailSend';
 import { resolveImapConfig, findResponders } from '@/lib/checkReplies';
 import { resolveAccount } from '@/lib/accounts';
+import { readJsonBody } from '@/lib/readJsonBody';
 
 // findResponders opens an IMAP connection and walks the inbox once per recipient
 // address being checked — a campaign with dozens of recipients can take well past
@@ -16,7 +17,10 @@ interface CheckRepliesPayload {
 }
 
 export async function POST(req: NextRequest) {
-  const { emails, since, accountId, senderName } = await req.json() as CheckRepliesPayload;
+  const parsed = await readJsonBody<CheckRepliesPayload>(req);
+  if (!parsed.ok) return parsed.response;
+
+  const { emails, since, accountId, senderName } = parsed.data;
 
   if (!emails?.length || !since) {
     return NextResponse.json({ error: 'Missing emails or since' }, { status: 400 });

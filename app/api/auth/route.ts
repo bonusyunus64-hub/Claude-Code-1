@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AUTH_COOKIE, SESSION_MAX_AGE_MS, getSessionToken, passwordMatches } from '@/lib/auth';
 import { checkLoginRateLimit, clearLoginAttempts, clientIp, recordFailedLogin } from '@/lib/rateLimit';
+import { readJsonBody } from '@/lib/readJsonBody';
 
 export async function POST(req: NextRequest) {
-  const { password } = await req.json();
+  const parsed = await readJsonBody<{ password?: string }>(req);
+  if (!parsed.ok) return parsed.response;
+
+  const { password } = parsed.data;
 
   if (!process.env.SITE_PASSWORD) {
     return NextResponse.json({ error: 'SITE_PASSWORD env var not set' }, { status: 500 });

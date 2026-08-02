@@ -1,9 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getArtistsByGenres } from '@/lib/roster';
+import { readJsonBody } from '@/lib/readJsonBody';
+
+interface PreviewPayload {
+  genres: string[];
+  minAudience?: number;
+  maxAudience?: number;
+  gender?: string;
+  artistType?: string;
+  minInstagram?: number;
+  maxInstagram?: number;
+  matchMode?: 'any' | 'all';
+}
 
 export async function POST(req: NextRequest) {
+  const parsed = await readJsonBody<PreviewPayload>(req);
+  if (!parsed.ok) return parsed.response;
+
   const { genres, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode } =
-    await req.json() as { genres: string[]; minAudience?: number; maxAudience?: number; gender?: string; artistType?: string; minInstagram?: number; maxInstagram?: number; matchMode?: 'any' | 'all' };
+    parsed.data;
 
   if (!genres || !genres.length) {
     return NextResponse.json({ artists: [] });

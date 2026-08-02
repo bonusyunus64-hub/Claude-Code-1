@@ -24,7 +24,7 @@ const CLOCK_SKEW_MS = 2 * 60 * 1000; // 2 minutes
 // reveals the real password.
 const SESSION_MESSAGE_PREFIX = 'trackpitch-auth-session:';
 
-function timingSafeStringEqual(a: string, b: string): boolean {
+export function timingSafeStringEqual(a: string, b: string): boolean {
   const bufA = crypto.createHash('sha256').update(a).digest();
   const bufB = crypto.createHash('sha256').update(b).digest();
   return crypto.timingSafeEqual(bufA, bufB);

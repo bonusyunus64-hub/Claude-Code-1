@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { searchArtistsByName } from '@/lib/roster';
+import { readJsonBody } from '@/lib/readJsonBody';
 
 export async function POST(req: NextRequest) {
-  const { query } = await req.json() as { query: string };
+  const parsed = await readJsonBody<{ query: string }>(req);
+  if (!parsed.ok) return parsed.response;
+
+  const { query } = parsed.data;
 
   if (!query || !query.trim()) {
     return NextResponse.json({ artists: [] });

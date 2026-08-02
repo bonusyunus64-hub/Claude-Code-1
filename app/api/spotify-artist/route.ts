@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { findArtistUrl, isSpotifyConfigured } from '@/lib/spotify';
 import { getRedis, isKvConfigured } from '@/lib/kv';
 import { isAuthed } from '@/lib/auth';
+import { readJsonBody } from '@/lib/readJsonBody';
 
 const CACHE_KEY_PREFIX = 'trackpitch:spotifyUrl:';
 
@@ -12,7 +13,10 @@ const memCache = new Map<string, string | null>();
 export async function POST(req: NextRequest) {
   if (!isAuthed(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const { name } = await req.json() as { name?: string };
+  const parsed = await readJsonBody<{ name?: string }>(req);
+  if (!parsed.ok) return parsed.response;
+
+  const { name } = parsed.data;
   if (!name || !name.trim()) return NextResponse.json({ url: null });
   const cacheKey = name.trim().toLowerCase();
 

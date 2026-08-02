@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { promises as dns } from 'dns';
+import { readJsonBody } from '@/lib/readJsonBody';
 
 const DKIM_SELECTORS = ['default', 'mail', 'google', 'zoho', 'dkim', 'k1', 's1', 's2', 'selector1', 'selector2'];
 
 export async function POST(req: NextRequest) {
-  const { domain } = await req.json() as { domain: string };
+  const parsed = await readJsonBody<{ domain: string }>(req);
+  if (!parsed.ok) return parsed.response;
+
+  const { domain } = parsed.data;
   if (!domain) return NextResponse.json({ error: 'Domain required' }, { status: 400 });
 
   const result = {

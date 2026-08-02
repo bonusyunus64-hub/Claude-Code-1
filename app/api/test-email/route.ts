@@ -3,6 +3,7 @@ import { renderTemplate, textToHtml } from '@/lib/emailTemplate';
 import { resolveSmtpConfig, createTransport, formatFromHeader } from '@/lib/mailSend';
 import { resolveAccount } from '@/lib/accounts';
 import { recordSends } from '@/lib/sendQuota';
+import { readJsonBody } from '@/lib/readJsonBody';
 
 interface TestEmailPayload {
   to: string;
@@ -21,10 +22,13 @@ interface TestEmailPayload {
 }
 
 export async function POST(req: NextRequest) {
+  const parsed = await readJsonBody<TestEmailPayload>(req);
+  if (!parsed.ok) return parsed.response;
+
   const {
     to, accountId, emailTemplate, subjectTemplate, signOff, signOffImage, senderName, trackTitle, driveLink,
     managerName, artistName, managementCompany, pronoun,
-  } = await req.json() as TestEmailPayload;
+  } = parsed.data;
 
   if (!to) {
     return NextResponse.json({ error: 'Recipient email is required.' }, { status: 400 });

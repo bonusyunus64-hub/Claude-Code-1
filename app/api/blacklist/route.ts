@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isKvConfigured } from '@/lib/kv';
 import { getBlacklist, addManyToBlacklistServerSide, removeFromBlacklistServerSide } from '@/lib/doNotContact';
+import { readJsonBody } from '@/lib/readJsonBody';
 
 // The dashboard's own view of the Do Not Contact list (Account settings). Reads/writes go
 // straight through the atomic SADD/SREM/SMEMBERS in lib/doNotContact.ts — the same
@@ -27,8 +28,11 @@ export async function POST(req: NextRequest) {
   // Accepts either a single `email` (the "add one address" form) or a batch `emails`
   // (the dashboard's "move failed sends to Do Not Contact" action) — either way it's one
   // SADD round trip via addManyToBlacklistServerSide, not one request per address.
-  const body = await req.json() as { email?: string; emails?: string[] };
-  const emails = Array.isArray(body.emails) ? body.emails : (body.email ? [body.email] : []);
+  const parsed = await readJsonBody<{ email?: string; emails?: string[] }>(req);
+  if (!parsed.ok) return parsed.response;
+
+  const { email, emails: bodyEmails } = parsed.data;
+  const emails = Array.isArray(bodyEmails) ? bodyEmails : (email ? [email] : []);
   const cleaned = emails.filter((e): e is string => typeof e === 'string' && e.trim().length > 0);
   if (!cleaned.length) return NextResponse.json({ error: 'Missing email' }, { status: 400 });
 
