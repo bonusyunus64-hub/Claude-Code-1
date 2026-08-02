@@ -8,12 +8,7 @@ import type {
   CustomContact,
 } from './types';
 import {
-  DEFAULT_DEMOS_TEMPLATE, DEFAULT_FOLLOWUP_TEMPLATE, DEFAULT_RADIO_TEMPLATE,
-  DEFAULT_DEMOS_SUBJECT, DEFAULT_FOLLOWUP_SUBJECT, DEFAULT_RADIO_SUBJECT,
-  DEFAULT_SIGN_OFF,
-} from './constants';
-import {
-  parseContactsCsv, renderTemplateClient, pronounForClient, computeAnalyticsStats, buildLastContactedMap,
+  renderTemplateClient, pronounForClient, computeAnalyticsStats, buildLastContactedMap,
   collectInterestedReplies,
 } from './utils';
 import {
@@ -24,6 +19,8 @@ import { usePromotionChannel } from './hooks/usePromotionChannel';
 import { useCampaignHistory } from './hooks/useCampaignHistory';
 import { useDemosFlow } from './hooks/useDemosFlow';
 import { useAccountSettings, parseFailedEmails } from './hooks/useAccountSettings';
+import { useTemplateDrafts } from './hooks/useTemplateDrafts';
+import { useCustomContacts } from './hooks/useCustomContacts';
 import { OverviewSection } from './sections/OverviewSection';
 import { DemosSection } from './sections/DemosSection';
 import { PromotionSection } from './sections/PromotionSection';
@@ -41,27 +38,6 @@ export default function Dashboard() {
   const [driveLink, setDriveLink] = useState('');
   const [senderName, setSenderName] = useState('');
 
-  // Song Demos — template/subject text (both the initial-pitch and follow-up pair)
-  // stays here since it participates in the shared dirty-tracking/save-all below;
-  // everything else is owned by useDemosFlow, instantiated further down.
-  const [demosTemplate, setDemosTemplate] = useState(DEFAULT_DEMOS_TEMPLATE);
-  const [demosSubject, setDemosSubject] = useState(DEFAULT_DEMOS_SUBJECT);
-  // Second subject line for A/B testing (DemosSection's "Test a second subject
-  // line" toggle) — empty by default, same as demosSubject would be for a fresh
-  // account if it didn't have DEFAULT_DEMOS_SUBJECT to fall back to. Lives here
-  // rather than in useDemosFlow for the same reason demosSubject does: it
-  // participates in the shared dirty-tracking/save-all below.
-  const [demosSubjectB, setDemosSubjectB] = useState('');
-  const [demosFollowUpTemplate, setDemosFollowUpTemplate] = useState(DEFAULT_FOLLOWUP_TEMPLATE);
-  const [demosFollowUpSubject, setDemosFollowUpSubject] = useState(DEFAULT_FOLLOWUP_SUBJECT);
-
-  // Track Promotion (Radio) — template/subject text stays here since it
-  // participates in the shared dirty-tracking/save-all below; everything else
-  // (genre/secondary-filter selection, preview, send, presets, template library)
-  // is owned by usePromotionChannel, instantiated further down.
-  const [radioTemplate, setRadioTemplate] = useState(DEFAULT_RADIO_TEMPLATE);
-  const [radioSubject, setRadioSubject] = useState(DEFAULT_RADIO_SUBJECT);
-
   // Test email — stays here (not in useAccountSettings) since it needs a sample
   // artist from useDemosFlow's preview list; see useAccountSettings's own comment
   // for why that would otherwise be a circular hook dependency.
@@ -72,11 +48,6 @@ export default function Dashboard() {
   const [showTestEmailOptions, setShowTestEmailOptions] = useState(false);
   const [testEmailSubject, setTestEmailSubject] = useState('');
   const [testEmailMessage, setTestEmailMessage] = useState('');
-
-  // Custom contacts
-  const [customContacts, setCustomContacts] = useState<CustomContact[]>([]);
-  const [newCustomContact, setNewCustomContact] = useState({ artistName: '', managerName: '', managerEmail: '' });
-  const [showAddCustomContact, setShowAddCustomContact] = useState(false);
 
   // Overview tab's cross-campaign "Replies to chase" worklist — which interested/
   // unclassified replies (collectInterestedReplies in utils.ts) the user has
@@ -91,33 +62,32 @@ export default function Dashboard() {
   const [previewModalType, setPreviewModalType] = useState<'demos' | 'radio' | null>(null);
   const [previewModalIdx, setPreviewModalIdx] = useState(0);
 
-  // Save tracking
-  const [lastSavedDemosTemplate, setLastSavedDemosTemplate] = useState(DEFAULT_DEMOS_TEMPLATE);
-  const [lastSavedDemosSubject, setLastSavedDemosSubject] = useState(DEFAULT_DEMOS_SUBJECT);
-  const [lastSavedDemosSubjectB, setLastSavedDemosSubjectB] = useState('');
-  const [lastSavedFollowUpTemplate, setLastSavedFollowUpTemplate] = useState(DEFAULT_FOLLOWUP_TEMPLATE);
-  const [lastSavedFollowUpSubject, setLastSavedFollowUpSubject] = useState(DEFAULT_FOLLOWUP_SUBJECT);
-  const [lastSavedRadioTemplate, setLastSavedRadioTemplate] = useState(DEFAULT_RADIO_TEMPLATE);
-  const [lastSavedRadioSubject, setLastSavedRadioSubject] = useState(DEFAULT_RADIO_SUBJECT);
-  const [lastSavedSignOff, setLastSavedSignOff] = useState(DEFAULT_SIGN_OFF);
-  const [lastSavedSignOffImage, setLastSavedSignOffImage] = useState<string | null>(null);
-
-  // Set when saveAll() finds that one of its syncStorage.setItem calls couldn't write to
-  // localStorage (see the return-value comment on syncStorage.setItem) — most likely the
-  // signature image pushing the synced-settings blob over the browser's 5MB quota. The
-  // server copy still saved fine, so this is informational rather than blocking.
-  const [saveLocalWarning, setSaveLocalWarning] = useState('');
-
   // Accounts, sign-off, blacklist, failed-sends, send-pacing settings, deliverability —
   // instantiated first since history/radio/demos below all read config
   // from it (account.signOff, account.blacklist, account.accountCapError, etc.).
   const account = useAccountSettings();
 
+  // Custom contacts — instantiated before useCampaignHistory/useDemosFlow below,
+  // both of which take contacts.customContacts as read-only config; see
+  // this hook's own doc comment for why addOutsideArtistToContacts stays here
+  // instead of moving into it.
+  const contacts = useCustomContacts();
+
+  // Template/subject drafts (Demos + Radio) and the sign-off they share a
+  // dirty-tracking/save-all with — instantiated before usePromotionChannel/
+  // useDemosFlow below, both of which take these drafts as config. signOff/
+  // signOffImage stay owned by useAccountSettings (see this hook's own doc
+  // comment on the CRITICAL HAZARD of moving them) and are threaded in here.
+  const templateDrafts = useTemplateDrafts({
+    signOff: account.signOff, setSignOff: account.setSignOff,
+    signOffImage: account.signOffImage, setSignOffImage: account.setSignOffImage,
+  });
+
   // Owns campaigns state itself (fetched once on mount) plus everything History-tab
   // specific — the single source of truth the send flows below write through via
   // history.upsertCampaign, instead of duplicating campaign-state ownership.
   const history = useCampaignHistory({
-    emailAccounts: account.emailAccounts, customContacts,
+    emailAccounts: account.emailAccounts, customContacts: contacts.customContacts,
     addFailedToBlacklist: account.addFailedToBlacklist, refreshSendsToday: account.refreshSendsToday,
     signOffImage: account.signOffImage, signOff: account.signOff, sendDelay: account.sendDelay,
   });
@@ -169,7 +139,8 @@ export default function Dashboard() {
     secondaryFilterKey: 'locations',
     nameVar: 'stationName',
     trackTitle, driveLink, senderName,
-    template: radioTemplate, subject: radioSubject, setTemplate: setRadioTemplate, setSubject: setRadioSubject,
+    template: templateDrafts.radioTemplate, subject: templateDrafts.radioSubject,
+    setTemplate: templateDrafts.setRadioTemplate, setSubject: templateDrafts.setRadioSubject,
     signOff: account.signOff, signOffImage: account.signOffImage, selectedAccountId: account.selectedAccountId,
     sendDelay: account.sendDelay, blacklist: account.blacklist, dailySendCap: account.dailySendCap, sendsToday: account.sendsToday,
     accountCapError: account.accountCapError, refreshSendsToday: account.refreshSendsToday, recordFailedEmails: account.recordFailedEmails,
@@ -184,15 +155,17 @@ export default function Dashboard() {
   // before the initial-load effect below for the same reason as radio above.
   const demos = useDemosFlow({
     trackTitle, driveLink, senderName,
-    demosTemplate, demosSubject, setDemosTemplate, setDemosSubject,
-    demosSubjectB, setDemosSubjectB,
-    demosFollowUpTemplate, demosFollowUpSubject, setDemosFollowUpTemplate, setDemosFollowUpSubject,
+    demosTemplate: templateDrafts.demosTemplate, demosSubject: templateDrafts.demosSubject,
+    setDemosTemplate: templateDrafts.setDemosTemplate, setDemosSubject: templateDrafts.setDemosSubject,
+    demosSubjectB: templateDrafts.demosSubjectB, setDemosSubjectB: templateDrafts.setDemosSubjectB,
+    demosFollowUpTemplate: templateDrafts.demosFollowUpTemplate, demosFollowUpSubject: templateDrafts.demosFollowUpSubject,
+    setDemosFollowUpTemplate: templateDrafts.setDemosFollowUpTemplate, setDemosFollowUpSubject: templateDrafts.setDemosFollowUpSubject,
     signOff: account.signOff, signOffImage: account.signOffImage, selectedAccountId: account.selectedAccountId,
     sendDelay: account.sendDelay, blacklist: account.blacklist, dailySendCap: account.dailySendCap, sendsToday: account.sendsToday,
     accountCapError: account.accountCapError, refreshSendsToday: account.refreshSendsToday, recordFailedEmails: account.recordFailedEmails,
     pitchedEmailMap, lastContactedMap, contactCooldownDays: account.contactCooldownDays,
     upsertCampaign: history.upsertCampaign, threadIdsFor: history.threadIdsFor,
-    customContacts,
+    customContacts: contacts.customContacts,
     sendWindowSettings: account.sendWindowSettings,
   });
 
@@ -209,32 +182,9 @@ export default function Dashboard() {
       if (savedId && accounts.find(a => a.id === savedId)) account.setSelectedAccountId(savedId);
       else if (accounts.length > 0) account.setSelectedAccountId(accounts[0].id);
 
-      const savedSignOff = localStorage.getItem('tp_sign_off');
-      if (savedSignOff !== null) { account.setSignOff(savedSignOff); setLastSavedSignOff(savedSignOff); }
-
-      const savedImage = localStorage.getItem('tp_sign_off_image');
-      if (savedImage) { account.setSignOffImage(savedImage); setLastSavedSignOffImage(savedImage); }
-
-      const savedDemosTemplate = localStorage.getItem('tp_email_template');
-      if (savedDemosTemplate !== null) { setDemosTemplate(savedDemosTemplate); setLastSavedDemosTemplate(savedDemosTemplate); }
-
-      const savedDemosSubject = localStorage.getItem('tp_email_subject');
-      if (savedDemosSubject !== null) { setDemosSubject(savedDemosSubject); setLastSavedDemosSubject(savedDemosSubject); }
-
-      const savedDemosSubjectB = localStorage.getItem('tp_email_subject_b');
-      if (savedDemosSubjectB !== null) { setDemosSubjectB(savedDemosSubjectB); setLastSavedDemosSubjectB(savedDemosSubjectB); }
-
-      const savedFollowUp = localStorage.getItem('tp_followup_template');
-      if (savedFollowUp !== null) { setDemosFollowUpTemplate(savedFollowUp); setLastSavedFollowUpTemplate(savedFollowUp); }
-
-      const savedFollowUpSubject = localStorage.getItem('tp_followup_subject');
-      if (savedFollowUpSubject !== null) { setDemosFollowUpSubject(savedFollowUpSubject); setLastSavedFollowUpSubject(savedFollowUpSubject); }
-
-      const savedRadioTemplate = localStorage.getItem('tp_radio_template');
-      if (savedRadioTemplate !== null) { setRadioTemplate(savedRadioTemplate); setLastSavedRadioTemplate(savedRadioTemplate); }
-
-      const savedRadioSubject = localStorage.getItem('tp_radio_subject');
-      if (savedRadioSubject !== null) { setRadioSubject(savedRadioSubject); setLastSavedRadioSubject(savedRadioSubject); }
+      // Sign-off + every template/subject draft, plus their lastSaved mirrors —
+      // see useTemplateDrafts.ts's own hydrateFromStorage doc comment.
+      templateDrafts.hydrateFromStorage();
 
       // No tp_blacklist read here any more: the Do Not Contact list moved to a Redis
       // set behind /api/blacklist, which useAccountSettings loads itself on mount.
@@ -249,8 +199,7 @@ export default function Dashboard() {
       const savedFailedEmails = localStorage.getItem('tp_failed_emails');
       if (savedFailedEmails) account.setFailedEmails(parseFailedEmails(JSON.parse(savedFailedEmails)));
 
-      const savedCustomContacts = localStorage.getItem('tp_custom_contacts');
-      if (savedCustomContacts) setCustomContacts(JSON.parse(savedCustomContacts));
+      contacts.hydrateFromStorage();
 
       const savedHandledReplies = localStorage.getItem('tp_handled_replies');
       if (savedHandledReplies) setHandledReplies(JSON.parse(savedHandledReplies));
@@ -306,9 +255,11 @@ export default function Dashboard() {
       else account.setSendWindowTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone);
     } catch {}
     })();
-    // account/radio/demos are plain objects rebuilt every render, so listing them
-    // here would re-run this mount-only hydration on every render; only their setX
-    // setters (stable, from useState) are actually called below.
+    // account/radio/demos/contacts/templateDrafts are plain objects rebuilt
+    // every render, so listing them here would re-run this mount-only hydration on
+    // every render; only their setX setters (stable, from useState) and the two
+    // hydrateFromStorage functions (called imperatively, not depended on for
+    // identity) are actually used below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -330,77 +281,6 @@ export default function Dashboard() {
 
   const analyticsStats = useMemo(() => computeAnalyticsStats(history.campaigns), [history.campaigns]);
 
-  const isDirty =
-    demosTemplate !== lastSavedDemosTemplate ||
-    demosSubject !== lastSavedDemosSubject ||
-    demosSubjectB !== lastSavedDemosSubjectB ||
-    demosFollowUpTemplate !== lastSavedFollowUpTemplate ||
-    demosFollowUpSubject !== lastSavedFollowUpSubject ||
-    radioTemplate !== lastSavedRadioTemplate ||
-    radioSubject !== lastSavedRadioSubject ||
-    account.signOff !== lastSavedSignOff ||
-    account.signOffImage !== lastSavedSignOffImage;
-
-  function saveAll() {
-    // syncStorage.setItem returns false when the localStorage half of the write failed
-    // (e.g. quota exceeded) — it still pushes to the server regardless, so nothing here
-    // is actually lost, but the user should know their next page-load might not reflect
-    // it instantly if this browser goes offline before the server copy is fetched again.
-    let localWriteFailed = false;
-    const track = (ok: boolean) => { if (!ok) localWriteFailed = true; };
-    track(syncStorage.setItem('tp_email_template', demosTemplate));
-    track(syncStorage.setItem('tp_email_subject', demosSubject));
-    track(syncStorage.setItem('tp_email_subject_b', demosSubjectB));
-    track(syncStorage.setItem('tp_followup_template', demosFollowUpTemplate));
-    track(syncStorage.setItem('tp_followup_subject', demosFollowUpSubject));
-    track(syncStorage.setItem('tp_radio_template', radioTemplate));
-    track(syncStorage.setItem('tp_radio_subject', radioSubject));
-    track(syncStorage.setItem('tp_sign_off', account.signOff));
-    if (account.signOffImage) track(syncStorage.setItem('tp_sign_off_image', account.signOffImage));
-    else syncStorage.removeItem('tp_sign_off_image');
-    setSaveLocalWarning(localWriteFailed
-      ? "Saved to your account, but this browser's local storage is full (likely the signature image) — clear some space or shrink the image so this device stays in sync while offline."
-      : '');
-    setLastSavedDemosTemplate(demosTemplate);
-    setLastSavedDemosSubject(demosSubject);
-    setLastSavedDemosSubjectB(demosSubjectB);
-    setLastSavedFollowUpTemplate(demosFollowUpTemplate);
-    setLastSavedFollowUpSubject(demosFollowUpSubject);
-    setLastSavedRadioTemplate(radioTemplate);
-    setLastSavedRadioSubject(radioSubject);
-    setLastSavedSignOff(account.signOff);
-    setLastSavedSignOffImage(account.signOffImage);
-  }
-
-  function discardChanges() {
-    setDemosTemplate(lastSavedDemosTemplate);
-    setDemosSubject(lastSavedDemosSubject);
-    setDemosSubjectB(lastSavedDemosSubjectB);
-    setDemosFollowUpTemplate(lastSavedFollowUpTemplate);
-    setDemosFollowUpSubject(lastSavedFollowUpSubject);
-    setRadioTemplate(lastSavedRadioTemplate);
-    setRadioSubject(lastSavedRadioSubject);
-    account.setSignOff(lastSavedSignOff);
-    account.setSignOffImage(lastSavedSignOffImage);
-    setSaveLocalWarning('');
-  }
-
-  function addCustomContact() {
-    if (!newCustomContact.artistName || !newCustomContact.managerEmail) return;
-    const contact: CustomContact = { id: Date.now().toString(), ...newCustomContact };
-    const updated = [...customContacts, contact];
-    setCustomContacts(updated);
-    syncStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
-    setShowAddCustomContact(false);
-    setNewCustomContact({ artistName: '', managerName: '', managerEmail: '' });
-  }
-
-  function removeCustomContact(id: string) {
-    const updated = customContacts.filter(c => c.id !== id);
-    setCustomContacts(updated);
-    syncStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
-  }
-
   /** Marks one reply (see ReplyToChase.key) dealt with, dropping it out of the
    *  Overview tab's worklist. unmarkReplyHandled below is what backs that
    *  panel's brief "Undo" affordance for an accidental click. */
@@ -418,7 +298,7 @@ export default function Dashboard() {
   }
 
   function addOutsideArtistToContacts(a: Artist) {
-    const existingEmails = new Set(customContacts.map(c => c.managerEmail.toLowerCase()));
+    const existingEmails = new Set(contacts.customContacts.map(c => c.managerEmail.toLowerCase()));
     const additions: CustomContact[] = a.managerEmails
       .filter(email => !existingEmails.has(email.toLowerCase()))
       .map((email, i) => ({
@@ -428,27 +308,9 @@ export default function Dashboard() {
         managerEmail: email,
       }));
     if (!additions.length) return;
-    const updated = [...customContacts, ...additions];
-    setCustomContacts(updated);
+    const updated = [...contacts.customContacts, ...additions];
+    contacts.setCustomContacts(updated);
     syncStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
-  }
-
-  function handleCustomContactsCsv(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const parsed = parseContactsCsv(String(reader.result));
-      if (!parsed.length) return;
-      const existingEmails = new Set(customContacts.map(c => c.managerEmail.toLowerCase()));
-      const fresh = parsed.filter(p => !existingEmails.has(p.managerEmail.toLowerCase()));
-      const added = fresh.map(p => ({ id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, ...p }));
-      const updated = [...customContacts, ...added];
-      setCustomContacts(updated);
-      syncStorage.setItem('tp_custom_contacts', JSON.stringify(updated));
-    };
-    reader.readAsText(file);
-    e.target.value = '';
   }
 
   async function handleTestEmail() {
@@ -459,15 +321,15 @@ export default function Dashboard() {
       // reflects exactly how {{managerName}}, {{pronoun}}, etc. will resolve
       // for an actual recipient rather than generic placeholders.
       const sampleArtist = demos.sortedArtists[0];
-      const sampleContact = customContacts[0];
+      const sampleContact = contacts.customContacts[0];
       const res = await fetch('/api/test-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           to: testEmailTo,
           accountId: account.selectedAccountId || undefined,
-          emailTemplate: testEmailMessage.trim() || (demos.useFollowUp ? demosFollowUpTemplate : demosTemplate),
-          subjectTemplate: testEmailSubject.trim() || (demos.useFollowUp ? demosFollowUpSubject : demosSubject),
+          emailTemplate: testEmailMessage.trim() || (demos.useFollowUp ? templateDrafts.demosFollowUpTemplate : templateDrafts.demosTemplate),
+          subjectTemplate: testEmailSubject.trim() || (demos.useFollowUp ? templateDrafts.demosFollowUpSubject : templateDrafts.demosSubject),
           signOff: account.signOff,
           signOffImage: account.signOffImage,
           senderName,
@@ -492,12 +354,12 @@ export default function Dashboard() {
   const { entries: previewModalEntries, total: previewModalTotal, excludedByBlacklist: previewModalExcludedByBlacklist } = useMemo((): { entries: PreviewEntry[]; total: number; excludedByBlacklist: number } => {
     if (!previewModalType) return { entries: [], total: 0, excludedByBlacklist: 0 };
     if (previewModalType === 'demos') {
-      const tpl = demos.useFollowUp ? demosFollowUpTemplate : demosTemplate;
-      const subjectA = demos.useFollowUp ? demosFollowUpSubject : demosSubject;
+      const tpl = demos.useFollowUp ? templateDrafts.demosFollowUpTemplate : templateDrafts.demosTemplate;
+      const subjectA = demos.useFollowUp ? templateDrafts.demosFollowUpSubject : templateDrafts.demosSubject;
       // Mirrors useDemosFlow's handleSend: A/B testing never applies to a
       // follow-up send, and only kicks in once the toggle is on with real text
       // in Subject B — matching exactly what a send would actually do.
-      const subjectB = (!demos.useFollowUp && demos.subjectTestEnabled) ? demosSubjectB : undefined;
+      const subjectB = (!demos.useFollowUp && demos.subjectTestEnabled) ? templateDrafts.demosSubjectB : undefined;
       const render = (vars: Record<string, string>, to: string) => {
         const subjectTpl = subjectTemplateFor(to, subjectA, subjectB);
         const bodyParts = [renderTemplateClient(tpl, vars)];
@@ -509,7 +371,7 @@ export default function Dashboard() {
       // address (CUSTOM_CONTACT_RANK), and putting them first also means a hand-added
       // contact — the whole reason someone added it — isn't the entry that falls off
       // the end when a large roster match pushes the deduped list past the cap.
-      customContacts.forEach(cc => {
+      contacts.customContacts.forEach(cc => {
         candidates.push({
           to: cc.managerEmail, subject: '', body: '', rank: CUSTOM_CONTACT_RANK,
           label: `${cc.artistName}${cc.managerName ? ` (${cc.managerName})` : ''} <${cc.managerEmail}> [Custom]`,
@@ -543,7 +405,7 @@ export default function Dashboard() {
       });
     });
     return buildPreviewEntries(candidates, PREVIEW_MODAL_RECIPIENT_CAP, render, account.blacklist);
-  }, [previewModalType, demos.includedArtists, radio.results, demosTemplate, demosSubject, demosSubjectB, demos.subjectTestEnabled, demosFollowUpTemplate, demosFollowUpSubject, demos.useFollowUp, radio.template, radio.subject, account.signOff, account.blacklist, trackTitle, driveLink, senderName, customContacts]);
+  }, [previewModalType, demos.includedArtists, radio.results, templateDrafts.demosTemplate, templateDrafts.demosSubject, templateDrafts.demosSubjectB, demos.subjectTestEnabled, templateDrafts.demosFollowUpTemplate, templateDrafts.demosFollowUpSubject, demos.useFollowUp, radio.template, radio.subject, account.signOff, account.blacklist, trackTitle, driveLink, senderName, contacts.customContacts]);
 
   // Keyboard/focus handling for the preview modal (see the modal markup below):
   // Escape closes it, and focus moves into the dialog on open and back to
@@ -693,8 +555,8 @@ export default function Dashboard() {
                 demosTab={demosTab} setDemosTab={setDemosTab}
                 senderName={senderName} setSenderName={setSenderName} trackTitle={trackTitle} setTrackTitle={setTrackTitle} demosPitchCount={demosPitchCount}
                 driveLink={driveLink} setDriveLink={setDriveLink}
-                customContacts={customContacts} removeCustomContact={removeCustomContact} showAddCustomContact={showAddCustomContact} setShowAddCustomContact={setShowAddCustomContact}
-                newCustomContact={newCustomContact} setNewCustomContact={setNewCustomContact} addCustomContact={addCustomContact} handleCustomContactsCsv={handleCustomContactsCsv}
+                customContacts={contacts.customContacts} removeCustomContact={contacts.removeCustomContact} showAddCustomContact={contacts.showAddCustomContact} setShowAddCustomContact={contacts.setShowAddCustomContact}
+                newCustomContact={contacts.newCustomContact} setNewCustomContact={contacts.setNewCustomContact} addCustomContact={contacts.addCustomContact} handleCustomContactsCsv={contacts.handleCustomContactsCsv}
                 addOutsideArtistToContacts={addOutsideArtistToContacts} pitchedEmailMap={pitchedEmailMap}
                 setPreviewModalType={setPreviewModalType} setPreviewModalIdx={setPreviewModalIdx}
                 addFailedToBlacklist={account.addFailedToBlacklist} contactCooldownDays={account.contactCooldownDays}
@@ -720,12 +582,12 @@ export default function Dashboard() {
             {activeSection === 'account' && (
               <AccountSection
                 {...account}
-                demosFollowUpTemplate={demosFollowUpTemplate}
+                demosFollowUpTemplate={templateDrafts.demosFollowUpTemplate}
                 testEmailTo={testEmailTo} setTestEmailTo={setTestEmailTo} testEmailSending={testEmailSending} handleTestEmail={handleTestEmail}
                 showTestEmailOptions={showTestEmailOptions} setShowTestEmailOptions={setShowTestEmailOptions}
                 testEmailSubject={testEmailSubject} setTestEmailSubject={setTestEmailSubject}
                 testEmailMessage={testEmailMessage} setTestEmailMessage={setTestEmailMessage}
-                demosSubject={demosSubject} demosTemplate={demosTemplate}
+                demosSubject={templateDrafts.demosSubject} demosTemplate={templateDrafts.demosTemplate}
                 testEmailResult={testEmailResult} setTestEmailResult={setTestEmailResult} testEmailError={testEmailError}
               />
             )}
@@ -738,18 +600,18 @@ export default function Dashboard() {
       </div>
 
       {/* Floating save bar */}
-      {isDirty && (
+      {templateDrafts.isDirty && (
         <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-6 md:bottom-6 md:w-auto z-50 flex items-center gap-2 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl shadow-black/50 px-4 py-3">
           <span className="text-xs text-zinc-400 mr-1 flex-1 md:flex-none">Unsaved changes</span>
-          <button onClick={discardChanges} className="text-xs text-zinc-400 hover:text-zinc-200 px-2 py-1.5 rounded transition hover:bg-zinc-800">Discard</button>
-          <button onClick={saveAll} className="text-xs bg-violet-600 hover:bg-violet-500 text-white font-semibold px-3 py-1.5 rounded-lg transition">Save</button>
+          <button onClick={templateDrafts.discardChanges} className="text-xs text-zinc-400 hover:text-zinc-200 px-2 py-1.5 rounded transition hover:bg-zinc-800">Discard</button>
+          <button onClick={templateDrafts.saveAll} className="text-xs bg-violet-600 hover:bg-violet-500 text-white font-semibold px-3 py-1.5 rounded-lg transition">Save</button>
         </div>
       )}
 
-      {!isDirty && saveLocalWarning && (
+      {!templateDrafts.isDirty && templateDrafts.saveLocalWarning && (
         <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-6 md:bottom-6 md:w-auto md:max-w-sm z-50 flex items-start gap-2 bg-zinc-900 border border-amber-700/50 rounded-xl shadow-2xl shadow-black/50 px-4 py-3">
-          <span className="text-xs text-amber-400 flex-1">{saveLocalWarning}</span>
-          <button onClick={() => setSaveLocalWarning('')} className="text-zinc-500 hover:text-white transition text-sm leading-none shrink-0">×</button>
+          <span className="text-xs text-amber-400 flex-1">{templateDrafts.saveLocalWarning}</span>
+          <button onClick={() => templateDrafts.setSaveLocalWarning('')} className="text-zinc-500 hover:text-white transition text-sm leading-none shrink-0">×</button>
         </div>
       )}
 
