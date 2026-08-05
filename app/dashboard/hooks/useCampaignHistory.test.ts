@@ -226,7 +226,106 @@ describe('useCampaignHistory', () => {
     });
   });
 
+  describe('recipient hydration', () => {
+    const stored = {
+      email: 'a@example.com', artistName: 'Indie Act', managerName: 'Sam',
+      avatarUrl: '', genres: ['pop'], instagramHandle: '', spotifyFollowers: 10,
+    };
+
+    // GET /api/campaigns returns summaries without `recipients` (see
+    // lib/campaigns.ts) — the artist list is fetched per-row on expand.
+    function hydratingFetch(full: Campaign = campaign({ recipients: [stored] })) {
+      return vi.fn(async (url: string) => {
+        if (String(url).startsWith('/api/campaigns?id=')) {
+          return { ok: true, json: async () => ({ campaign: full }) };
+        }
+        return { ok: true, json: async () => ({ campaigns: [campaign()] }) };
+      });
+    }
+    const hydrateCallCount = (mock: ReturnType<typeof hydratingFetch>) =>
+      mock.mock.calls.filter(([u]) => String(u).startsWith('/api/campaigns?id=')).length;
+
+    it('fetches the expanded row\'s recipients, and not before it is expanded', async () => {
+      const fetchMock = hydratingFetch();
+      vi.stubGlobal('fetch', fetchMock);
+      const { result } = renderHistory();
+      await waitFor(() => expect(result.current.campaigns).toHaveLength(1));
+
+      expect(result.current.campaigns[0].recipients).toBeUndefined();
+      expect(hydrateCallCount(fetchMock)).toBe(0);
+
+      act(() => result.current.setExpandedCampaignId('1'));
+      await waitFor(() => expect(result.current.campaigns[0].recipients).toEqual([stored]));
+    });
+
+    it('does not refetch a row that has already been hydrated', async () => {
+      const fetchMock = hydratingFetch();
+      vi.stubGlobal('fetch', fetchMock);
+      const { result } = renderHistory();
+      await waitFor(() => expect(result.current.campaigns).toHaveLength(1));
+
+      act(() => result.current.setExpandedCampaignId('1'));
+      await waitFor(() => expect(hydrateCallCount(fetchMock)).toBe(1));
+
+      act(() => result.current.setExpandedCampaignId(null));
+      act(() => result.current.setExpandedCampaignId('1'));
+      await waitFor(() => expect(result.current.campaigns[0].recipients).toEqual([stored]));
+      expect(hydrateCallCount(fetchMock)).toBe(1);
+    });
+
+    it('leaves the row usable when hydration fails', async () => {
+      const fetchMock = vi.fn(async (url: string) => {
+        if (String(url).startsWith('/api/campaigns?id=')) return { ok: false, json: async () => ({}) };
+        return { ok: true, json: async () => ({ campaigns: [campaign()] }) };
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const { result } = renderHistory();
+      await waitFor(() => expect(result.current.campaigns).toHaveLength(1));
+
+      act(() => result.current.setExpandedCampaignId('1'));
+      // No throw, no recipients — the row falls back to its "Show artists sent to"
+      // backfill button, exactly as a campaign that never stored any would.
+      await waitFor(() => expect(result.current.campaigns[0].recipients).toBeUndefined());
+    });
+  });
+
   describe('resumeSend', () => {
+    it('hydrates before resuming, so newly-sent addresses append to the stored recipients instead of wiping them', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ campaigns: [] }) })));
+      const { result } = renderHistory();
+      await waitFor(() => expect(result.current.campaigns).toEqual([]));
+
+      const stored = {
+        email: 'a@example.com', artistName: 'Indie Act', managerName: 'Sam',
+        avatarUrl: '', genres: ['pop'], instagramHandle: '', spotifyFollowers: 10,
+      };
+      const pendingSend = { endpoint: '/api/send', payload: {} };
+      const fetchMock = vi.fn(async (url: string) => {
+        if (String(url).startsWith('/api/campaigns?id=')) {
+          return {
+            ok: true,
+            json: async () => ({ campaign: campaign({ emails: ['a@example.com'], recipients: [stored], pendingSend }) }),
+          };
+        }
+        if (url === '/api/send') {
+          return { ok: true, json: async () => ({ results: [{ to: 'b@example.com', success: true, messageId: '<m1>' }], total: 1, nextOffset: null }) };
+        }
+        return { ok: true, json: async () => ({}) };
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      // What the History list actually holds: a summary, with no `recipients`.
+      // Resuming from it must not drop the stored artist metadata.
+      await act(async () => {
+        await result.current.resumeSend(campaign({ emails: ['a@example.com'], pendingSend }));
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith('/api/campaigns?id=1');
+      expect(result.current.campaigns[0].recipients?.map(r => r.email)).toEqual(['a@example.com', 'b@example.com']);
+      expect(result.current.campaigns[0].recipients?.[0].artistName).toBe('Indie Act');
+    });
+
+
     it('does nothing when the campaign has no pending send', async () => {
       vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ campaigns: [] }) })));
       const { result } = renderHistory();

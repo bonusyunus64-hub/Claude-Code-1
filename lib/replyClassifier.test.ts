@@ -93,7 +93,7 @@ describe('classifyRepliesWithAI', () => {
     await classifyRepliesWithAI([{ key: '1', text: 'Hello there' }]);
 
     const params = mockCreate.mock.calls[0][0];
-    expect(params.model).toBe('claude-opus-5');
+    expect(params.model).toBe('claude-haiku-4-5');
     expect(params.messages[0].content).toContain('<reply id="0">');
     expect(params.messages[0].content).toContain('Hello there');
     // Structured output constrains the model to the fixed {id, label} schema —
@@ -101,6 +101,11 @@ describe('classifyRepliesWithAI', () => {
     expect(params.output_config.format.type).toBe('json_schema');
     expect(params.output_config.format.schema.properties.classifications.items.properties.label.enum)
       .toEqual(['interested', 'pass', 'unclassified']);
+    // Haiku rejects `effort` outright — sending it would fail every call and
+    // silently drop every batch to the keyword fallback, which is exactly the
+    // kind of failure this module is designed to make invisible. Pin it so a
+    // well-meaning re-add can't ship without also changing the model.
+    expect(params.output_config.effort).toBeUndefined();
   });
 
   it('falls back to nothing for a batch whose request throws (API-failure fallback)', async () => {

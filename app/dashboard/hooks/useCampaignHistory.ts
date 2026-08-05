@@ -41,9 +41,45 @@ const DRAIN_CHECK_INTERVAL_MS = 60_000;
 export function useCampaignHistory(config: CampaignHistoryConfig) {
   const { emailAccounts, customContacts, addFailedToBlacklist, refreshSendsToday, signOffImage, signOff, sendDelay } = config;
 
+  // These records are *summaries*: GET /api/campaigns omits `recipients` so the
+  // payload doesn't scale with total recipients ever mailed (see
+  // lib/campaigns.ts's CampaignSummary). A row's recipients are fetched on
+  // demand by hydrateCampaign below. Nothing here has to defend against the
+  // missing field when writing: the server merges an absent `recipients` as
+  // "unchanged" rather than "cleared" (mergePreservingDetail), so upsertCampaign
+  // stays safe to call with a summary.
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   useEffect(() => {
     fetch('/api/campaigns').then(r => r.json()).then(d => setCampaigns(d.campaigns || [])).catch(() => {});
+  }, []);
+
+  // Ids whose full record has already been fetched (or is in flight), so
+  // expanding the same row repeatedly doesn't refetch it. A ref rather than
+  // state: nothing renders off it, and it must not trigger a re-render of its
+  // own mid-fetch.
+  const hydratedIdsRef = useRef<Set<string>>(new Set());
+
+  /**
+   * Replaces a summary in `campaigns` with its full record, including
+   * `recipients`. Resolves to the full record (or null if it couldn't be
+   * fetched) so callers that need the detail immediately — resumeSend — can
+   * await it rather than racing the state update.
+   */
+  const hydrateCampaign = useCallback(async (id: string): Promise<Campaign | null> => {
+    try {
+      const res = await fetch(`/api/campaigns?id=${encodeURIComponent(id)}`);
+      if (!res.ok) return null;
+      const { campaign } = await res.json() as { campaign?: Campaign };
+      if (!campaign) return null;
+      hydratedIdsRef.current.add(id);
+      setCampaigns(prev => prev.map(c => (c.id === id ? { ...c, ...campaign } : c)));
+      return campaign;
+    } catch {
+      // Offline or the record vanished — the row simply keeps showing the
+      // "Show artists sent to" backfill button, exactly as it does for a
+      // campaign that never had recipient detail stored.
+      return null;
+    }
   }, []);
 
   const [historySearch, setHistorySearch] = useState('');
@@ -51,6 +87,17 @@ export function useCampaignHistory(config: CampaignHistoryConfig) {
   const [historyDateFrom, setHistoryDateFrom] = useState('');
   const [historyDateTo, setHistoryDateTo] = useState('');
   const [expandedCampaignId, setExpandedCampaignId] = useState<string | null>(null);
+
+  // Fetch the expanded row's recipients the moment it opens. Done in an effect
+  // rather than inside setExpandedCampaignId because HistorySection toggles it
+  // with a function updater (`p => p === c.id ? null : c.id`), and a state
+  // updater has to stay pure — React may invoke it more than once (Strict Mode)
+  // to check exactly that, which would fire duplicate fetches.
+  useEffect(() => {
+    if (expandedCampaignId && !hydratedIdsRef.current.has(expandedCampaignId)) {
+      void hydrateCampaign(expandedCampaignId);
+    }
+  }, [expandedCampaignId, hydrateCampaign]);
 
   /**
    * Creates or updates a single campaign record. Campaign history lives server-side
@@ -206,6 +253,9 @@ export function useCampaignHistory(config: CampaignHistoryConfig) {
         const contact = customContacts.find(cc => cc.managerEmail.toLowerCase() === r.email.toLowerCase());
         return contact ? { ...r, artistName: contact.artistName, managerName: contact.managerName } : r;
       });
+      // This row now holds the detail the summary omitted, so it counts as
+      // hydrated — a later expand must not refetch and overwrite it.
+      hydratedIdsRef.current.add(c.id);
       upsertCampaign({ ...c, recipients });
     } catch (err) {
       setBackfillError(`Could not load artist details: ${String(err)}`);
@@ -253,16 +303,24 @@ export function useCampaignHistory(config: CampaignHistoryConfig) {
     setResumeError('');
     setResumeProgress({ campaignId: c.id, sent: 0, total: 0 });
     try {
+      // The progress callback below appends to `recipients` and `messageIds`, so
+      // it needs the full record rather than the summary the list was loaded
+      // with — appending to a `recipients` that is merely *absent* would drop
+      // every already-recorded artist for this campaign. Falls back to the
+      // summary if the fetch fails, which is safe for the same reason a
+      // never-hydrated record is: `recipients` stays undefined, the callback
+      // leaves it undefined, and the server preserves what it already has.
+      const full = hydratedIdsRef.current.has(c.id) ? c : (await hydrateCampaign(c.id)) ?? c;
       const sendPayload = { ...pending.payload, signOffImage: signOffImage ?? undefined };
       const persistedPending = { endpoint: pending.endpoint, payload: payloadForPendingSend(pending.payload) };
       const outcome = await sendInBatches(pending.endpoint, sendPayload, (progress, resultsSoFar, nextOffset) => {
-        setResumeProgress({ campaignId: c.id, sent: progress.sent, total: progress.total });
+        setResumeProgress({ campaignId: full.id, sent: progress.sent, total: progress.total });
         const newlySent = resultsSoFar.filter(r => r.success).map(r => r.to);
-        const emails = Array.from(new Set([...c.emails, ...newlySent]));
-        const existingRecipientEmails = new Set((c.recipients ?? []).map(r => r.email.toLowerCase()));
-        const recipients = c.recipients
+        const emails = Array.from(new Set([...full.emails, ...newlySent]));
+        const existingRecipientEmails = new Set((full.recipients ?? []).map(r => r.email.toLowerCase()));
+        const recipients = full.recipients
           ? [
-              ...c.recipients,
+              ...full.recipients,
               ...newlySent
                 .filter(email => !existingRecipientEmails.has(email.toLowerCase()))
                 .map(email => ({ email, artistName: '', managerName: '', avatarUrl: '', genres: [], instagramHandle: '', spotifyFollowers: 0 })),
@@ -277,18 +335,18 @@ export function useCampaignHistory(config: CampaignHistoryConfig) {
         // recomputed from scratch. assignSubjectVariant is still a pure
         // function of the address alone, so a newly-sent recipient lands in
         // the exact same variant here as it would have in the original send.
-        const subjectVariants = c.subjectB
-          ? { ...(c.subjectVariants ?? {}), ...Object.fromEntries(newlySent.map(email => [email.toLowerCase(), assignSubjectVariant(email)])) }
-          : c.subjectVariants;
+        const subjectVariants = full.subjectB
+          ? { ...(full.subjectVariants ?? {}), ...Object.fromEntries(newlySent.map(email => [email.toLowerCase(), assignSubjectVariant(email)])) }
+          : full.subjectVariants;
         upsertCampaign({
-          ...c,
+          ...full,
           emails,
           recipients,
           subjectVariants,
-          messageIds: { ...(c.messageIds ?? {}), ...messageIdsFromResults(resultsSoFar) },
+          messageIds: { ...(full.messageIds ?? {}), ...messageIdsFromResults(resultsSoFar) },
           pendingSend: nextOffset != null ? persistedPending : undefined,
         });
-      }, c.emails);
+      }, full.emails);
       if (!outcome.ok) setResumeError(outcome.error);
       else if (outcome.results.some(r => r.success)) refreshSendsToday();
     } catch (err) {
@@ -341,7 +399,17 @@ export function useCampaignHistory(config: CampaignHistoryConfig) {
       if (!outcome.ok) { setFollowUpError(outcome.error); return; }
       const res = await fetch('/api/campaigns');
       const data = await res.json();
-      setCampaigns(data.campaigns ?? []);
+      // Summaries carry no `recipients`, so splice the refreshed fields over the
+      // rows we already hydrated instead of replacing state wholesale — an
+      // expanded row must not lose its artist list just because a follow-up
+      // finished, and the expand effect won't refetch it (its id hasn't changed).
+      setCampaigns(prev => {
+        const hydratedById = new Map(prev.filter(c => c.recipients).map(c => [c.id, c.recipients]));
+        return ((data.campaigns ?? []) as Campaign[]).map(summary => {
+          const recipients = hydratedById.get(summary.id);
+          return recipients ? { ...summary, recipients } : summary;
+        });
+      });
       if (outcome.results.some(r => r.success)) refreshSendsToday();
     } catch (err) {
       setFollowUpError(`Could not send follow-up: ${String(err)}`);

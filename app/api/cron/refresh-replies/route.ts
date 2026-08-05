@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isKvConfigured } from '@/lib/kv';
 import { isAuthorizedCronRequest } from '@/lib/cronAuth';
 import { refreshReplies } from '@/lib/refreshReplies';
+import { pruneOldCampaignDetail } from '@/lib/campaigns';
 
 // One findResponders call per sending account (see lib/refreshReplies.ts), each
 // of which can itself take up to ~10s (greeting/connection/socket timeouts) —
@@ -27,5 +28,20 @@ export async function GET(req: NextRequest) {
   if (!isKvConfigured()) return NextResponse.json({ ok: true, note: 'Storage not configured' });
 
   const summary = await refreshReplies();
-  return NextResponse.json(summary);
+
+  // Piggybacked on the same daily run rather than given a cron slot of its own:
+  // Vercel's Hobby plan allows only two cron jobs and vercel.json already uses
+  // both. It runs after the refresh, not before, so a campaign that just aged
+  // past the window still gets its final reply check first. Failure here is
+  // deliberately non-fatal — dropping stale detail is housekeeping, and losing a
+  // day of it must not turn a successful reply refresh into a 500.
+  let detailPruned = 0;
+  let pruneError: string | null = null;
+  try {
+    detailPruned = await pruneOldCampaignDetail(Date.now());
+  } catch (err) {
+    pruneError = err instanceof Error ? err.message : String(err);
+  }
+
+  return NextResponse.json({ ...summary, detailPruned, ...(pruneError ? { pruneError } : {}) });
 }

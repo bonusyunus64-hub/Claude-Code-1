@@ -98,6 +98,119 @@ describe('campaigns store', () => {
   });
 });
 
+const RECIPIENT = {
+  email: 'a@example.com', artistName: 'Artist', managerName: 'Manager',
+  avatarUrl: 'https://cdn.example/a.jpg', genres: ['pop'], instagramHandle: 'artist', spotifyFollowers: 100,
+};
+
+describe('summaries and detail hydration', () => {
+  beforeEach(() => { store.clear(); kvConfigured = true; });
+
+  it('omits recipients from the list payload but keeps everything the Overview tab reads', async () => {
+    const { saveCampaign, listCampaignSummaries } = await freshCampaignsModule();
+    await saveCampaign(sample('1', {
+      recipients: [RECIPIENT],
+      messageIds: { 'a@example.com': '<m1>' },
+      responded: ['a@example.com'],
+    }));
+
+    const [summary] = await listCampaignSummaries();
+    expect('recipients' in summary).toBe(false);
+    // messageIds stays: threadIdsFor reads it synchronously across all campaigns.
+    expect(summary.messageIds).toEqual({ 'a@example.com': '<m1>' });
+    expect(summary.emails).toEqual(['a@example.com']);
+    expect(summary.responded).toEqual(['a@example.com']);
+  });
+
+  it('getCampaign returns the full record, recipients included', async () => {
+    const { saveCampaign, getCampaign } = await freshCampaignsModule();
+    await saveCampaign(sample('1', { recipients: [RECIPIENT] }));
+    expect((await getCampaign('1'))?.recipients).toEqual([RECIPIENT]);
+  });
+
+  it('getCampaign returns null for an unknown id', async () => {
+    const { getCampaign } = await freshCampaignsModule();
+    expect(await getCampaign('nope')).toBeNull();
+  });
+});
+
+describe('saveCampaignPreservingDetail', () => {
+  beforeEach(() => { store.clear(); kvConfigured = true; });
+
+  // The whole point of the summary payload: the browser POSTs the entire record
+  // back after every send batch and every reply check. A client holding a
+  // summary has no `recipients` to send, and that must not wipe the stored copy.
+  it('keeps stored recipients when the incoming record omits them', async () => {
+    const { saveCampaign, saveCampaignPreservingDetail, getCampaign, toCampaignSummary } = await freshCampaignsModule();
+    await saveCampaign(sample('1', { recipients: [RECIPIENT] }));
+
+    const summary = toCampaignSummary(sample('1', { recipients: [RECIPIENT] }));
+    await saveCampaignPreservingDetail({ ...summary, responded: ['a@example.com'] } as CampaignRecord);
+
+    const stored = await getCampaign('1');
+    expect(stored?.recipients).toEqual([RECIPIENT]);
+    expect(stored?.responded).toEqual(['a@example.com']);
+  });
+
+  it('replaces stored recipients when the caller actually supplies them', async () => {
+    const { saveCampaign, saveCampaignPreservingDetail, getCampaign } = await freshCampaignsModule();
+    await saveCampaign(sample('1', { recipients: [RECIPIENT] }));
+    const replacement = { ...RECIPIENT, email: 'b@example.com', artistName: 'Other' };
+    await saveCampaignPreservingDetail(sample('1', { recipients: [RECIPIENT, replacement] }));
+    expect(await getCampaign('1').then(c => c?.recipients)).toEqual([RECIPIENT, replacement]);
+  });
+
+  it('saves a brand-new campaign that has no stored counterpart', async () => {
+    const { saveCampaignPreservingDetail, getCampaign } = await freshCampaignsModule();
+    await saveCampaignPreservingDetail(sample('new', { recipients: [RECIPIENT] }));
+    expect(await getCampaign('new').then(c => c?.recipients)).toEqual([RECIPIENT]);
+  });
+});
+
+describe('pruneOldCampaignDetail', () => {
+  beforeEach(() => { store.clear(); kvConfigured = true; });
+
+  const NOW = Date.parse('2026-08-05T00:00:00.000Z');
+  const daysAgo = (n: number) => new Date(NOW - n * 24 * 60 * 60 * 1000).toISOString();
+
+  it('drops recipients and messageIds past the retention window, keeping the record and its stats', async () => {
+    const { saveCampaign, getCampaign, pruneOldCampaignDetail } = await freshCampaignsModule();
+    await saveCampaign(sample('old', {
+      date: daysAgo(200), recipients: [RECIPIENT],
+      messageIds: { 'a@example.com': '<m1>' }, responded: ['a@example.com'],
+    }));
+
+    expect(await pruneOldCampaignDetail(NOW)).toBe(1);
+
+    const pruned = await getCampaign('old');
+    expect(pruned?.recipients).toBeUndefined();
+    expect(pruned?.messageIds).toBeUndefined();
+    // Everything the analytics read survives — pruning must not move any number.
+    expect(pruned?.emails).toEqual(['a@example.com']);
+    expect(pruned?.responded).toEqual(['a@example.com']);
+  });
+
+  it('leaves campaigns inside the window untouched', async () => {
+    const { saveCampaign, getCampaign, pruneOldCampaignDetail } = await freshCampaignsModule();
+    await saveCampaign(sample('recent', { date: daysAgo(30), recipients: [RECIPIENT] }));
+    expect(await pruneOldCampaignDetail(NOW)).toBe(0);
+    expect(await getCampaign('recent').then(c => c?.recipients)).toEqual([RECIPIENT]);
+  });
+
+  it('does not rewrite an old campaign that has already been pruned', async () => {
+    const { saveCampaign, pruneOldCampaignDetail } = await freshCampaignsModule();
+    await saveCampaign(sample('old', { date: daysAgo(200) }));
+    expect(await pruneOldCampaignDetail(NOW)).toBe(0);
+  });
+
+  it('leaves a record with an unparseable date alone rather than guessing its age', async () => {
+    const { saveCampaign, getCampaign, pruneOldCampaignDetail } = await freshCampaignsModule();
+    await saveCampaign(sample('broken', { date: 'not-a-date', recipients: [RECIPIENT] }));
+    expect(await pruneOldCampaignDetail(NOW)).toBe(0);
+    expect(await getCampaign('broken').then(c => c?.recipients)).toEqual([RECIPIENT]);
+  });
+});
+
 describe('mergeSendResultsIntoCampaign', () => {
   it('folds newly-sent addresses into a still-empty campaign (the send-window-queued case)', async () => {
     const { mergeSendResultsIntoCampaign } = await freshCampaignsModule();

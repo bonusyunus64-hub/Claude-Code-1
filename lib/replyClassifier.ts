@@ -39,7 +39,14 @@ export interface ClassifiableReply {
 export const BATCH_SIZE = 20;
 export const MAX_BATCHES = 5;
 
-const MODEL = 'claude-opus-5';
+// Haiku is the right tier for this job: a three-way label on a short, already-
+// truncated block of text. It is ~5x cheaper than Opus per token ($1/$5 vs
+// $5/$25 per million) and materially faster, which matters more here than the
+// price — this runs inside app/api/cron/refresh-replies, which shares a single
+// 60s Vercel function budget with the IMAP fetch. The structured-output schema
+// below is what actually guarantees the response shape, and it is enforced the
+// same way on every model, so the cheaper tier costs nothing in reliability.
+const MODEL = 'claude-haiku-4-5';
 
 // Prompt-injection note: reply bodies below are untrusted text written by
 // strangers who received a cold pitch, not by this app's operator. Defenses:
@@ -89,14 +96,15 @@ async function classifyBatch(batch: ClassifiableReply[]): Promise<Record<string,
       model: MODEL,
       max_tokens: 2048,
       output_config: {
-        // Low effort rather than disabled thinking. Both keep the call cheap and
-        // fast, which is what matters on a route with a serverless execution
-        // ceiling — but disabling thinking outright on Opus 5 can leak <thinking>
-        // tags into the visible response, and this code parses that response as
-        // JSON. A leaked tag would turn a classification into a parse failure and
-        // silently drop the whole batch to the keyword fallback. Low effort gets
-        // the same cost profile without that failure mode.
-        effort: 'low',
+        // No `effort` here, deliberately. It was set to 'low' while this ran on
+        // Opus 5, where the alternative (disabling thinking outright) can leak
+        // <thinking> tags into the visible response — and this code parses that
+        // response as JSON, so a leaked tag would fail the parse and silently
+        // drop the whole batch to the keyword fallback. Haiku 4.5 does not accept
+        // the effort parameter at all (it errors), and it needs no equivalent:
+        // it is already the cheap, fast tier this was reaching for. Re-adding
+        // `effort` here would break every call — if this model is ever changed
+        // back to an Opus- or Sonnet-tier one, re-add it at the same time.
         format: {
           type: 'json_schema',
           schema: {
