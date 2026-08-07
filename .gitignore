@@ -41,3 +41,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# roster source data — raw ROSTR exports and collection dumps hold real manager
+# names and email addresses. ROSTER_CONTEXT.md already told agents these were
+# ignored; until now they weren't, so nothing stopped one being committed.
+data/*.xlsx
+rostr-raw-collection.json
