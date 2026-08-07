@@ -21,6 +21,22 @@ Open [http://localhost:3000](http://localhost:3000). You'll land on a password p
 
 Without Upstash Redis configured (`KV_REST_API_URL` / `KV_REST_API_TOKEN`), the app still runs, but everything falls back to browser-only `localStorage`: no cross-device sync, no server-side campaign history, and the daily send cap isn't enforced. It's fine for poking around, but not for real sends.
 
+## Refreshing the artist roster
+
+The Song Demos channel pitches managers from `data/roster.json`, sourced from ROSTR. It goes stale — follower counts drift, artists change management — so it gets refreshed periodically.
+
+**The whole procedure lives in the header comment of [`scripts/collect-rostr.js`](scripts/collect-rostr.js).** Open that file and follow the numbered steps at the top; it needs no other setup and no AI agent. In short: copy the file, paste it into the browser console on a logged-in `rostr.cc` tab, wait, click Download, then:
+
+```bash
+node scripts/merge-roster.mjs ~/Downloads/rostr-raw-collection.json
+```
+
+**Always merge, never replace.** A refresh only re-resolves contacts for some artists, so writing new data straight over `roster.json` deletes every contact it didn't happen to find — that would have been 1,745 lost contacts on the August 2026 refresh, with the script reporting success. `merge-roster.mjs` unions instead, and prints `artists lost: 0 / emails lost: 0`. If either number isn't zero, don't commit.
+
+`scripts/import-roster-xlsx.mjs` does the same for manual XLSX exports (accepts several batch files at once), and `scripts/parse-roster.mjs` is the original single-spreadsheet parser.
+
+Before changing anything in this pipeline, read `scripts/ROSTER_CONTEXT.md` and `scripts/ROSTER_CONTEXT_CORRECTIONS.md` — between them they cover ROSTR's terms, the 2,000-record query cap, and several ways this has silently produced wrong data before.
+
 ## Tests
 
 ```bash

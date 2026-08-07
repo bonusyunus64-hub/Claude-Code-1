@@ -4,11 +4,15 @@
  *  HOW TO RUN A ROSTER REFRESH  (no AI agent needed — this is the whole job)
  * ===========================================================================
  *
- *  1. Open https://www.rostr.cc in Chrome and make sure you're logged in.
- *  2. Press F12, click the "Console" tab.
+ *  You are already in the right file. It is:
+ *     C:\Music Distribution Platform\scripts\collect-rostr.js
+ *
+ *  1. Select everything in this file and copy it:  Ctrl+A  then  Ctrl+C
+ *  2. Open https://www.rostr.cc in Chrome, logged in.
+ *  3. Press F12, click the "Console" tab, click into it, paste (Ctrl+V),
+ *     press Enter.
  *     (First time only: Chrome may make you type  allow pasting  and hit Enter
  *      before it will accept a paste. That's a Chrome safety prompt, harmless.)
- *  3. Open THIS file, select all, copy, paste into the console, press Enter.
  *  4. A panel appears top-right. Phase 1 takes ~2 minutes. Phase 2 takes a
  *     few hours. LEAVE THE TAB OPEN — other tabs and normal browsing are fine.
  *  5. Click "Download data" when it says Finished. (You can click it at ANY
