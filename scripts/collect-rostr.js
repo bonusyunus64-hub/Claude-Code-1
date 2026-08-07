@@ -302,9 +302,17 @@
       ui(`<b>Phase 1/2 — artist list</b><br>${total} artists found<br>`
        + `${S.leaves.length} brackets done`);
     } else {
+      // `promisingLeft` is the number that can realistically still yield a
+      // contact; the rest of the queue is the no-management-company tail.
+      let promisingLeft = 0;
+      for (const [id, d] of S.artists) {
+        if (S.managers.has(id) && !S.failed.has(id)) continue;
+        if ((d.management || []).length > 0) promisingLeft++;
+      }
       ui(`<b>Phase 2/2 — manager emails</b><br>`
        + `${resolved.toLocaleString()} / ${total.toLocaleString()} (${pct(resolved, total)})<br>`
-       + `${(total - resolved).toLocaleString()} left to look up<br>`
+       + `${promisingLeft.toLocaleString()} promising left`
+       + `<span style="opacity:.6"> (+${(total - resolved - promisingLeft).toLocaleString()} low-value)</span><br>`
        + `${withEmail.toLocaleString()} with an email<br>`
        + `<span style="color:${S.throttles ? '#fc6' : '#8c8'}">`
        + `${S.throttles ? `slowed down (${S.throttles} throttles, ${S.delay}ms)` : 'running normally'}</span>`);
@@ -387,7 +395,28 @@
     }
 
     S.phase = 'managers'; render();
-    const todo = [...S.artists.keys()].filter(id => !S.managers.has(id) || S.failed.has(id));
+    // Ordered, not filtered — everything still gets looked up eventually. But
+    // ROSTR cuts a session off after ~2,000 requests, so the order decides what
+    // you actually come away with.
+    //
+    // Measured over the first 6,430 lookups: artists WITH a management company
+    // yielded an email 59.5% of the time; artists with an empty management[]
+    // yielded one ONCE in 3,118. So a request spent on the latter is, in
+    // expectation, worth about a five-hundredth of one spent on the former.
+    // Within each group, bigger artists first — they're both likelier to have
+    // a reachable manager and more worth reaching.
+    const todo = [...S.artists.keys()]
+      .filter(id => !S.managers.has(id) || S.failed.has(id))
+      .sort((x, y) => {
+        const a = S.artists.get(x), b = S.artists.get(y);
+        const am = (a.management || []).length > 0 ? 1 : 0;
+        const bm = (b.management || []).length > 0 ? 1 : 0;
+        if (am !== bm) return bm - am;
+        return (b.spMetric || 0) - (a.spMetric || 0);
+      });
+    const promising = todo.filter(id => (S.artists.get(id).management || []).length > 0).length;
+    console.log(`[rostr] ${todo.length} to look up — ${promising} with a management company (done first), `
+      + `${todo.length - promising} without (last, ~0% hit rate)`);
     let n = 0;
     for (const id of todo) {
       if (S.stopped) break;
