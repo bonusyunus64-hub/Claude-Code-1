@@ -311,8 +311,11 @@
       }
       ui(`<b>Phase 2/2 — manager emails</b><br>`
        + `${resolved.toLocaleString()} / ${total.toLocaleString()} (${pct(resolved, total)})<br>`
-       + `${promisingLeft.toLocaleString()} promising left`
-       + `<span style="opacity:.6"> (+${(total - resolved - promisingLeft).toLocaleString()} low-value)</span><br>`
+       // "no mgmt on file" rather than "low value": the deprioritised group
+       // includes Black Sabbath and Frank Sinatra. It says ROSTR has no
+       // management company recorded — nothing about the artist's worth.
+       + `${promisingLeft.toLocaleString()} with mgmt listed`
+       + `<span style="opacity:.6"> (+${(total - resolved - promisingLeft).toLocaleString()} no mgmt on file)</span><br>`
        + `${withEmail.toLocaleString()} with an email<br>`
        + `<span style="color:${S.throttles ? '#fc6' : '#8c8'}">`
        + `${S.throttles ? `slowed down (${S.throttles} throttles, ${S.delay}ms)` : 'running normally'}</span>`);
@@ -416,7 +419,7 @@
       });
     const promising = todo.filter(id => (S.artists.get(id).management || []).length > 0).length;
     console.log(`[rostr] ${todo.length} to look up — ${promising} with a management company (done first), `
-      + `${todo.length - promising} without (last, ~0% hit rate)`);
+      + `${todo.length - promising} with no management company on file (last)`);
     let n = 0;
     for (const id of todo) {
       if (S.stopped) break;
