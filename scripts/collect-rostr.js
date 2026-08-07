@@ -15,6 +15,12 @@
  *      before it will accept a paste. That's a Chrome safety prompt, harmless.)
  *  4. A panel appears top-right. Phase 1 takes ~2 minutes. Phase 2 takes a
  *     few hours. LEAVE THE TAB OPEN — other tabs and normal browsing are fine.
+ *
+ *     IF YOU HAVE FILES FROM EARLIER RUNS: click "Load previous run(s)" and
+ *     select every rostr-raw-collection*.json in your Downloads folder. Those
+ *     artists get skipped instead of looked up again. Costs no requests and
+ *     saves hours. You only need this on a new browser/profile, or if the
+ *     browser cleared its storage — normally it remembers on its own.
  *  5. Click "Download data" when it says Finished. (You can click it at ANY
  *     time — it snapshots whatever has been collected so far and doesn't
  *     interrupt the run. Do this if you need to stop early.)
@@ -198,18 +204,56 @@
     panel.style.cssText = 'position:fixed;top:12px;right:12px;z-index:2147483647;background:#111;'
       + 'color:#eee;font:12px/1.6 ui-monospace,Menlo,Consolas,monospace;padding:12px 14px;'
       + 'border:1px solid #444;border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.55);min-width:265px';
+    const btn = 'width:100%;border-radius:5px;font:12px ui-monospace,monospace;cursor:pointer;display:block;text-align:center';
     panel.innerHTML = '<div id="__rs">starting…</div>'
-      + '<button id="__rd" style="margin-top:10px;width:100%;padding:8px;background:#28d17c;color:#000;'
-      + 'border:0;border-radius:5px;font:700 12px ui-monospace,monospace;cursor:pointer">Download data</button>'
-      + '<button id="__rx" style="margin-top:6px;width:100%;padding:6px;background:#2a2a2a;color:#ddd;'
-      + 'border:1px solid #555;border-radius:5px;font:12px ui-monospace,monospace;cursor:pointer">Stop</button>';
+      + `<button id="__rd" style="margin-top:10px;padding:8px;background:#28d17c;color:#000;border:0;font-weight:700;${btn}">Download data</button>`
+      + `<label id="__rl" style="margin-top:6px;padding:6px;background:#2a2a2a;color:#ddd;border:1px solid #555;${btn}">`
+      + 'Load previous run(s)<input id="__rf" type="file" accept=".json" multiple style="display:none"></label>'
+      + `<button id="__rx" style="margin-top:6px;padding:6px;background:#2a2a2a;color:#ddd;border:1px solid #555;${btn}">Stop</button>`;
     document.body.appendChild(panel);
     statusEl = panel.querySelector('#__rs');
     panel.querySelector('#__rd').onclick = download;
+    panel.querySelector('#__rf').onchange = e => seedFromFiles(e.target.files);
     panel.querySelector('#__rx').onclick = () => {
       S.stopped = true;
       ui('<b>Stopped by you.</b><br>Download still works.');
     };
+  }
+
+  // Seeds already-resolved lookups from previously downloaded collection files,
+  // so a fresh browser (empty IndexedDB) doesn't re-request artists an earlier
+  // session already answered. On 2026-08-07 that waste was 1,964 lookups —
+  // meaningful when the account starts getting throttled under 3,000.
+  //
+  // Costs zero ROSTR requests: it reads a local file the user already has.
+  // Safe to run mid-collection; the phase-2 loop re-checks each id as it goes.
+  async function seedFromFiles(files) {
+    if (!files || !files.length) return;
+    let added = 0, skipped = 0;
+    for (const file of files) {
+      let parsed;
+      try {
+        parsed = JSON.parse(await file.text());
+      } catch (_e) {
+        ui(`<b style="color:#f66">Couldn't read ${file.name}</b> — not valid JSON.`);
+        return;
+      }
+      if (!parsed || !Array.isArray(parsed.artists)) {
+        ui(`<b style="color:#f66">${file.name} isn't a collection file.</b>`);
+        return;
+      }
+      for (const a of parsed.artists) {
+        if (!a.rostrId || !a.managersResolved) continue;
+        if (S.managers.has(a.rostrId) && !S.failed.has(a.rostrId)) { skipped++; continue; }
+        S.managers.set(a.rostrId, Array.isArray(a.managers) ? a.managers : []);
+        S.failed.delete(a.rostrId);
+        added++;
+      }
+    }
+    await saveProgress();
+    console.log(`[rostr] seeded ${added} lookups from ${files.length} file(s), ${skipped} already known`);
+    ui(`<b style="color:#28d17c">Loaded ${added.toLocaleString()} previous lookups.</b><br>`
+     + `${skipped.toLocaleString()} were already known.<br>These will be skipped.`);
   }
 
   function download() {
@@ -260,6 +304,7 @@
     } else {
       ui(`<b>Phase 2/2 — manager emails</b><br>`
        + `${resolved.toLocaleString()} / ${total.toLocaleString()} (${pct(resolved, total)})<br>`
+       + `${(total - resolved).toLocaleString()} left to look up<br>`
        + `${withEmail.toLocaleString()} with an email<br>`
        + `<span style="color:${S.throttles ? '#fc6' : '#8c8'}">`
        + `${S.throttles ? `slowed down (${S.throttles} throttles, ${S.delay}ms)` : 'running normally'}</span>`);
@@ -346,6 +391,10 @@
     let n = 0;
     for (const id of todo) {
       if (S.stopped) break;
+      // Re-checked per iteration, not just when `todo` was built, so loading a
+      // previous run mid-collection takes effect immediately instead of only
+      // on the next restart.
+      if (S.managers.has(id) && !S.failed.has(id)) continue;
       // Contained per artist. Without this, one lookup exhausting its retries
       // throws all the way out of the loop and ends the entire run — losing
       // hours of remaining work over a single bad record.
