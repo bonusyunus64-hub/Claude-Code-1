@@ -29,15 +29,27 @@ export function idFromRostrUrl(url) {
   return match ? match[1] : null;
 }
 
-const nameKey = name => String(name || '').toLowerCase().trim();
+export const nameKey = name => String(name || '').toLowerCase().trim();
 
 /**
- * @param raw      parsed raw collection ({ collectedAt, artists })
- * @param existing parsed existing roster.json ({ artists, genres, generatedAt })
+ * The reusable core of the non-destructive merge: takes artist records that
+ * are ALREADY mapped to the roster.json artist shape (i.e. already run
+ * through mapArtist(), or — for scripts/import-roster-xlsx.mjs — parsed
+ * straight from an xlsx row in the same shape) and merges them against the
+ * artists already in roster.json.
+ *
+ * Pulled out of mergeRoster() below so there is exactly one implementation of
+ * the union/retain rules; mergeRoster() (raw collector JSON) and
+ * import-roster-xlsx.mjs (manual xlsx exports) both call this instead of
+ * each re-implementing the merge.
+ *
+ * @param newArtists      already-mapped artist records (caller has already
+ *                        deduped them against each other, e.g. by rostrId or
+ *                        by parsed ROSTR URL id)
+ * @param existingArtists artists already in roster.json
+ * @returns { merged, stats } — merged is NOT yet filtered to withEmails
  */
-export function mergeRoster(raw, existing) {
-  const existingArtists = Array.isArray(existing?.artists) ? existing.artists : [];
-
+export function mergeMappedArtists(newArtists, existingArtists) {
   // Two indexes because roster.json's URLs are unreliable: on the June 2026
   // roster only 1,621 of 2,983 artists had a URL at all, so id-matching alone
   // would fail to carry forward the other 1,362's emails. Name is the fallback.
@@ -49,20 +61,12 @@ export function mergeRoster(raw, existing) {
     byName.set(nameKey(a.name), a);
   }
 
-  const rawArtists = Array.isArray(raw?.artists) ? raw.artists : [];
-  const seen = new Set();
   const merged = [];
-  const stats = { collected: rawArtists.length, duplicates: 0, freshEmails: 0, carriedEmails: 0, unionedEmails: 0, brandNew: 0, retained: 0 };
+  const stats = { freshEmails: 0, carriedEmails: 0, unionedEmails: 0, brandNew: 0, retained: 0 };
   const matchedPrior = new Set();
 
-  for (const rawArtist of rawArtists) {
-    const id = rawArtist?.rostrId;
-    if (id) {
-      if (seen.has(id)) { stats.duplicates += 1; continue; }
-      seen.add(id);
-    }
-
-    const artist = mapArtist(rawArtist);
+  for (const artist of newArtists) {
+    const id = idFromRostrUrl(artist.rostrUrl);
     const prior = (id && byId.get(id)) || byName.get(nameKey(artist.name)) || null;
     if (!prior) stats.brandNew += 1;
     else matchedPrior.add(prior);
@@ -103,18 +107,47 @@ export function mergeRoster(raw, existing) {
     merged.push(artist);
   }
 
-  // An artist the previous roster could reach but this collection didn't find
-  // at all is kept as-is rather than dropped. A collection run can miss someone
-  // for reasons that say nothing about whether they're still pitchable — the
-  // 2026-08-07 run missed one artist (SALOME) who appears to have been renamed
-  // or delisted on ROSTR. Dropping a working contact because a scrape didn't
-  // see them is a worse failure than carrying a possibly-stale record.
+  // An artist the previous roster could reach but this import/collection
+  // didn't find at all is kept as-is rather than dropped. A run can miss
+  // someone for reasons that say nothing about whether they're still
+  // pitchable — the 2026-08-07 run missed one artist (SALOME) who appears to
+  // have been renamed or delisted on ROSTR. Dropping a working contact
+  // because a run didn't see them is a worse failure than carrying a
+  // possibly-stale record.
   for (const prior of existingArtists) {
     if (matchedPrior.has(prior)) continue;
     if (!Array.isArray(prior.managerEmails) || prior.managerEmails.length === 0) continue;
     merged.push(prior);
     stats.retained += 1;
   }
+
+  return { merged, stats };
+}
+
+/**
+ * @param raw      parsed raw collection ({ collectedAt, artists })
+ * @param existing parsed existing roster.json ({ artists, genres, generatedAt })
+ */
+export function mergeRoster(raw, existing) {
+  const existingArtists = Array.isArray(existing?.artists) ? existing.artists : [];
+
+  const rawArtists = Array.isArray(raw?.artists) ? raw.artists : [];
+  const seen = new Set();
+  const newArtists = [];
+  let duplicates = 0;
+
+  for (const rawArtist of rawArtists) {
+    const id = rawArtist?.rostrId;
+    if (id) {
+      if (seen.has(id)) { duplicates += 1; continue; }
+      seen.add(id);
+    }
+    newArtists.push(mapArtist(rawArtist));
+  }
+
+  const { merged, stats: mergeStats } = mergeMappedArtists(newArtists, existingArtists);
+
+  const stats = { collected: rawArtists.length, duplicates, ...mergeStats };
 
   // Same rule as parse-roster.mjs/build-roster.mjs: an artist with no manager
   // email can never be pitched, so it isn't worth carrying into roster.json.
