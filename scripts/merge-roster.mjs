@@ -31,6 +31,45 @@ export function idFromRostrUrl(url) {
 
 export const nameKey = name => String(name || '').toLowerCase().trim();
 
+/** Rewrites a roster.json profile URL to the canonical
+ *  `https://www.rostr.cc/profile/<id>` form.
+ *
+ *  New artists already arrive canonical — build-roster.mjs's buildRostrUrl()
+ *  constructs them from rostrId. Artists *retained* below never pass through
+ *  that function at all: they're copied out of the previous roster verbatim,
+ *  so whatever URL shape they were written with survives every merge. SALOME
+ *  carried `https://www.rostr.cc/salome` that way — a bare-slug form predating
+ *  the `/profile/` route, which renders ROSTR's 404 page (see
+ *  ROSTER_CONTEXT_CORRECTIONS.md #2, where the same class of dead link
+ *  affected 1,621 artists).
+ *
+ *  Handles the bare-slug case idFromRostrUrl deliberately doesn't: that regex
+ *  requires an `/artists|artist|profile/` segment, and loosening it would make
+ *  it match path segments that aren't ids at all. Here the single-segment
+ *  read is only applied to rostr.cc hosts, and anything else — a non-rostr
+ *  host, a multi-segment path, an unparseable string — is returned untouched
+ *  rather than guessed at. */
+export function canonicalRostrUrl(url) {
+  const id = idFromRostrUrl(url);
+  if (id) return `https://www.rostr.cc/profile/${id}`;
+
+  const raw = String(url || '').trim();
+  if (!raw) return raw;
+
+  try {
+    const parsed = new URL(raw);
+    const host = parsed.hostname.toLowerCase();
+    if (host !== 'rostr.cc' && !host.endsWith('.rostr.cc')) return raw;
+
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    if (segments.length !== 1) return raw;
+
+    return `https://www.rostr.cc/profile/${segments[0]}`;
+  } catch {
+    return raw;
+  }
+}
+
 /**
  * The reusable core of the non-destructive merge: takes artist records that
  * are ALREADY mapped to the roster.json artist shape (i.e. already run
@@ -117,7 +156,10 @@ export function mergeMappedArtists(newArtists, existingArtists) {
   for (const prior of existingArtists) {
     if (matchedPrior.has(prior)) continue;
     if (!Array.isArray(prior.managerEmails) || prior.managerEmails.length === 0) continue;
-    merged.push(prior);
+    // Canonicalise on the way through: a retained artist's URL is otherwise
+    // frozen in whatever shape it was first written, since nothing else in the
+    // pipeline ever touches it again.
+    merged.push({ ...prior, rostrUrl: canonicalRostrUrl(prior.rostrUrl) });
     stats.retained += 1;
   }
 

@@ -28162,6 +28162,39 @@
       "avatarUrl": "https://i.scdn.co/image/ab6761610000e5eb13cf75ab00b0e46ff05ef306"
     },
     {
+      "name": "Nate Smith",
+      "rostrUrl": "https://www.rostr.cc/profile/natesmith0",
+      "genres": [
+        "Jazz",
+        "R&B/Soul",
+        "Indie Jazz",
+        "Jazz Funk",
+        "Jazz Fusion",
+        "Nu Jazz",
+        "Soul Jazz"
+      ],
+      "type": "Person",
+      "gender": "MALE",
+      "spotifyFollowers": 207836,
+      "instagramFollowers": 407401,
+      "youtubeSubscribers": 87400,
+      "managementCompany": "Big Fish Booking Company",
+      "agencies": "Big Fish Booking Company, Anteprima Productions",
+      "labels": "",
+      "publishers": "",
+      "managerNames": [
+        "Dan Dymtrow",
+        "Kevin \"Chief\" Zaruk",
+        "Simon Tikhman",
+        "Chandler Rosen"
+      ],
+      "managerEmails": [
+        "simon.tikhman@thecoreentertainment.com"
+      ],
+      "instagramHandle": "natesmithdrums",
+      "avatarUrl": "https://i.scdn.co/image/ab6761610000e5eb3a24af7d3a0b4de458a5c3be"
+    },
+    {
       "name": "Tiger La Flor",
       "rostrUrl": "https://www.rostr.cc/profile/tigerlaflor",
       "genres": [],
@@ -69055,6 +69088,32 @@
       ],
       "instagramHandle": "drandallblythe",
       "avatarUrl": "https://i.scdn.co/image/ab6761610000e5eb7212f5c9b495683f5a12dd20"
+    },
+    {
+      "name": "Sasha",
+      "rostrUrl": "https://www.rostr.cc/profile/sasha",
+      "genres": [
+        "Dance / Edm",
+        "Progressive House",
+        "Trance"
+      ],
+      "type": "Person",
+      "gender": "MALE",
+      "spotifyFollowers": 332239,
+      "instagramFollowers": 272518,
+      "youtubeSubscribers": 53400,
+      "managementCompany": "",
+      "agencies": "Liaison Artists, Analog",
+      "labels": "",
+      "publishers": "",
+      "managerNames": [
+        "Peer Jalowietzki"
+      ],
+      "managerEmails": [
+        "peer.jalowietzki@kick-media.de"
+      ],
+      "instagramHandle": "djsashaofficial",
+      "avatarUrl": "https://i.scdn.co/image/ab6761610000e5eb5aa6da32346175edd658847e"
     },
     {
       "name": "Cousin Stizz",
@@ -182626,7 +182685,7 @@
     },
     {
       "name": "SALOME",
-      "rostrUrl": "https://www.rostr.cc/salome",
+      "rostrUrl": "https://www.rostr.cc/profile/salome",
       "genres": [
         "Dance / Edm",
         "Melodic House",
