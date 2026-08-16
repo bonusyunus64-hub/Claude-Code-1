@@ -47,3 +47,10 @@ next-env.d.ts
 # ignored; until now they weren't, so nothing stopped one being committed.
 data/*.xlsx
 rostr-raw-collection.json
+
+# Saved Claude Code session transcripts. Kept locally for picking a session back
+# up (see notes/*-handoff.md for the readable summary of each), but not committed:
+# they're ~800KB of verbose JSONL apiece and quote roster contact data in tool
+# output. The handoff markdown alongside them IS committed — that's the artifact
+# worth having in history.
+notes/*.jsonl

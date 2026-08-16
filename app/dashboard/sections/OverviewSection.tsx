@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
-import type { AnalyticsStats, Campaign, RateBreakdown, SubjectTestSummary } from '../types';
-import { campaignsNeedingFollowUp, type ReplyToChase } from '../utils';
+import { useEffect, useMemo, useState } from 'react';
+import type { AnalyticsStats, Campaign, RateBreakdown, RosterTierStats, SubjectTestSummary, TierBreakdown } from '../types';
+import { campaignsNeedingFollowUp, computeRosterTierStats, MIN_TIER_SAMPLE_SIZE, type ReplyToChase } from '../utils';
+import { REACHABILITY_MAX_COMPANY_SIZE } from '../hooks/useDemosFlow';
 import { CopyableName } from '../components/CopyableName';
 import { CopyChip } from '../components/CopyChip';
 
@@ -77,6 +78,122 @@ function RateBreakdownList({ title, rows, emptyHint }: { title: string; rows: Ra
             </div>
           </div>
         ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Fetches the current roster tier (Spotify followers + management-company
+ * size) for every address any Song Demos campaign has ever mailed, then
+ * hands campaigns + tiers to computeRosterTierStats (app/dashboard/utils.ts)
+ * to get the "reply rate by who was contacted" breakdown. Self-contained
+ * fetch, same reasoning as RosterFreshnessNote above: read-only, no
+ * dirty-tracking story, doesn't need to live in page.tsx's state — and
+ * roster.json is server-only, so this is the one place that join can happen
+ * at all from client code. Re-fetches whenever the campaign list changes (a
+ * new send, a reply/bounce check) since both the address set and the
+ * responded/bounced data behind the rates can change.
+ */
+function useRosterTierStats(campaigns: Campaign[]): RosterTierStats | null {
+  const [stats, setStats] = useState<RosterTierStats | null>(null);
+
+  // Only Song Demos addresses can ever resolve to a roster tier (see
+  // computeRosterTierStats' own restriction) — no point asking the server to
+  // look up Radio/Playlist addresses that would only ever come back "Unknown."
+  const demosEmails = useMemo(() => {
+    const seen = new Set<string>();
+    campaigns.filter(c => c.type === 'demos').forEach(c => c.emails.forEach(e => {
+      const key = e.trim().toLowerCase();
+      if (key) seen.add(key);
+    }));
+    return Array.from(seen).sort();
+  }, [campaigns]);
+
+  useEffect(() => {
+    let cancelled = false;
+    // No Song Demos addresses at all -> skip the round trip entirely, but
+    // still resolve through the same .then chain as the real fetch (rather
+    // than calling setStats synchronously in the effect body) so this stays
+    // "subscribe to an external result," not a direct render-triggering write.
+    const tiers = demosEmails.length
+      ? fetch('/api/roster-tiers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ emails: demosEmails }),
+        }).then(r => r.json()).then(d => d.tiers ?? {})
+      : Promise.resolve({});
+    tiers
+      .then(t => { if (!cancelled) setStats(computeRosterTierStats(campaigns, t)); })
+      .catch(() => { if (!cancelled) setStats(null); });
+    return () => { cancelled = true; };
+    // demosEmails is derived from campaigns, so depending on both would just
+    // double-trigger this effect on every campaign change — demosEmails alone
+    // (plus campaigns, needed by computeRosterTierStats itself) is enough.
+  }, [demosEmails, campaigns]);
+
+  return stats;
+}
+
+/**
+ * Horizontal bar list for a TierBreakdown row set (reply rate by contacted
+ * follower band / management-company size) — same visual language as
+ * RateBreakdownList above, extended for two things that list doesn't need:
+ * every row shows its delivered/responded denominator AND its bounce rate
+ * (TierBreakdown carries both), and any row below MIN_TIER_SAMPLE_SIZE
+ * delivered emails is visibly dimmed with an inline explanation rather than
+ * presented at face value. That dimming is the single most important part of
+ * this component — a "100% reply rate" from one send is noise, and this is
+ * the one place in the dashboard that noise could plausibly steer a real
+ * strategic decision about who to pitch.
+ */
+function TierBreakdownList({ title, rows, caveat, emptyHint }: { title: string; rows: TierBreakdown[]; caveat: string; emptyHint: string }) {
+  if (!rows.length) {
+    return (
+      <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-1">
+        <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">{title}</h3>
+        <p className="text-xs text-zinc-600">{emptyHint}</p>
+      </section>
+    );
+  }
+  // Scaling the bars off a low-sample row's rate would make one noisy 1/1
+  // "100%" tower over every trustworthy row next to it — scale off the
+  // confident rows only (falling back to every row if every single one is
+  // thin, so the bars still render something rather than all going to zero).
+  const confidentRates = rows.filter(r => !r.lowSample).map(r => r.replyRate);
+  const maxRate = Math.max(...(confidentRates.length ? confidentRates : rows.map(r => r.replyRate)), 0.01);
+  return (
+    <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-3">
+      <div>
+        <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">{title}</h3>
+        <p className="text-xs text-zinc-600 mt-0.5">{caveat}</p>
+      </div>
+      <div className="space-y-2">
+        {rows.map(row => {
+          const delivered = row.sent - row.bounced;
+          return (
+            <div key={row.label} className={`space-y-1 ${row.lowSample ? 'opacity-50' : ''}`}>
+              <div className="flex items-center justify-between text-xs gap-3">
+                <span className="text-zinc-300 truncate">{row.label}</span>
+                <span className="text-zinc-500 font-mono shrink-0 text-right">
+                  {pct(row.replyRate)} · {row.responded}/{delivered} replied
+                  {row.bounced > 0 && <> · {row.bounced} bounced</>}
+                </span>
+              </div>
+              <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${row.lowSample ? 'bg-zinc-600' : 'bg-violet-600'}`}
+                  style={{ width: `${Math.max(2, (row.replyRate / maxRate) * 100)}%` }}
+                />
+              </div>
+              {row.lowSample && (
+                <p className="text-[11px] text-zinc-600">
+                  Only {delivered} delivered — below the {MIN_TIER_SAMPLE_SIZE}-send minimum to trust this rate. Shown for reference only.
+                </p>
+              )}
+            </div>
+          );
+        })}
       </div>
     </section>
   );
@@ -332,6 +449,7 @@ export function OverviewSection({
   markReplyHandled: (key: string) => void;
   unmarkReplyHandled: (key: string) => void;
 }) {
+  const rosterTierStats = useRosterTierStats(campaigns);
   return (
     <div className="space-y-5 pb-6">
       <div>
@@ -453,6 +571,19 @@ export function OverviewSection({
             title="Reply rate by artist size (Song Demos)"
             rows={analyticsStats.byFollowerTier}
             emptyHint="No follower data yet — recorded per recipient the same way genre data is."
+          />
+
+          <TierBreakdownList
+            title="Reply rate by artist size contacted (Song Demos)"
+            rows={rosterTierStats?.byFollowerBand ?? []}
+            caveat={`Spotify follower count as the roster reads today, not as it was when each campaign was actually sent — the roster drifts between refreshes. Rows under ${MIN_TIER_SAMPLE_SIZE} delivered emails are dimmed.`}
+            emptyHint="No data yet — send a Song Demos campaign, or wait a moment for roster tiers to load."
+          />
+          <TierBreakdownList
+            title="Reply rate by manager's company size (Song Demos)"
+            rows={rosterTierStats?.byCompanySize ?? []}
+            caveat={`"Small company" = ${REACHABILITY_MAX_COMPANY_SIZE} or fewer artists on the whole roster, same threshold as the "Independent contacts only" filter. Company size as the roster reads today, not as it was at send time. Rows under ${MIN_TIER_SAMPLE_SIZE} delivered emails are dimmed.`}
+            emptyHint="No data yet — send a Song Demos campaign, or wait a moment for roster tiers to load."
           />
 
           {analyticsStats.lastCampaignDate && (

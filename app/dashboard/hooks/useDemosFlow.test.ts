@@ -6,7 +6,7 @@ vi.mock('@/lib/remoteSync', () => ({
   syncStorage: { setItem: vi.fn(), removeItem: vi.fn() },
 }));
 
-import { useDemosFlow, DemosFlowConfig } from './useDemosFlow';
+import { useDemosFlow, DemosFlowConfig, REACHABILITY_MAX_COMPANY_SIZE } from './useDemosFlow';
 import { assignSubjectVariant } from '@/lib/recipients';
 import type { Artist, Campaign, CustomContact } from '../types';
 
@@ -484,6 +484,171 @@ describe('useDemosFlow', () => {
 
       act(() => result.current.deleteDemosPreset(preset.id));
       expect(result.current.demosPresets).toEqual([]);
+    });
+
+    it('round-trips reachableOnly and matchAllGenres through save/load', () => {
+      const { result } = renderDemos();
+      act(() => { result.current.setReachableOnly(p => !p); result.current.setMatchAllGenres(p => !p); });
+      act(() => result.current.setNewDemosPresetName('Reachable Preset'));
+      act(() => result.current.saveDemosPreset());
+
+      const preset = result.current.demosPresets[0];
+      expect(preset.reachableOnly).toBe(true);
+      expect(preset.matchAllGenres).toBe(true);
+
+      act(() => { result.current.setReachableOnly(() => false); result.current.setMatchAllGenres(() => false); });
+      act(() => result.current.loadDemosPreset(preset));
+      expect(result.current.reachableOnly).toBe(true);
+      expect(result.current.matchAllGenres).toBe(true);
+    });
+
+    it('loads reachableOnly/matchAllGenres as off for a preset saved before those fields existed', () => {
+      const { result } = renderDemos();
+      act(() => { result.current.setReachableOnly(() => true); result.current.setMatchAllGenres(() => true); });
+      act(() => result.current.loadDemosPreset({
+        id: '1', name: 'Old Preset', genres: ['Pop'], minAudience: 0, maxAudience: 0,
+        gender: '', artistType: '', minInstagram: 0, maxInstagram: 0, matchMode: 'any',
+        // reachableOnly/matchAllGenres intentionally omitted, mirroring a preset
+        // persisted before this feature existed.
+      }));
+      expect(result.current.reachableOnly).toBe(false);
+      expect(result.current.matchAllGenres).toBe(false);
+    });
+  });
+
+  describe('reachability and match-all-genres filters', () => {
+    it('sends maxCompanySize/freemailOnly/matchAllGenres off by default in the preview request', async () => {
+      const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<{ ok?: boolean; json: () => Promise<unknown> }>>()
+        .mockImplementation(async (url: string) => {
+          if (url === '/api/genres') return { ok: true, json: async () => ({ genres: [], topGenres: [] }) };
+          return { json: async () => ({ artists: [artist()] }) };
+        });
+      vi.stubGlobal('fetch', fetchMock);
+      const { result } = renderDemos();
+      act(() => result.current.setSelectedGenres(['Pop']));
+      await act(async () => { await result.current.handlePreview(); });
+
+      const previewCall = fetchMock.mock.calls.find(([url]) => url === '/api/preview');
+      const body = JSON.parse((previewCall![1] as RequestInit).body as string);
+      expect(body.maxCompanySize).toBe(0);
+      expect(body.freemailOnly).toBe(false);
+      expect(body.matchAllGenres).toBe(false);
+    });
+
+    it('maps the reachableOnly toggle to maxCompanySize/freemailOnly in both the preview and send payloads', async () => {
+      const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<{ ok?: boolean; json: () => Promise<unknown> }>>()
+        .mockImplementation(async (url: string) => {
+          if (url === '/api/genres') return { ok: true, json: async () => ({ genres: [], topGenres: [] }) };
+          return { json: async () => ({ artists: [artist()] }) };
+        });
+      vi.stubGlobal('fetch', fetchMock);
+      const { result } = renderDemos();
+      act(() => { result.current.setSelectedGenres(['Pop']); result.current.setReachableOnly(p => !p); });
+      await act(async () => { await result.current.handlePreview(); });
+
+      const previewCall = fetchMock.mock.calls.find(([url]) => url === '/api/preview');
+      const previewBody = JSON.parse((previewCall![1] as RequestInit).body as string);
+      expect(previewBody.maxCompanySize).toBe(REACHABILITY_MAX_COMPANY_SIZE);
+      expect(previewBody.freemailOnly).toBe(true);
+
+      const sendFetch = vi.fn<(url: string, init?: RequestInit) => Promise<{ ok: boolean; json: () => Promise<unknown> }>>()
+        .mockImplementation(async () => ({ ok: true, json: async () => ({ results: [{ to: 'sam@example.com', success: true }], total: 1, nextOffset: null }) }));
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+      const sendBody = JSON.parse((sendFetch.mock.calls[0][1] as RequestInit).body as string);
+      expect(sendBody.maxCompanySize).toBe(REACHABILITY_MAX_COMPANY_SIZE);
+      expect(sendBody.freemailOnly).toBe(true);
+    });
+
+    it('canSend requires a completed preview when matchAllGenres is on, even with no genres selected', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const { result } = renderDemos();
+      act(() => result.current.setMatchAllGenres(p => !p));
+      expect(result.current.canSend).toBe(false);
+
+      await act(async () => { await result.current.handlePreview(); });
+      expect(result.current.canSend).toBe(true);
+    });
+  });
+
+  describe('handleSend — unfiltered-audience guard (matchAllGenres)', () => {
+    it('confirms with the actual recipient count before sending when no genre is selected, and aborts without calling fetch if declined', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const { result } = renderDemos();
+      act(() => result.current.setMatchAllGenres(p => !p));
+      await act(async () => { await result.current.handlePreview(); });
+
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      const sendFetch = vi.fn();
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('1 recipient'));
+      expect(sendFetch).not.toHaveBeenCalled();
+      confirmSpy.mockRestore();
+    });
+
+    it('proceeds with the send once the user confirms', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const { result } = renderDemos();
+      act(() => result.current.setMatchAllGenres(p => !p));
+      await act(async () => { await result.current.handlePreview(); });
+
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      const sendFetch = vi.fn(async () => ({ ok: true, json: async () => ({ results: [{ to: 'sam@example.com', success: true }], total: 1, nextOffset: null }) }));
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      expect(sendFetch).toHaveBeenCalled();
+      confirmSpy.mockRestore();
+    });
+
+    it('never confirms when genres are selected, even if matchAllGenres happens to be on', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const { result } = renderDemos();
+      act(() => { result.current.setSelectedGenres(['Pop']); result.current.setMatchAllGenres(p => !p); });
+      await act(async () => { await result.current.handlePreview(); });
+
+      const confirmSpy = vi.spyOn(window, 'confirm');
+      const sendFetch = vi.fn(async () => ({ ok: true, json: async () => ({ results: [{ to: 'sam@example.com', success: true }], total: 1, nextOffset: null }) }));
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      expect(confirmSpy).not.toHaveBeenCalled();
+      expect(sendFetch).toHaveBeenCalled();
+      confirmSpy.mockRestore();
+    });
+  });
+
+  describe('audienceEstimate', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it('stays null until a genre is selected or matchAllGenres is turned on', () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ genres: [], topGenres: [] }) })));
+      const { result } = renderDemos();
+      expect(result.current.audienceEstimate).toBeNull();
+    });
+
+    it('debounces a background /api/preview call and reports deduped inbox count once a genre is selected', async () => {
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url === '/api/genres') return { ok: true, json: async () => ({ genres: [], topGenres: [] }) };
+        return {
+          json: async () => ({
+            artists: [
+              artist({ name: 'One', managerEmails: ['a@x.com', 'b@x.com'] }),
+              artist({ name: 'Two', managerEmails: ['A@X.com'] }), // same inbox, different casing
+            ],
+          }),
+        };
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const { result } = renderDemos();
+
+      act(() => result.current.setSelectedGenres(['Pop']));
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+
+      expect(result.current.audienceEstimate).toEqual({ artists: 2, inboxes: 2 });
     });
   });
 

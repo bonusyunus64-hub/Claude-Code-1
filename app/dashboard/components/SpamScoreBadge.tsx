@@ -22,10 +22,14 @@ export function SpamScoreBadge({ template }: { template: string }) {
     ? 'bg-amber-600/20 text-amber-400 border-amber-600/30'
     : 'bg-green-600/20 text-green-400 border-green-600/30';
 
+  // computeSpamScore no longer returns a 0-100 number — see the header comment
+  // in lib/spamScore.ts for why a made-up precise-looking score was dropped in
+  // favor of a plain list of specific, actionable issues. The badge now just
+  // reports how many there are; the dropdown is where the detail lives.
   if (result.issues.length === 0) {
     return (
       <span className={`text-xs px-2 py-0.5 rounded-full border whitespace-nowrap ${styles}`}>
-        Spam score: {result.score} (low risk)
+        No copy issues found
       </span>
     );
   }
@@ -36,13 +40,16 @@ export function SpamScoreBadge({ template }: { template: string }) {
         onClick={() => setOpen(p => !p)}
         className={`text-xs px-2 py-0.5 rounded-full border flex items-center gap-1 whitespace-nowrap ${styles}`}
       >
-        Spam score: {result.score} ({result.risk} risk) <span className={`transition-transform inline-block ${open ? 'rotate-180' : ''}`}>▾</span>
+        {result.issues.length} copy issue{result.issues.length !== 1 ? 's' : ''} ({result.risk} risk) <span className={`transition-transform inline-block ${open ? 'rotate-180' : ''}`}>▾</span>
       </button>
       {open && (
         <div className="absolute top-full left-0 mt-1 z-20 bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl p-2 min-w-[260px] max-w-[320px]">
           <p className="text-xs text-zinc-400 font-semibold mb-1">Possible deliverability issues:</p>
           {result.issues.map(issue => (
-            <p key={issue} className="text-xs text-zinc-300 py-0.5">• {issue}</p>
+            <p key={issue.message} className="text-xs text-zinc-300 py-0.5 flex items-start gap-1.5">
+              <span className={`mt-0.5 ${issue.severity === 'high' ? 'text-red-400' : 'text-amber-400'}`}>●</span>
+              <span>{issue.message}</span>
+            </p>
           ))}
         </div>
       )}

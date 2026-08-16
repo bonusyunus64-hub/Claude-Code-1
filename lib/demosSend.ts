@@ -33,6 +33,22 @@ export interface DemosSendPayload {
   minInstagram?: number;
   maxInstagram?: number;
   matchMode?: 'any' | 'all';
+  /** Reachability filters — see lib/roster.ts's getArtistsByGenres for the
+   *  full doc on both, including why they OR together rather than AND. */
+  maxCompanySize?: number;
+  freemailOnly?: boolean;
+  /**
+   * Required (not just non-empty `genres`) before an empty genre selection is
+   * allowed to reach the roster at all. Without this, `genres: []` behaves
+   * exactly as it always has — zero roster artists — even though
+   * getArtistsByGenres itself would now treat an empty array as "no genre
+   * constraint." That's deliberate: this is the server-side half of the
+   * guard against an accidental unfiltered send (the client-side half is
+   * useDemosFlow.ts's confirm() before calling this at all) — a stale or
+   * pre-this-feature client payload that sends `genres: []` with no
+   * customContacts still gets today's 400, not a 7,230-recipient send.
+   */
+  matchAllGenres?: boolean;
   accountId?: string;
   sendDelay?: number;
   blacklist?: string[];
@@ -82,13 +98,21 @@ function buildEmailsForArtist(
 export async function sendDemos(payload: DemosSendPayload) {
   const {
     trackTitle, driveLink, genres, emailTemplate, subjectTemplate, subjectTemplateB, senderName,
-    signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode, accountId,
+    signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode,
+    maxCompanySize, freemailOnly, matchAllGenres, accountId,
     sendDelay, blacklist, excludeEmails, customContacts, threadIds, offset, limit,
   } = payload;
 
   const subjectTpl = subjectTemplate?.trim() || `Music Submission: {{trackTitle}} for {{artistName}}`;
 
-  if (!trackTitle || !driveLink || !emailTemplate || (!genres?.length && !customContacts?.length)) {
+  // A roster query happens when genres are actually selected, or the caller has
+  // explicitly confirmed it wants the unfiltered "every genre" query (see
+  // matchAllGenres's doc comment above) — genres: [] alone is NOT enough,
+  // exactly so this 400 still fires for the same "nothing to send to" case it
+  // always has when a caller (old or new) sends neither.
+  const wantsRosterArtists = !!genres?.length || matchAllGenres === true;
+
+  if (!trackTitle || !driveLink || !emailTemplate || (!wantsRosterArtists && !customContacts?.length)) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
 
@@ -104,8 +128,12 @@ export async function sendDemos(payload: DemosSendPayload) {
     );
   }
 
-  const artists = genres?.length
-    ? getArtistsByGenres(genres, minAudience ?? 0, maxAudience ?? 0, gender ?? '', artistType ?? '', minInstagram ?? 0, maxInstagram ?? 0, matchMode ?? 'any')
+  const artists = wantsRosterArtists
+    ? getArtistsByGenres({
+        genres: genres ?? [], minFollowers: minAudience ?? 0, maxFollowers: maxAudience ?? 0,
+        gender: gender ?? '', artistType: artistType ?? '', minInstagram: minInstagram ?? 0, maxInstagram: maxInstagram ?? 0,
+        matchMode: matchMode ?? 'any', maxCompanySize: maxCompanySize ?? 0, freemailOnly: !!freemailOnly,
+      })
     : [];
 
   const artistMessages = artists.flatMap(a =>

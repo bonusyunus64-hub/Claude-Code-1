@@ -556,7 +556,16 @@ export function AccountSection(props: AccountSectionProps) {
       <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
         <div>
           <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-1">Deliverability Check</h2>
-          <p className="text-xs text-zinc-500">Checks SPF, DKIM, MX, and DMARC DNS records for your sending domain.</p>
+          {/* This DNS check — not the spam-phrase badge on the template editor — is what
+              actually decides whether a receiving server delivers, folders, or bounces
+              a message. The badge up there can only catch bad copy; it can't see whether
+              this domain is even set up to be trusted, so this paragraph says so plainly
+              rather than leaving the two looking like equally-important checks. */}
+          <p className="text-xs text-zinc-500">
+            Checks SPF, DKIM, MX, and DMARC DNS records for your sending domain — this is what actually
+            determines whether Gmail, Yahoo, and other providers deliver your mail to the inbox at all,
+            which matters far more than anything a copy check can catch.
+          </p>
         </div>
         {selectedAccount ? (
           <div className="space-y-4">
@@ -571,41 +580,77 @@ export function AccountSection(props: AccountSectionProps) {
               {deliverabilityLoading ? 'Checking...' : 'Run Check'}
             </button>
             {deliverabilityResult && (
-              <div className="space-y-2">
-                {[
-                  {
-                    label: 'SPF',
-                    pass: deliverabilityResult.spf,
-                    detail: deliverabilityResult.spf ? deliverabilityResult.spfRecord : 'No SPF record found',
-                  },
-                  {
-                    label: 'DKIM',
-                    pass: deliverabilityResult.dkim,
-                    detail: deliverabilityResult.dkim ? `Selector: ${deliverabilityResult.dkimSelector}` : 'No DKIM record found',
-                  },
-                  {
-                    label: 'MX',
-                    pass: deliverabilityResult.mx,
-                    detail: deliverabilityResult.mx ? deliverabilityResult.mxRecords.join(', ') : 'No MX records found',
-                  },
-                  {
-                    label: 'DMARC',
-                    pass: deliverabilityResult.dmarc,
-                    detail: deliverabilityResult.dmarc
-                      ? `Policy: ${deliverabilityResult.dmarcPolicy || 'unspecified'}${deliverabilityResult.dmarcPolicy === 'none' ? ' (monitoring only — Gmail/Yahoo bulk-sender rules want at least this)' : ''}`
-                      : 'No DMARC record found — Gmail and Yahoo require one for bulk senders',
-                  },
-                ].map(item => (
-                  <div key={item.label} className={`flex items-start gap-3 px-4 py-3 rounded-lg border ${item.pass ? 'border-green-700/50 bg-green-900/10' : 'border-red-700/50 bg-red-900/10'}`}>
-                    <span className={`text-lg leading-none mt-0.5 ${item.pass ? 'text-green-400' : 'text-red-400'}`}>
-                      {item.pass ? '✓' : '✗'}
-                    </span>
-                    <div className="min-w-0">
-                      <p className={`text-sm font-semibold ${item.pass ? 'text-green-400' : 'text-red-400'}`}>{item.label}</p>
-                      <p className="text-xs text-zinc-400 mt-0.5 break-all">{item.detail}</p>
-                    </div>
+              <div className="space-y-3">
+                {/* DMARC gets its own card, pulled out of the SPF/DKIM/MX list below and
+                    given a heavier border and an explicit plain-English consequence
+                    rather than just a red row. Gmail and Yahoo's bulk-sender rules
+                    (since 2024) require at least a "p=none" DMARC policy, so an
+                    unconfigured DMARC record is the single most consequential thing
+                    this check can find — treating it as one grey row among four made
+                    it easy to miss exactly the failure most likely to send every pitch
+                    straight to spam. */}
+                <div className={`flex items-start gap-3 px-4 py-3 rounded-lg border-2 ${
+                  deliverabilityResult.dmarc ? 'border-green-700/50 bg-green-900/10' : 'border-red-600 bg-red-900/20'
+                }`}>
+                  <span className={`text-xl leading-none mt-0.5 ${deliverabilityResult.dmarc ? 'text-green-400' : 'text-red-400'}`}>
+                    {deliverabilityResult.dmarc ? '✓' : '⚠'}
+                  </span>
+                  <div className="min-w-0">
+                    <p className={`text-sm font-bold ${deliverabilityResult.dmarc ? 'text-green-400' : 'text-red-400'}`}>
+                      DMARC {deliverabilityResult.dmarc ? '— configured' : '— not configured'}
+                    </p>
+                    <p className="text-xs text-zinc-300 mt-1">
+                      {deliverabilityResult.dmarc
+                        ? `Policy: ${deliverabilityResult.dmarcPolicy || 'unspecified'}.${deliverabilityResult.dmarcPolicy === 'none' ? ' Monitoring-only, but that already satisfies Gmail/Yahoo’s bulk-sender minimum.' : ''}`
+                        : 'No DMARC record found for this domain. Gmail and Yahoo may reject this mail outright or send it straight to spam — bulk senders are required to publish at least a "p=none" policy.'}
+                    </p>
+                    {deliverabilityResult.dmarc && deliverabilityResult.dmarcRecord && (
+                      <p className="text-xs text-zinc-500 mt-1 break-all">{deliverabilityResult.dmarcRecord}</p>
+                    )}
                   </div>
-                ))}
+                </div>
+
+                <div className="space-y-2">
+                  {[
+                    {
+                      label: 'SPF',
+                      pass: deliverabilityResult.spf,
+                      detail: deliverabilityResult.spf
+                        ? deliverabilityResult.spfRecord
+                        : 'No SPF record found — receiving servers have no list of which mail servers are allowed to send as this domain, which counts against every message.',
+                    },
+                    {
+                      label: 'DKIM',
+                      pass: deliverabilityResult.dkim,
+                      // This check only probes 10 common selector names (see
+                      // DKIM_SELECTORS in app/api/deliverability/route.ts), so it can
+                      // only ever prove DKIM is present, never that it's absent — a
+                      // domain signing under an uncommon selector looks identical to
+                      // one with no DKIM at all. The wording below reflects that:
+                      // it's a "didn't find it" result, not an "it's broken" verdict.
+                      detail: deliverabilityResult.dkim
+                        ? `Selector: ${deliverabilityResult.dkimSelector}`
+                        : 'Not found under any of the 10 common selector names this check tries. That doesn’t necessarily mean DKIM is misconfigured — a correctly signing domain using a less common selector would show this same result.',
+                    },
+                    {
+                      label: 'MX',
+                      pass: deliverabilityResult.mx,
+                      detail: deliverabilityResult.mx
+                        ? deliverabilityResult.mxRecords.join(', ')
+                        : 'No MX records found — this domain cannot receive mail, so replies (and bounces) would have nowhere to go.',
+                    },
+                  ].map(item => (
+                    <div key={item.label} className={`flex items-start gap-3 px-4 py-3 rounded-lg border ${item.pass ? 'border-green-700/50 bg-green-900/10' : 'border-red-700/50 bg-red-900/10'}`}>
+                      <span className={`text-lg leading-none mt-0.5 ${item.pass ? 'text-green-400' : 'text-red-400'}`}>
+                        {item.pass ? '✓' : '✗'}
+                      </span>
+                      <div className="min-w-0">
+                        <p className={`text-sm font-semibold ${item.pass ? 'text-green-400' : 'text-red-400'}`}>{item.label}</p>
+                        <p className="text-xs text-zinc-400 mt-0.5 break-all">{item.detail}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>

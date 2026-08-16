@@ -1,37 +1,44 @@
 import type { NewAccountForm } from './types';
 
+// Deliberately doesn't reference {{managementCompany}}: this same template renders
+// both roster artists (managementCompany populated from lib/roster.ts) and hand-added/
+// CSV-imported custom contacts (lib/demosSend.ts's customMessages sets it to '' since
+// there's no roster data for those). renderTemplate does a dumb string substitution
+// with no conditionals, so a blank var would leave a grammatically broken sentence
+// ("...at ." or similar) for every manually-added contact — a supported, common path
+// per the README, not an edge case worth breaking the default copy over.
 export const DEFAULT_DEMOS_TEMPLATE = `Hi {{managerName}},
 
-My name is {{senderName}}, and I'm reaching out to submit a track for your consideration for {{artistName}}.
+I'm {{senderName}}. I've got a track for {{artistName}} that I think {{pronoun}} might like — "{{trackTitle}}". It's a finished, mixed and mastered record, not a rough sketch.
 
-I've attached the track "{{trackTitle}}" — you can listen here:
 {{driveLink}}
 
-I believe this would be a strong fit for {{artistName}}'s sound and audience. I'd love to discuss any potential collaboration or placement.
+If it's not the right moment, or not the right sound, a quick "not for us" is genuinely fine — I'd rather know than have it sit unopened. Otherwise, a listen when you get a chance would be great.`;
 
-Please let me know if you need anything further.`;
-
+// Reads as a reply, not a reintroduction: lib/demosSend.ts sets inReplyTo/References
+// from the original send's Message-ID (see threadIds in DemosSendPayload) whenever a
+// follow-up is queued, so this lands in the same thread the recipient already saw.
 export const DEFAULT_FOLLOWUP_TEMPLATE = `Hi {{managerName}},
 
-I hope you're doing well. I wanted to follow up on my recent submission for {{artistName}}.
+Just bumping this in case it slipped past — did you get a chance to listen to "{{trackTitle}}" for {{artistName}}? No worries at all if the timing isn't right, or if it's not the direction {{pronoun}}'s looking for at the moment.
 
-I sent over "{{trackTitle}}" and would love to hear any feedback when you have a moment. Here's the link again:
 {{driveLink}}
 
-Thank you for your time, and I look forward to connecting.`;
+If it's easier, a quick yes, no, or "not right now" is genuinely all I need — I just didn't want it to fall through the cracks in your inbox.`;
 
 export const DEFAULT_RADIO_TEMPLATE = `Hi,
 
-My name is {{senderName}}, and I'm submitting a track for consideration for airplay on {{stationName}}.
+I'm {{senderName}}, reaching out about a track called "{{trackTitle}}" that I think could suit {{stationName}}'s playlist. It's a finished, radio-ready mix, not a rough demo, and I'd rather send the actual audio than describe it.
 
-I've attached the track "{{trackTitle}}" — you can listen here:
 {{driveLink}}
 
-I believe this would be a great fit for your station and listeners. Please let me know if you'd like any additional information.`;
+If a producer or music director there has a few minutes, I'd love to know whether it's a fit — and if it's not the right sound for the station, a quick no is completely fine too.`;
 
-export const DEFAULT_DEMOS_SUBJECT = `Music Submission: {{trackTitle}} for {{artistName}}`;
-export const DEFAULT_FOLLOWUP_SUBJECT = `Following Up: {{trackTitle}} for {{artistName}}`;
-export const DEFAULT_RADIO_SUBJECT = `Music Submission: {{trackTitle}} for {{stationName}}`;
+export const DEFAULT_DEMOS_SUBJECT = `{{trackTitle}} for {{artistName}}`;
+// "Re: " + the demos subject's own shape, matching how a real mail client would thread
+// a reply — see DEFAULT_FOLLOWUP_TEMPLATE's comment on why this reads as a reply.
+export const DEFAULT_FOLLOWUP_SUBJECT = `Re: {{trackTitle}} for {{artistName}}`;
+export const DEFAULT_RADIO_SUBJECT = `{{trackTitle}} for {{stationName}}`;
 
 export const DEFAULT_SIGN_OFF = `Best regards,
 {{senderName}}`;

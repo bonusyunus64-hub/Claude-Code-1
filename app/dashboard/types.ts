@@ -180,6 +180,15 @@ export interface DemosFilterPreset {
   minInstagram: number;
   maxInstagram: number;
   matchMode: 'any' | 'all';
+  /** The "Independent contacts only" reachability toggle — see
+   *  app/dashboard/hooks/useDemosFlow.ts's REACHABILITY_MAX_COMPANY_SIZE for
+   *  what it maps to underneath. Optional/missing on presets saved before
+   *  this existed, which loadDemosPreset treats as off (its prior behavior). */
+  reachableOnly?: boolean;
+  /** The "search every genre" opt-in — see lib/roster.ts's getArtistsByGenres
+   *  for why an empty `genres` selection needs an explicit flag rather than
+   *  defaulting to "everyone." Optional/missing on older presets, treated as off. */
+  matchAllGenres?: boolean;
 }
 
 export interface RadioFilterPreset {
@@ -210,6 +219,37 @@ export interface RateBreakdown {
   sent: number;
   responded: number;
   replyRate: number;
+}
+
+/**
+ * Same shape as RateBreakdown, extended with its own bounce dimension and a
+ * small-sample flag. Used only by the "reply rate by who was contacted"
+ * breakdown (app/dashboard/utils.ts's computeRosterTierStats) — the one place
+ * bounce rate needs to be its own reported number rather than just excluded
+ * from `sent` the way byGenre/byFollowerTier above already do (see that
+ * function's header comment for why: this breakdown is meant to answer "sent,
+ * reply rate, AND bounce rate," all three, per bucket).
+ */
+export interface TierBreakdown extends RateBreakdown {
+  /** How many of `sent` bounced. `replyRate` still divides by sent minus this
+   *  (i.e. delivered), matching the app-wide replyRate/bounceRate convention. */
+  bounced: number;
+  /** Divides by `sent` (every attempt), not delivered — same convention as
+   *  the top-level bounceRate in AnalyticsStats. */
+  bounceRate: number;
+  /** True when there are too few delivered emails in this bucket for
+   *  `replyRate` to mean anything (see app/dashboard/utils.ts's
+   *  MIN_TIER_SAMPLE_SIZE) — OverviewSection uses this to visibly
+   *  de-emphasise the row instead of presenting a misleading headline number. */
+  lowSample: boolean;
+}
+
+/** Output of computeRosterTierStats: the "who was contacted" segmentation,
+ *  bucketed two ways — see that function's header comment in
+ *  app/dashboard/utils.ts for the full reasoning behind both axes. */
+export interface RosterTierStats {
+  byFollowerBand: TierBreakdown[];
+  byCompanySize: TierBreakdown[];
 }
 
 /** One Song Demos campaign's subject-line A/B result, for the Overview tab.

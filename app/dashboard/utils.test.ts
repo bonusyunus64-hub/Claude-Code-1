@@ -3,9 +3,10 @@ import {
   csvEscape, parseContactsCsv, shuffle, countUniqueRecipients, countSendableRecipients, sendInBatches,
   findDuplicateRecipients, messageIdsFromResults, permanentlyFailedEmails, computeAnalyticsStats,
   payloadForPendingSend, subjectTestWinner, countedResponders, deliveredCount, campaignsNeedingFollowUp,
-  buildLastContactedMap, findCooldownRecipients, collectInterestedReplies,
+  buildLastContactedMap, findCooldownRecipients, collectInterestedReplies, computeRosterTierStats, MIN_TIER_SAMPLE_SIZE,
 } from './utils';
 import type { Campaign, CampaignRecipient, SendResultEntry } from './types';
+import type { EmailTierInfo } from '@/lib/roster';
 
 describe('shuffle', () => {
   it('preserves every element (no drops or duplicates)', () => {
@@ -876,6 +877,118 @@ describe('computeAnalyticsStats', () => {
       // the raw sentB=27/respondedB=6 that ignoring bounces/auto-replies would produce.
       expect(test.winner).toBe(subjectTestWinner(25, 10, 26, 5));
     });
+  });
+});
+
+describe('computeRosterTierStats', () => {
+  function campaign(overrides: Partial<Campaign> = {}): Campaign {
+    return { id: '1', trackTitle: 'Track', date: new Date().toISOString(), type: 'demos', emails: [], ...overrides };
+  }
+  function tier(overrides: Partial<EmailTierInfo> = {}): EmailTierInfo {
+    return { maxSpotifyFollowers: 100_000, companySize: 1, artistCount: 1, ...overrides };
+  }
+  // Five inert addresses (delivered, unreplied) — just enough to fill a bucket
+  // up to MIN_TIER_SAMPLE_SIZE for tests that don't care about the reply/bounce
+  // numbers themselves, only about which bucket/lowSample flag they land in.
+  const FIVE_EMAILS = ['p1@x.com', 'p2@x.com', 'p3@x.com', 'p4@x.com', 'p5@x.com'];
+
+  it('buckets Song Demos sends by follower band', () => {
+    const stats = computeRosterTierStats(
+      [campaign({ emails: ['small@x.com', 'big@x.com'], responded: ['small@x.com'] })],
+      { 'small@x.com': tier({ maxSpotifyFollowers: 100_000 }), 'big@x.com': tier({ maxSpotifyFollowers: 6_000_000 }) },
+    );
+    expect(stats.byFollowerBand).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Under 250K', sent: 1, responded: 1, bounced: 0 }),
+      expect.objectContaining({ label: '5M+', sent: 1, responded: 0, bounced: 0 }),
+    ]));
+  });
+
+  it('divides replyRate by delivered (sent minus bounced), and bounceRate by every send attempted — same split as the top-level replyRate/bounceRate', () => {
+    const emails = [...FIVE_EMAILS, 'bounced@x.com'];
+    const stats = computeRosterTierStats(
+      [campaign({ emails, responded: ['p1@x.com'], bounced: ['bounced@x.com'] })],
+      Object.fromEntries(emails.map(e => [e, tier({ maxSpotifyFollowers: 100_000 })])),
+    );
+    const row = stats.byFollowerBand.find(r => r.label === 'Under 250K')!;
+    expect(row.sent).toBe(6);
+    expect(row.bounced).toBe(1);
+    expect(row.responded).toBe(1);
+    expect(row.replyRate).toBe(1 / 5); // delivered = 6 sent - 1 bounced
+    expect(row.bounceRate).toBe(1 / 6);
+  });
+
+  it('buckets by management-company size using REACHABILITY_MAX_COMPANY_SIZE as the small/larger split', () => {
+    const stats = computeRosterTierStats(
+      [campaign({ emails: [...FIVE_EMAILS, 'q1@x.com'] })],
+      {
+        ...Object.fromEntries(FIVE_EMAILS.map(e => [e, tier({ companySize: 2 })])), // small: <= REACHABILITY_MAX_COMPANY_SIZE (2)
+        'q1@x.com': tier({ companySize: 3 }), // larger: > 2
+      },
+    );
+    const small = stats.byCompanySize.find(r => r.label.startsWith('Small'))!;
+    const larger = stats.byCompanySize.find(r => r.label.startsWith('Larger'))!;
+    expect(small.sent).toBe(5);
+    expect(larger.sent).toBe(1);
+  });
+
+  it('treats companySize 0 (no managementCompany listed on any represented artist) as Unknown, distinct from a genuinely small company', () => {
+    const stats = computeRosterTierStats(
+      [campaign({ emails: ['nocompany@x.com'] })],
+      { 'nocompany@x.com': tier({ companySize: 0 }) },
+    );
+    expect(stats.byCompanySize).toEqual([expect.objectContaining({ label: 'Unknown (not in roster)', sent: 1 })]);
+  });
+
+  it('files an address with no roster entry at all under Unknown — never dropped, never counted as a zero-follower band', () => {
+    const stats = computeRosterTierStats(
+      [campaign({ emails: ['unknown@x.com'] })],
+      { 'unknown@x.com': null },
+    );
+    expect(stats.byFollowerBand).toEqual([expect.objectContaining({ label: 'Unknown (not in roster)', sent: 1 })]);
+  });
+
+  it('treats an address missing from tierByEmail entirely the same as an explicit roster miss (null), not as zero', () => {
+    const stats = computeRosterTierStats([campaign({ emails: ['not-fetched@x.com'] })], {});
+    expect(stats.byFollowerBand).toEqual([expect.objectContaining({ label: 'Unknown (not in roster)', sent: 1 })]);
+  });
+
+  it('ignores Radio/Playlist campaigns — roster tiers only ever cover Song Demos addresses', () => {
+    const stats = computeRosterTierStats(
+      [campaign({ type: 'radio', emails: ['radio@x.com'] })],
+      { 'radio@x.com': tier() },
+    );
+    expect(stats.byFollowerBand).toEqual([]);
+    expect(stats.byCompanySize).toEqual([]);
+  });
+
+  it('flags a bucket lowSample once delivered emails fall under MIN_TIER_SAMPLE_SIZE, and not at or above it', () => {
+    const belowThreshold = FIVE_EMAILS.slice(0, MIN_TIER_SAMPLE_SIZE - 1);
+    const below = computeRosterTierStats(
+      [campaign({ emails: belowThreshold })],
+      Object.fromEntries(belowThreshold.map(e => [e, tier({ maxSpotifyFollowers: 100_000 })])),
+    );
+    expect(below.byFollowerBand[0].lowSample).toBe(true);
+
+    const atThreshold = FIVE_EMAILS; // length === MIN_TIER_SAMPLE_SIZE
+    const at = computeRosterTierStats(
+      [campaign({ emails: atThreshold })],
+      Object.fromEntries(atThreshold.map(e => [e, tier({ maxSpotifyFollowers: 100_000 })])),
+    );
+    expect(at.byFollowerBand[0].lowSample).toBe(false);
+  });
+
+  it('excludes buckets nobody was actually sent to', () => {
+    const stats = computeRosterTierStats([campaign({ emails: [] })], {});
+    expect(stats.byFollowerBand).toEqual([]);
+    expect(stats.byCompanySize).toEqual([]);
+  });
+
+  it("dedupes a repeated address (any casing) within one campaign's emails list", () => {
+    const stats = computeRosterTierStats(
+      [campaign({ emails: ['dup@x.com', 'dup@x.com', 'DUP@x.com'] })],
+      { 'dup@x.com': tier({ maxSpotifyFollowers: 100_000 }) },
+    );
+    expect(stats.byFollowerBand.find(r => r.label === 'Under 250K')!.sent).toBe(1);
   });
 });
 

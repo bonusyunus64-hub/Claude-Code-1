@@ -1,4 +1,20 @@
-import type { SendResultEntry, BatchProgress, Campaign, RateBreakdown, AnalyticsStats, SubjectTestSummary } from './types';
+import type { SendResultEntry, BatchProgress, Campaign, RateBreakdown, AnalyticsStats, SubjectTestSummary, TierBreakdown, RosterTierStats } from './types';
+// Type-only: lib/roster.ts reads roster.json with `fs` and can't run client-side,
+// but a `type` import is erased at compile time (same reasoning as the
+// nonRespondedRecipients comment below), so this never actually pulls the
+// server-only module into the client bundle.
+import type { EmailTierInfo } from '@/lib/roster';
+// REACHABILITY_MAX_COMPANY_SIZE is the reachability filter's own "small
+// company" threshold — reused here (see companySizeLabel below) rather than
+// hardcoded a second time, so the "small company" bucket in the roster-tier
+// breakdown can never silently drift out of sync with what "Independent
+// contacts only" itself means by "small." Note: useDemosFlow.ts imports
+// several helpers back from this file, so this is a deliberate circular
+// import; it's safe here because every use of the constant below happens
+// inside a function body (companySizeLabel/companySizeLabels), never at
+// module-top-level, so it's never read before useDemosFlow.ts has finished
+// initializing it.
+import { REACHABILITY_MAX_COMPANY_SIZE } from './hooks/useDemosFlow';
 export { renderTemplate as renderTemplateClient, pronounFor as pronounForClient } from '@/lib/emailTemplate';
 // nonRespondedRecipients only pulls in lib/emailTemplate.ts at runtime (its other
 // imports — CampaignRecord from lib/campaigns, OutboundMessage from lib/mailSend —
@@ -675,5 +691,166 @@ export function computeAnalyticsStats(campaigns: Campaign[]): AnalyticsStats {
     lastCampaignDate: campaigns.length ? campaigns.slice().sort((a, b) => b.date.localeCompare(a.date))[0].date : null,
     totalResponded, totalBounced, totalDelivered, totalAutoReplies, replyRate, bounceRate, classificationCounts,
     byType, byGenre, byFollowerTier, subjectTests,
+  };
+}
+
+/**
+ * Spotify follower bands for computeRosterTierStats below — deliberately
+ * different from FOLLOWER_TIERS above. FOLLOWER_TIERS buckets *pitched*
+ * artists across the roster's full historical range (Under 10K up to 1M+),
+ * which fits per-recipient data recorded at send time for any artist ever on
+ * the roster. This breakdown instead buckets the *current* roster's shape
+ * when joined by manager email (see lib/roster.ts's getEmailTiers): as of the
+ * 2026-08 roster the floor is 50,000 followers, the median is ~594,000, and
+ * the 90th percentile is ~7.4M — every artist on the whole roster clears
+ * FOLLOWER_TIERS' "Under 10K" and "10K–100K" bands, so reusing those bands
+ * here would dump 100% of known addresses into one "1M+"-style catch-all and
+ * say nothing. These four bands instead split roughly around the roster's
+ * floor, its median, and its long top-heavy tail.
+ */
+const CONTACTED_FOLLOWER_BANDS: [string, (n: number) => boolean][] = [
+  ['Under 250K', n => n < 250_000],
+  ['250K–1M', n => n >= 250_000 && n < 1_000_000],
+  ['1M–5M', n => n >= 1_000_000 && n < 5_000_000],
+  ['5M+', n => n >= 5_000_000],
+];
+
+function followerBandLabel(tier: EmailTierInfo): string {
+  // CONTACTED_FOLLOWER_BANDS' tests cover the full number line (n < 250_000
+  // up through n >= 5_000_000), so this always finds a match — the fallback
+  // only guards a future edit that narrows the bands and leaves a gap.
+  return CONTACTED_FOLLOWER_BANDS.find(([, test]) => test(tier.maxSpotifyFollowers))?.[0]
+    ?? CONTACTED_FOLLOWER_BANDS[CONTACTED_FOLLOWER_BANDS.length - 1][0];
+}
+
+/** Both computed lazily inside a function body (never at module top-level) so
+ *  REACHABILITY_MAX_COMPANY_SIZE is never read before useDemosFlow.ts has
+ *  finished initializing it — see the circular-import note on that import above. */
+function companySizeLabels(): [small: string, larger: string] {
+  return [`Small company (≤${REACHABILITY_MAX_COMPANY_SIZE} artists)`, `Larger company (${REACHABILITY_MAX_COMPANY_SIZE + 1}+ artists)`];
+}
+
+/** null = "no managementCompany was listed for any artist this address
+ *  represents" (EmailTierInfo.companySize's 0 sentinel) — genuinely unknown,
+ *  not the same as "known to be small." Callers fold that into the same
+ *  Unknown bucket a roster-miss address lands in. */
+function companySizeLabel(companySize: number): string | null {
+  if (companySize <= 0) return null;
+  const [small, larger] = companySizeLabels();
+  return companySize <= REACHABILITY_MAX_COMPANY_SIZE ? small : larger;
+}
+
+/** Below this many delivered emails, a bucket's reply rate is noise — one
+ *  reply out of one or two sends reads as a "100%" that would actively
+ *  mislead a strategic call. Rows this thin get `lowSample: true` instead of
+ *  being dropped outright, so OverviewSection can visibly de-emphasise them
+ *  while still showing the (tiny) denominator, rather than hiding data with
+ *  no explanation. Stated directly in the UI (see OverviewSection.tsx) so the
+ *  threshold is a visible number, not a hidden judgment call. */
+export const MIN_TIER_SAMPLE_SIZE = 5;
+
+const UNKNOWN_TIER_LABEL = 'Unknown (not in roster)';
+
+/**
+ * Shared aggregation behind both axes of computeRosterTierStats: walks every
+ * Song Demos campaign's `emails`, looks each one up in `tierByEmail`, and
+ * tallies sent/responded/bounced per band. `labelOf` returning null (no tier,
+ * or a tier with nothing to bucket on — see companySizeLabel) files the
+ * address under UNKNOWN_TIER_LABEL rather than dropping it, which is exactly
+ * the "never silently drop, never count as zero" requirement this whole
+ * feature exists to satisfy for hand-added custom contacts and roster misses.
+ */
+function buildTierRows(
+  campaigns: Campaign[],
+  tierByEmail: Record<string, EmailTierInfo | null>,
+  labelOf: (tier: EmailTierInfo) => string | null,
+  orderedLabels: string[],
+): TierBreakdown[] {
+  const allLabels = [...orderedLabels, UNKNOWN_TIER_LABEL];
+  const totals = new Map<string, { sent: number; responded: number; bounced: number }>(
+    allLabels.map(label => [label, { sent: 0, responded: 0, bounced: 0 }])
+  );
+
+  // Roster tiers only ever cover Song Demos' artist managers — a Radio or
+  // Playlist campaign's addresses can never resolve to one, so restricting to
+  // demos campaigns keeps every address that reaches the loop below from
+  // landing in Unknown for a reason that has nothing to do with sample size
+  // (mirrors byGenre/byFollowerTier's same restriction above, for the same
+  // reason).
+  campaigns.filter(c => c.type === 'demos').forEach(c => {
+    const respondedSet = new Set(countedResponders(c).map(e => e.toLowerCase()));
+    const bouncedSet = new Set((c.bounced ?? []).map(e => e.toLowerCase()));
+    // A manager address covering several artists can appear once in `emails`
+    // (the server dedupes before sending — see countUniqueRecipients above),
+    // but guard duplicates anyway rather than trust that invariant here too.
+    const seen = new Set<string>();
+    c.emails.forEach(rawEmail => {
+      const email = rawEmail.trim().toLowerCase();
+      if (!email || seen.has(email)) return;
+      seen.add(email);
+      // Missing from tierByEmail entirely (caller fetched tiers for a
+      // different address set) is treated exactly like an explicit roster
+      // miss (null) — both mean "we don't know," never "assume zero."
+      const tier = tierByEmail[email] ?? null;
+      const label = (tier && labelOf(tier)) || UNKNOWN_TIER_LABEL;
+      const entry = totals.get(label) ?? totals.get(UNKNOWN_TIER_LABEL)!;
+      entry.sent++;
+      // Mirrors deliveredCount/countedResponders' bounce-first precedence
+      // elsewhere in this file: a bounced address never actually received
+      // anything, so it can't also count as a responder even if a stale
+      // record somehow lists both.
+      if (bouncedSet.has(email)) entry.bounced++;
+      else if (respondedSet.has(email)) entry.responded++;
+    });
+  });
+
+  return allLabels
+    .map(label => ({ label, ...totals.get(label)! }))
+    .filter(row => row.sent > 0)
+    .map(row => {
+      const delivered = row.sent - row.bounced;
+      return {
+        label: row.label, sent: row.sent, bounced: row.bounced, responded: row.responded,
+        // replyRate divides by delivered (sent minus bounced); bounceRate
+        // divides by every attempt — the same split as the top-level
+        // replyRate/bounceRate in computeAnalyticsStats, for the same reason.
+        replyRate: replyRateOf(delivered, row.responded),
+        bounceRate: row.sent > 0 ? row.bounced / row.sent : 0,
+        lowSample: delivered < MIN_TIER_SAMPLE_SIZE,
+      };
+    });
+}
+
+/**
+ * "Reply rate by who was contacted" — reply rate, bounce rate, and send
+ * volume bucketed by the Spotify follower size and management-company size
+ * of the artist(s) each manager address represents. This is the one
+ * segmentation the rest of this file's breakdowns don't cover: byGenre/
+ * byFollowerTier answer "what did we pitch," this answers "who did we
+ * actually reach" — the question behind the open strategic hypothesis that
+ * reply rate collapses as artist/company size goes up (see the roster's own
+ * shape: data/roster.json has zero artists under 50K followers, a median of
+ * ~594K, and its top management companies are majors like Red Light/Roc
+ * Nation/Crush/ATC).
+ *
+ * Joined against the CURRENT roster snapshot rather than recorded at send
+ * time — see lib/roster.ts's getEmailTiers for the full reasoning. Short
+ * version: analysis-time joining is what makes this work retroactively
+ * across every campaign ever sent (not just ones sent after this existed),
+ * at the cost of the tier reflecting the roster as it reads today rather than
+ * as it read at send time. Say so in the UI wherever these numbers are shown
+ * (see OverviewSection.tsx) — it's a real, if usually small, source of drift.
+ *
+ * `tierByEmail` is supplied by the caller rather than looked up inside this
+ * function: roster.json is server-only (lib/roster.ts reads it with `fs`) and
+ * this file is client code, so OverviewSection fetches it from
+ * /api/roster-tiers and passes the result in here. That keeps this function
+ * itself synchronous and pure — no fetch inside a "compute" function,
+ * exactly like computeAnalyticsStats above.
+ */
+export function computeRosterTierStats(campaigns: Campaign[], tierByEmail: Record<string, EmailTierInfo | null>): RosterTierStats {
+  return {
+    byFollowerBand: buildTierRows(campaigns, tierByEmail, followerBandLabel, CONTACTED_FOLLOWER_BANDS.map(([label]) => label)),
+    byCompanySize: buildTierRows(campaigns, tierByEmail, tier => companySizeLabel(tier.companySize), companySizeLabels()),
   };
 }

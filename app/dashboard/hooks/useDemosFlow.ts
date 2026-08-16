@@ -12,6 +12,27 @@ import {
 
 export type SortOrder = 'followers-desc' | 'followers-asc' | 'alpha-asc' | 'alpha-desc' | 'random';
 
+/**
+ * The management-company-size threshold behind the "Independent contacts
+ * only" reachability toggle (see AudienceFiltersPanel.tsx). 2 rather than a
+ * user-adjustable number: it's not exposed as a raw input because the point
+ * of this control is a single plain-English on/off, not another number for a
+ * non-technical solo operator to guess at — and 2 is where the roster's own
+ * shape draws a natural line (1,960 of 2,666 management companies on the
+ * roster represent 2 artists or fewer; the next size bracket up is already a
+ * multi-artist operation with a triaged inbox, the exact kind of address this
+ * filter exists to screen out). Combined with freemailOnly via OR at the
+ * lib/roster.ts level — see getArtistsByGenres' doc comment on why.
+ */
+export const REACHABILITY_MAX_COMPANY_SIZE = 2;
+
+/** A lightweight, debounced re-run of the same /api/preview query the real
+ *  Preview button uses, just to show a live "how many does this match"
+ *  number next to the audience filters — see the `audienceEstimate` state
+ *  below. Debounced so a burst of filter clicks (follower step buttons,
+ *  toggling reachability, etc.) doesn't fire one request per click. */
+const AUDIENCE_ESTIMATE_DEBOUNCE_MS = 350;
+
 export interface DemosFlowConfig {
   trackTitle: string;
   driveLink: string;
@@ -100,6 +121,27 @@ export function useDemosFlow(config: DemosFlowConfig) {
   const [minInstagram, setMinInstagram] = useState(0);
   const [maxInstagram, setMaxInstagram] = useState(0);
   const [showInstagram, setShowInstagram] = useState(false);
+  // The "Independent contacts only" reachability toggle (Task A) — a single
+  // plain-English on/off rather than exposing maxCompanySize/freemailOnly as
+  // two raw controls, since neither number means anything to a non-technical
+  // operator on its own. See REACHABILITY_MAX_COMPANY_SIZE for the threshold
+  // this maps to, and getArtistsByGenres for why the two signals OR together.
+  const [reachableOnly, setReachableOnly] = useState(false);
+  // The "search every genre" opt-in (Task B) — an empty selectedGenres no
+  // longer silently means "match nothing" at the lib/roster.ts level, so this
+  // flag is what actually lets that reach the roster: off by default, and the
+  // only thing that turns "no genres picked" into "every artist, including
+  // the 41.6% with no genre tagged at all" instead of the pre-existing
+  // "nothing." See handleSend's confirm() and lib/demosSend.ts's
+  // matchAllGenres doc comment for the send-time guard this feeds into.
+  const [matchAllGenres, setMatchAllGenres] = useState(false);
+  // Live "how many does this match" estimate shown next to the audience
+  // filters, independent of the real Preview button/previewDone (which still
+  // gates Send) — see the debounced effect below. null = not fetched yet
+  // (e.g. nothing selected), so the UI can tell "haven't checked" apart from
+  // "checked, and it's zero."
+  const [audienceEstimate, setAudienceEstimate] = useState<{ artists: number; inboxes: number } | null>(null);
+  const [audienceEstimateLoading, setAudienceEstimateLoading] = useState(false);
   const [useFollowUp, setUseFollowUp] = useState(false);
   // Not persisted (unlike demosSubjectB's text) — same reasoning as useFollowUp
   // above: whether to run a test is a per-sending-session choice, not a saved
@@ -143,6 +185,21 @@ export function useDemosFlow(config: DemosFlowConfig) {
     setPreviewDone(false); setSendResult(null);
   }, []);
 
+  // Shared with the debounced audience-estimate effect below so the "how many
+  // does this match" number and the real Preview button are always asking
+  // /api/preview the exact same question — a body built two different ways
+  // could silently drift and show a live count that doesn't match what
+  // Preview (and therefore Send) actually finds.
+  function audienceQueryBody(genresOverride?: string[], matchModeOverride?: 'any' | 'all') {
+    return {
+      genres: genresOverride ?? selectedGenres, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram,
+      matchMode: matchModeOverride ?? demosMatchMode,
+      maxCompanySize: reachableOnly ? REACHABILITY_MAX_COMPANY_SIZE : 0,
+      freemailOnly: reachableOnly,
+      matchAllGenres,
+    };
+  }
+
   async function handlePreview(genresOverride?: string[], matchModeOverride?: 'any' | 'all') {
     setPreviewLoading(true);
     setDemosInvalidEmails([]);
@@ -150,7 +207,7 @@ export function useDemosFlow(config: DemosFlowConfig) {
       const res = await fetch('/api/preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ genres: genresOverride ?? selectedGenres, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode: matchModeOverride ?? demosMatchMode }),
+        body: JSON.stringify(audienceQueryBody(genresOverride, matchModeOverride)),
       });
       const data = await res.json();
       const artists = data.artists || [];
@@ -160,6 +217,43 @@ export function useDemosFlow(config: DemosFlowConfig) {
       checkRecipientsValidity((artists as Artist[]).flatMap(a => a.managerEmails)).then(setDemosInvalidEmails);
     } finally { setPreviewLoading(false); }
   }
+
+  // Live "how many artists/inboxes does this match" estimate for the
+  // Reachability control (Task A) and the "search every genre" toggle (Task
+  // B) — reruns /api/preview in the background as the relevant filters
+  // change, debounced so a burst of clicks (e.g. stepping through follower
+  // brackets) fires one request, not one per click. Deliberately separate
+  // from previewArtists/previewDone: this is a lightweight estimate, not the
+  // "official" preview that gates Send — clicking Preview still requires an
+  // explicit action, this just answers "is it worth clicking" beforehand.
+  useEffect(() => {
+    let cancelled = false;
+    // The "nothing to estimate" reset lives inside the timeout callback too
+    // (rather than as an early return that calls setState directly in the
+    // effect body) so every state update this effect makes happens from an
+    // async callback, not synchronously during render — see
+    // react-hooks/set-state-in-effect.
+    const timer = setTimeout(async () => {
+      if (selectedGenres.length === 0 && !matchAllGenres) { setAudienceEstimate(null); return; }
+      setAudienceEstimateLoading(true);
+      try {
+        const res = await fetch('/api/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(audienceQueryBody()),
+        });
+        const data = await res.json();
+        if (cancelled) return;
+        const artists: Artist[] = data.artists || [];
+        const inboxes = new Set(artists.flatMap(a => a.managerEmails.map(e => e.toLowerCase()))).size;
+        setAudienceEstimate({ artists: artists.length, inboxes });
+      } finally {
+        if (!cancelled) setAudienceEstimateLoading(false);
+      }
+    }, AUDIENCE_ESTIMATE_DEBOUNCE_MS);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- audienceQueryBody closes over these same values; listing it too would defeat the debounce by recreating the effect every render.
+  }, [selectedGenres, matchAllGenres, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, demosMatchMode, reachableOnly]);
 
   // Clicking a genre chip on a preview card toggles it in the active filters
   // and immediately re-runs the preview with the updated genre list, instead
@@ -193,8 +287,14 @@ export function useDemosFlow(config: DemosFlowConfig) {
     includedArtists.flatMap(a => a.managerEmails),
     customContacts.map(c => c.managerEmail)
   );
-  const canSend = !!trackTitle && !!driveLink && (selectedGenres.length > 0 || customContacts.length > 0) &&
-    (previewDone || selectedGenres.length === 0) && totalEmails > 0;
+  // "Wants roster artists" now also covers the matchAllGenres opt-in (Task B):
+  // with it on, an empty selectedGenres still means a real roster query (every
+  // genre, including untagged artists), so Send must wait for an actual
+  // Preview the same way a genre-scoped query always has — unlike the
+  // customContacts-only case, where there's nothing to preview.
+  const wantsRosterArtists = selectedGenres.length > 0 || matchAllGenres;
+  const canSend = !!trackTitle && !!driveLink && (wantsRosterArtists || customContacts.length > 0) &&
+    (previewDone || !wantsRosterArtists) && totalEmails > 0;
 
   const demosDuplicateRecipients = useMemo(
     () => findDuplicateRecipients(pitchedEmailMap, trackTitle, [...includedArtists.flatMap(a => a.managerEmails), ...customContacts.map(c => c.managerEmail)]),
@@ -208,6 +308,22 @@ export function useDemosFlow(config: DemosFlowConfig) {
 
   async function handleSend() {
     if (!trackTitle || !driveLink) return;
+    // Client-side half of the unfiltered-send guard (Task B) — the server-side
+    // half is lib/demosSend.ts requiring this same matchAllGenres flag before
+    // it will run an empty genre selection as "every artist" at all, so a
+    // stale tab or a request replayed without going through this function
+    // can't reach it. This one is deliberately a native confirm() (matching
+    // useCampaignHistory.ts's sendFollowUp — the one other place in this app
+    // that confirms a real-people-get-emailed action) with the *actual*
+    // recipient count from the completed Preview, not a vague warning: the
+    // number is what makes "I meant to narrow this down first" obvious before
+    // it's too late to stop.
+    if (matchAllGenres && selectedGenres.length === 0) {
+      const confirmed = confirm(
+        `No genre is selected, so this sends to every matching artist across the whole roster — ${totalEmails} recipient${totalEmails === 1 ? '' : 's'} for "${trackTitle}". Continue?`
+      );
+      if (!confirmed) return;
+    }
     if (dailySendCap > 0 && sendsToday + totalEmails > dailySendCap) {
       setSendError(`Daily send limit reached (${sendsToday}/${dailySendCap} sent today). Wait until tomorrow or raise the limit in Account settings.`);
       return;
@@ -253,6 +369,9 @@ export function useDemosFlow(config: DemosFlowConfig) {
         subjectTemplateB: subjectTestActive ? demosSubjectB : undefined,
         senderName, signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram,
         matchMode: demosMatchMode,
+        maxCompanySize: reachableOnly ? REACHABILITY_MAX_COMPANY_SIZE : 0,
+        freemailOnly: reachableOnly,
+        matchAllGenres,
         sendDelay: sendDelay > 0 ? sendDelay : undefined,
         blacklist: blacklist.length > 0 ? blacklist : undefined,
         excludeEmails: excludedArtistNames.size > 0
@@ -388,6 +507,7 @@ export function useDemosFlow(config: DemosFlowConfig) {
     const preset: DemosFilterPreset = {
       id: Date.now().toString(), name, genres: selectedGenres, minAudience, maxAudience,
       gender, artistType, minInstagram, maxInstagram, matchMode: demosMatchMode,
+      reachableOnly, matchAllGenres,
     };
     const updated = [...demosPresets, preset];
     setDemosPresets(updated);
@@ -404,6 +524,12 @@ export function useDemosFlow(config: DemosFlowConfig) {
     setMinInstagram(preset.minInstagram);
     setMaxInstagram(preset.maxInstagram);
     setDemosMatchMode(preset.matchMode);
+    // ?? false rather than ||, and read with the same fallback on both — a
+    // preset saved before these fields existed has them as undefined, which
+    // must load as "off" (its only possible prior meaning), not skip the
+    // assignment and leave whatever was already selected in the form.
+    setReachableOnly(preset.reachableOnly ?? false);
+    setMatchAllGenres(preset.matchAllGenres ?? false);
     setPreviewDone(false);
     setSendResult(null);
   }
@@ -476,6 +602,7 @@ export function useDemosFlow(config: DemosFlowConfig) {
 
     minAudience, setMinAudience, maxAudience, setMaxAudience, showInstagram, setShowInstagram,
     minInstagram, setMinInstagram, maxInstagram, setMaxInstagram, gender, setGender, artistType, setArtistType,
+    reachableOnly, setReachableOnly, matchAllGenres, setMatchAllGenres, audienceEstimate, audienceEstimateLoading,
 
     handlePreview, previewDone, previewLoading, previewArtists, includedArtists, sortedArtists, visibleArtists, totalEmails,
     excludedByBlacklist,

@@ -87,6 +87,12 @@ export interface DemosSectionProps {
   setGender: (value: string) => void;
   artistType: string;
   setArtistType: (value: string) => void;
+  reachableOnly: boolean;
+  setReachableOnly: (updater: (prev: boolean) => boolean) => void;
+  matchAllGenres: boolean;
+  setMatchAllGenres: (updater: (prev: boolean) => boolean) => void;
+  audienceEstimate: { artists: number; inboxes: number } | null;
+  audienceEstimateLoading: boolean;
 
   customContacts: CustomContact[];
   removeCustomContact: (id: string) => void;
@@ -168,6 +174,7 @@ export function DemosSection(props: DemosSectionProps) {
     showGenreDropdown, setShowGenreDropdown, topGenres, filteredGenres, resetFilters, setPreviewDone, setSendResult,
     minAudience, setMinAudience, maxAudience, setMaxAudience, showInstagram, setShowInstagram,
     minInstagram, setMinInstagram, maxInstagram, setMaxInstagram, gender, setGender, artistType, setArtistType,
+    reachableOnly, setReachableOnly, matchAllGenres, setMatchAllGenres, audienceEstimate, audienceEstimateLoading,
     customContacts, removeCustomContact, showAddCustomContact, setShowAddCustomContact,
     newCustomContact, setNewCustomContact, addCustomContact, handleCustomContactsCsv,
     handlePreview, previewDone, previewLoading, previewArtists, includedArtists, visibleArtists, totalEmails, excludedByBlacklist,
@@ -255,6 +262,10 @@ export function DemosSection(props: DemosSectionProps) {
           gender={gender} setGender={setGender}
           artistType={artistType} setArtistType={setArtistType}
           resetFilters={resetFilters}
+          reachableOnly={reachableOnly} setReachableOnly={setReachableOnly}
+          matchAllGenres={matchAllGenres} setMatchAllGenres={setMatchAllGenres}
+          selectedGenres={selectedGenres}
+          audienceEstimate={audienceEstimate} audienceEstimateLoading={audienceEstimateLoading}
         />
 
         {/* Custom Contacts */}
