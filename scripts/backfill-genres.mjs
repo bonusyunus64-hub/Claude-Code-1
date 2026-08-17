@@ -1,4 +1,4 @@
-// Fills in `genres: []` on roster artists using the Spotify Web API, so the
+// Fills in `genres: []` on roster artists using the iTunes Search API, so the
 // 41.6% of the roster (3,010 artists as of the 2026-08-08 snapshot) that
 // ROSTR has no genre tag for can still be found through the Demos genre
 // filter — see lib/roster.ts's getArtistsByGenres for the companion change
@@ -6,10 +6,42 @@
 // those 3,010 reachable at all today; this script is what makes them
 // reachable by genre specifically, the way every other artist already is).
 //
+// SPOTIFY IS DEAD AS A SOURCE FOR THIS — READ BEFORE REACHING FOR IT AGAIN.
+// As of 2026-08-17 the Spotify Web API no longer returns `genres`,
+// `followers`, or `popularity` on artist objects for client-credentials
+// apps (the only auth flow available to a server-side batch script — no
+// user is in the loop to authorize a user-token scope). Verified directly:
+// a raw `GET /v1/artists/06HL4z0CvFAxyc27GXpf02` (Taylor Swift) returned
+// HTTP 200 with a body containing only `external_urls`, `href`, `id`,
+// `images`, `name`, `type`, `uri` — no genre/follower/popularity fields at
+// all, not empty ones. This is why the previous version of this script
+// (see git history if you need it) rejected 49 of its first 50 candidates
+// at the follower-tolerance check: Spotify was sending no follower number,
+// the code defaulted that to 0, and 0 is nowhere near any real roster
+// artist's follower count. That wasn't a bug in the tolerance math; it was
+// Spotify's API having quietly stopped returning the field the whole check
+// depended on. Don't re-add a Spotify path here without re-verifying this
+// first — if Spotify's API has changed again, fine, but confirm it with a
+// raw request the way the above was confirmed, not by assuming the old
+// integration still works.
+//
+// iTunes Search API replaces it: keyless, no signup, no auth headers.
+//   GET https://itunes.apple.com/search?term=<urlencoded name>&entity=musicArtist&limit=25
+// Returns `results[]` with `artistName`, `artistId`, `primaryGenreName`,
+// `artistLinkUrl`. There is no follower count in this payload at all, so
+// the old follower cross-check has no equivalent here — see "matching rule"
+// below for what replaced it. There's also only ever ONE genre per artist
+// (iTunes' `primaryGenreName`), a single coarse tag, where ROSTR's own
+// vocabulary is rich and multi-valued — an artist backfilled from here will
+// only ever carry one genre and will only surface under broad filter
+// buckets. That's a known, deliberate limitation of this data source, not a
+// bug; there's a separate plan for narrowing broad-genre artists later that
+// this script's provenance log (see below) exists to support.
+//
 // MERGE ONLY, NEVER REPLACE — same rule as scripts/merge-roster.mjs, applied
 // at the field level instead of the artist level here:
 //   - an artist with a non-empty `genres` array is never touched, full stop.
-//     Spotify's tags are a different, potentially conflicting taxonomy from
+//     iTunes' tag is a different, potentially conflicting taxonomy from
 //     whatever ROSTR/the artist's own listing already says, and this script
 //     has no basis to prefer one over the other — it only fills gaps.
 //   - managerEmails, managerNames, spotifyFollowers, managementCompany, and
@@ -19,153 +51,169 @@
 // a prior pipeline change that blurred "enrich" and "replace" together
 // silently dropped 1,745 contacts while reporting success.
 //
-// Matching a roster artist to a Spotify artist is genuinely risky — Spotify
-// name search is fuzzy, and a wrong match writes wrong genres onto a real
-// artist's record. Two independent checks must BOTH pass before a match is
-// accepted:
-//   1. exact, case-insensitive name match (not "top search hit" — a fuzzy
-//      top hit is exactly the failure mode this guards against)
-//   2. the matched artist's Spotify follower count falls within
-//      FOLLOWER_TOLERANCE_RATIO (or FOLLOWER_TOLERANCE_FLOOR, whichever is
-//      larger) of the roster's own spotifyFollowers for that artist — see
-//      withinFollowerTolerance's comment for why a band rather than an exact
-//      match. An artist with no roster follower count to check against is
-//      skipped rather than trusted on name alone.
-// Anything that doesn't clear both bars is skipped and counted by reason —
-// see `stats.skipped` — rather than guessed at.
+// Matching a roster artist to an iTunes artist is genuinely risky — iTunes
+// name search is unranked/unfiltered by disambiguation, and a wrong match
+// writes a wrong genre onto a real artist's record. A 60-artist sample
+// spread across the genre-less set measured: 98% have an exact
+// case-insensitive name match among iTunes results, but 37% of names return
+// MORE THAN ONE distinct artist under that same exact name (11 different
+// artists all named "Harpy", 12 named "SOFY", 10 named "ian"), and those
+// collisions usually disagree with each other on genre. Naive "first exact
+// match wins" would confidently write "Rock" onto Harpy having picked one
+// artist out of eleven with that name. There is no follower count here to
+// break the tie with (see above), so the rule instead leans on agreement:
+//
+//   1. filter iTunes results to exact, case-insensitive artistName matches
+//      (not "top search hit" — a fuzzy top hit is exactly the failure mode
+//      this guards against) that also carry a primaryGenreName
+//   2. exactly one such match -> accept it (matchType "unique")
+//   3. more than one, and they all report the SAME primaryGenreName ->
+//      accept it (matchType "unanimous" — agreement across independent
+//      collisions is itself evidence, the way it wasn't when only one
+//      Spotify candidate needed sanity-checking against a follower count)
+//   4. more than one, reporting DIFFERENT genres -> skip as ambiguousName,
+//      can't safely pick one
+// Measured on the same sample, this rule yields roughly 70% fill (~2,100 of
+// 3,010) with zero known-wrong writes — lower coverage than a naive
+// approach, on purpose: every skip here is a case the data genuinely can't
+// resolve safely, logged and left for a human rather than guessed at.
 //
 // Vocabulary: the roster uses 636 ROSTR-style genre strings ("Dance / Edm",
-// "Hip Hop & Rap", "Metalcore"); Spotify returns lowercase, often hyphenated
-// or prefixed tags ("edm", "lo-fi house", "pov: indie", "melodic
-// metalcore"). This script maps INTO the existing vocabulary rather than
-// growing it — see mapSpotifyGenre's comment for how, and why: 248 of the
-// current 636 genres already have fewer than 5 artists tagged with them, so
-// blindly adding every distinct Spotify tag as a new genre would make the
-// genre picker worse, not better, for the one thing it's for (finding a
-// meaningful group of artists to pitch). A Spotify tag that doesn't resolve
-// into the existing vocabulary is left off that artist's genres and reported
-// under `unmappedTags` instead of silently becoming genre #637.
+// "Hip Hop & Rap", "Metalcore"); iTunes returns a single Title-Case tag per
+// artist ("Alternative", "Hip-Hop/Rap", "Singer/Songwriter"). This script
+// maps INTO the existing vocabulary rather than growing it — see
+// mapItunesGenre's comment for how, and why: 248 of the current 636 genres
+// already have fewer than 5 artists tagged with them, so blindly adding
+// every distinct iTunes tag as a new genre would make the genre picker
+// worse, not better, for the one thing it's for (finding a meaningful group
+// of artists to pitch). An iTunes tag that doesn't resolve into the
+// existing vocabulary is left off that artist's genres and reported under
+// `unmappedGenres` instead of silently becoming genre #637.
 //
 // Dry-run by default. Nothing is written to disk without --write.
 //
-// Usage:
-//   node scripts/backfill-genres.mjs [--roster data/roster.json] [--out data/roster.json] [--limit N] [--delay 350] [--write]
+// PROVENANCE LOG: every run that would write (see the CLI section for the
+// exact rule) also produces data/genre-backfill-log.json — one entry per
+// filled artist (name, rostrUrl, the raw iTunes primaryGenreName, the
+// mapped ROSTR genre it became, matchType/matchCount, and the iTunes
+// artistId/artistLinkUrl so a human can go check the match) and one entry
+// per skipped artist (name, rostrUrl, reason, and for ambiguousName the
+// competing genres and how many artists shared the name) — overLimit skips
+// are counted in stats but deliberately NOT logged per-artist, see the
+// comment in backfillGenres for why. It deliberately carries NO manager
+// emails or names — it must stay safe to commit, unlike data/*.xlsx or
+// rostr-raw-collection.json (both gitignored specifically because they
+// carry contact data).
 //
-// Requires SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET in the environment for
-// a real (non-dry-run, or even dry-run — it still queries Spotify to compute
-// what *would* change) run. See lib/spotify.ts, which already implements this
-// exact client-credentials flow for the app's live Spotify badge lookup.
-// Deliberately NOT imported from here: that file is TypeScript compiled by
-// Next.js's build pipeline, and this is a plain Node ESM script with no
-// ts-node/tsx in this project's devDependencies to run it standalone. The
-// token fetch below is a structural mirror of lib/spotify.ts's
-// getAccessToken (same endpoint, same Basic-auth client-credentials body,
-// same expiry-aware in-memory cache) — if Spotify's token endpoint or this
-// app's client-credentials handling ever changes, check both places.
+// MERGES ACROSS RUNS, NEVER OVERWRITES. The real run plan is repeated
+// `--write --limit 500` chunks rather than one long pass that loses
+// everything if Apple throttles us near the end, so a fresh chunk's log
+// would clobber every earlier chunk's provenance if this just did a plain
+// writeFileSync each time. Instead every write reads whatever's already at
+// --log (if anything), keys both `filled` and `skipped` by `rostrUrl`, and
+// lets the current run's entry win on conflict — see mergeProvenanceLog's
+// comment for the full contract, including how an artist moving from
+// skipped in one run to filled in a later one is handled. `runs` is an
+// appendable per-run history (timestamp, that run's stats, that run's
+// unmapped-genre tally) rather than a single generatedAt/stats pair, so the
+// shape of each chunk stays visible. A log file that exists but fails to
+// parse or doesn't match the expected shape is treated as corrupt: the run
+// refuses to write anything (log or roster) rather than risk silently
+// discarding accumulated provenance — see loadExistingProvenanceLog.
+//
+// Usage:
+//   node scripts/backfill-genres.mjs [--roster data/roster.json] [--out data/roster.json] [--log data/genre-backfill-log.json] [--limit N] [--delay 500] [--write]
+//
+// No API key or signup needed — iTunes Search is a public, keyless endpoint.
+// Apple throttles aggressively against it in practice (roughly 20 calls/min
+// documented, more tolerated in bursts), so failed requests are retried with
+// a bounded exponential backoff (see fetchWithRetry) rather than immediately
+// giving up, and an artist whose lookup ultimately fails anyway is skipped
+// under its own reason (`lookupFailed`) rather than aborting the whole run —
+// a full run is ~3,010 lookups, and losing that to one flaky request near
+// the end would be exactly the kind of silent-failure this script's whole
+// design is trying to avoid elsewhere.
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-/**
- * A Spotify tag's follower count is allowed to differ from the roster's own
- * spotifyFollowers by this fraction (or FOLLOWER_TOLERANCE_FLOOR, whichever
- * is larger) and still count as the same artist. Not an exact match on
- * purpose: roster.json is a snapshot from whenever it was last refreshed
- * (see lib/roster.ts's getRosterGeneratedAt), and Spotify follower counts
- * drift continuously — a real artist can move 20-30% in either direction
- * over a few months of ordinary organic growth without that meaning the
- * match is wrong.
- */
-export const FOLLOWER_TOLERANCE_RATIO = 0.35;
-/**
- * Floor for the tolerance band above, so a small artist isn't held to an
- * unreasonably tight absolute margin — 35% of 5,000 followers is only 1,750,
- * tight enough that ordinary week-to-week movement could fail a genuinely
- * correct match. 25,000 is comfortably above typical short-term movement for
- * a small/mid artist while still being a small fraction of the roster's
- * median (593,950 as of the 2026-08-08 snapshot) — see the project brief's
- * measured facts.
- */
-export const FOLLOWER_TOLERANCE_FLOOR = 25_000;
-
-export function withinFollowerTolerance(spotifyFollowers, rosterFollowers) {
-  const allowed = Math.max(FOLLOWER_TOLERANCE_FLOOR, rosterFollowers * FOLLOWER_TOLERANCE_RATIO);
-  return Math.abs((spotifyFollowers ?? 0) - rosterFollowers) <= allowed;
-}
-
-export function isExactNameMatch(spotifyName, rosterName) {
-  return String(spotifyName || '').trim().toLowerCase() === String(rosterName || '').trim().toLowerCase();
+export function isExactNameMatch(itunesName, rosterName) {
+  return String(itunesName || '').trim().toLowerCase() === String(rosterName || '').trim().toLowerCase();
 }
 
 /**
- * Spotify tags Spotify's algorithmic "niche" genres with a "pov: " prefix
- * (e.g. "pov: indie", "pov: bedroom pop") that carries no genre information
- * of its own — stripped before matching rather than requiring an alias-table
- * entry for every "pov: X" variant of a tag that would otherwise match fine.
- * Hyphens are normalised to spaces for the same reason: ROSTR's vocabulary
- * never contains one ("K Pop", "Lo Fi House"), Spotify's often does
- * ("k-pop", "lo-fi house"), and the difference is purely typographic.
+ * iTunes genre tags are clean Title Case ("Alternative", "R&B/Soul") but
+ * occasionally use a hyphen where ROSTR's vocabulary uses a space ("K-Pop"
+ * vs "K Pop", "Afro-Pop" vs "Afro Pop") — normalised away here so those
+ * resolve as a direct match without needing an alias-table entry for every
+ * such spelling variant. Slashes and ampersands are left alone: they're
+ * meaningful separators in both taxonomies ("R&B/Soul" and "Hip Hop & Rap"
+ * are each single roster genres, not lists), so stripping them would create
+ * false matches rather than resolve real ones.
  */
-export function normalizeSpotifyGenreTag(tag) {
+export function normalizeItunesGenreTag(tag) {
   return String(tag || '')
     .trim()
     .toLowerCase()
-    .replace(/^pov:\s*/, '')
     .replace(/-/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 /**
- * Explicit aliases for Spotify tags that need real semantic mapping, not
- * just a casing/hyphen normalisation, to land on an existing ROSTR genre.
- * Deliberately short: every entry here coarsens a Spotify micro-genre down
- * to a broader ROSTR genre that already exists, rather than trying to guess
- * a mapping for every possible Spotify tag. Anything not covered by this
- * table AND not a direct (post-normalisation) match to the existing
- * vocabulary is reported as unmapped rather than added — see the module doc
- * comment above for why growing the vocabulary unboundedly makes the genre
- * picker worse.
+ * Explicit aliases for iTunes genre tags that need real semantic mapping,
+ * not just the casing/hyphen normalisation above, to land on an existing
+ * ROSTR genre. Deliberately short — see the module doc comment for why
+ * growing the vocabulary unboundedly makes the genre picker worse.
  *
- * Keys must already be run through normalizeSpotifyGenreTag(); values must
- * be an EXACT existing entry in roster.genres (verified by
- * scripts/backfill-genres.test.mjs against a fixture, and implicitly by
- * mapSpotifyGenre only ever returning something it found in the roster's own
- * genre list at runtime — a typo'd alias target just fails to match and the
- * tag reports as unmapped rather than writing a genre string into
- * roster.json that no other artist has).
+ * Keys must already be run through normalizeItunesGenreTag(); values must
+ * be an EXACT existing entry in roster.genres (verified against the real
+ * roster.json vocabulary, and asserted by
+ * scripts/backfill-genres.test.mjs — a typo'd alias target just fails to
+ * match and the tag reports as unmapped rather than writing a genre string
+ * into roster.json that no other artist has).
+ *
+ * "Afro-Pop" is deliberately NOT in this table even though it looks like a
+ * plausible candidate: the roster vocabulary already contains a literal
+ * "Afro Pop" entry, so normalizeItunesGenreTag's hyphen-to-space step alone
+ * resolves "Afro-Pop" -> "afro pop" -> "Afro Pop" with no alias needed. (The
+ * roster separately also has "Afropop", a distinct, no-space entry that
+ * this does NOT and should not match — normalisation only touches
+ * hyphens/whitespace, never removes spaces, so the two stay distinct.)
  */
-export const SPOTIFY_GENRE_ALIASES = new Map([
-  // A stylistic qualifier on a parent genre that already exists in the
-  // roster's vocabulary — the example straight from the project brief.
-  ['melodic metalcore', 'Metalcore'],
-  // No "Pop Rap" bucket exists; "Rap" already does, and is the closer of the
-  // roster's two rap-adjacent genres ("Rap" vs "Hip Hop & Rap") to what this
-  // tag actually describes.
-  ['pop rap', 'Rap'],
-  ['conscious hip hop', 'Hip Hop'],
-  // Matches the roster's existing "Rap Metal" compound tag rather than
-  // introducing a new, narrower "Rap Metalcore" one for what would likely be
-  // a single artist.
-  ['rap metalcore', 'Rap Metal'],
+export const ITUNES_GENRE_ALIASES = new Map([
+  // No "Hip-Hop/Rap" entry exists in the roster vocabulary; "Hip Hop & Rap"
+  // is the existing genre that means the same thing.
+  ['hip hop/rap', 'Hip Hop & Rap'],
+  // No standalone "Dance" entry exists; "Dance / Edm" is the roster's
+  // umbrella genre for it.
+  ['dance', 'Dance / Edm'],
+  // The roster has "Singer Songwriter" (no slash) and, separately, a
+  // narrower "Pop Singer Songwriter" — iTunes' plain "Singer/Songwriter"
+  // tag carries no pop-specific signal, so it maps to the broader of the
+  // two rather than guessing a subgenre iTunes never actually claimed.
+  ['singer/songwriter', 'Singer Songwriter'],
 ]);
 
 /**
- * Maps one Spotify genre tag to an existing ROSTR genre string, or null if
- * it doesn't resolve. Two paths, in order: the explicit alias table above,
- * then a direct case-insensitive (and hyphen/pov-prefix-normalised) match
- * against the roster's own genre list — which is how most tags resolve
- * without needing an alias-table entry at all (e.g. "hip hop" -> "Hip Hop",
- * "k-pop" -> "K Pop", "pov: indie" -> "Indie" all match this way).
+ * Maps one iTunes genre tag to an existing ROSTR genre string, or null if
+ * it doesn't resolve. Two paths, in order: a direct case-insensitive (and
+ * hyphen-normalised) match against the roster's own genre list — which is
+ * how most tags resolve without needing an alias at all (e.g. "Alternative"
+ * -> "Alternative", "K-Pop" -> "K Pop", "Afro-Pop" -> "Afro Pop", "R&B/Soul"
+ * -> "R&B/Soul" all match this way) — then the explicit alias table above
+ * for the handful that need real semantic mapping instead of a spelling fix.
  */
-export function mapSpotifyGenre(tag, rosterGenreByLower) {
-  const normalized = normalizeSpotifyGenreTag(tag);
+export function mapItunesGenre(tag, rosterGenreByLower) {
+  const normalized = normalizeItunesGenreTag(tag);
   if (!normalized) return null;
-  const aliased = SPOTIFY_GENRE_ALIASES.get(normalized);
+  const direct = rosterGenreByLower.get(normalized);
+  if (direct) return direct;
+  const aliased = ITUNES_GENRE_ALIASES.get(normalized);
   if (aliased && rosterGenreByLower.get(aliased.toLowerCase()) === aliased) return aliased;
-  return rosterGenreByLower.get(normalized) ?? null;
+  return null;
 }
 
 function delay(ms) {
@@ -178,16 +226,15 @@ export function uniqueEmailCount(artists) {
 
 /**
  * The reusable, network-free core: takes a roster ({ artists, genres, ... })
- * and a `searchArtist(name)` function (Spotify's real /v1/search/artist
- * response shape: `{ artists: { items: [{ name, genres, followers: { total
- * } }] } }`), and returns a new artists array with `genres` filled in where a
- * strong match was found, plus stats.
+ * and a `searchArtist(name)` function (iTunes's real /search response
+ * shape: `{ results: [{ artistName, artistId, primaryGenreName,
+ * artistLinkUrl }] }`), and returns a new artists array with `genres` filled
+ * in where a safe match was found, plus stats and a provenance log.
  *
  * Injectable `searchArtist` is what lets scripts/backfill-genres.test.mjs
  * exercise the whole matching/mapping/skip-reason logic against a small
- * fixture without any real Spotify credentials or network access — see
- * searchArtistLive below for the production implementation this stands in
- * for.
+ * fixture without any real network access — see searchArtistLive below for
+ * the production implementation this stands in for.
  */
 export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit } = {}) {
   const rosterGenreByLower = new Map((roster.genres || []).map(g => [g.toLowerCase(), g]));
@@ -199,16 +246,17 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit 
     filled: 0,
     skipped: {
       overLimit: 0,
-      noSpotifyMatch: 0, // Spotify returned no results at all
-      nameMismatch: 0, // got results, but none is an exact (case-insensitive) name match
-      noRosterFollowerCount: 0, // exact name match(es), but nothing to sanity-check the follower count against
-      followerMismatch: 0, // exact name match(es), but none within tolerance
-      ambiguousMatch: 0, // more than one exact name match within follower tolerance — can't safely pick one
-      noMappableGenres: 0, // matched and verified, but every Spotify tag it returned was unmapped
+      noNameMatch: 0, // no exact (case-insensitive) name match among the results at all
+      noGenreOnRecord: 0, // exact match(es) exist, but none carry a primaryGenreName
+      ambiguousName: 0, // more than one exact, genre-bearing match, and they disagree on genre
+      unmappableGenre: 0, // matched safely, but the iTunes genre doesn't resolve into the roster vocabulary
+      lookupFailed: 0, // the iTunes request itself failed even after retries
     },
-    /** Spotify tag (as returned, not normalised) -> how many times it showed up unmapped. */
-    unmappedTags: new Map(),
+    /** iTunes genre (as returned, not normalised) -> how many times it showed up unmapped. */
+    unmappedGenres: new Map(),
   };
+
+  const log = { filled: [], skipped: [] };
 
   const artists = [];
   for (const original of roster.artists) {
@@ -218,11 +266,20 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit 
     if (!hasGenres && (limit == null || stats.attempted < limit)) {
       stats.attempted += 1;
       const artist = { ...original };
-      const filledGenres = await tryFillOne(artist, searchArtist, rosterGenreByLower, stats);
+      const filledGenre = await tryFillOne(artist, searchArtist, rosterGenreByLower, stats, log);
       await delay(delayMs);
-      if (filledGenres) { artist.genres = filledGenres; stats.filled += 1; }
+      if (filledGenre) { artist.genres = [filledGenre]; stats.filled += 1; }
       artists.push(artist);
     } else {
+      // overLimit is counted (stats.skipped.overLimit) but deliberately NOT
+      // logged per-artist: in the chunked-run plan (repeated `--write
+      // --limit 500` passes walking the roster), the vast majority of
+      // eligible artists are overLimit on any given chunk, and logging one
+      // entry each would make overLimit noise dominate the file — a 50-
+      // artist dry run against the full roster produced a 296KB log that
+      // was almost entirely overLimit entries. The count alone is enough;
+      // which specific artists are still waiting just falls out of "not yet
+      // in filled or skipped" once the roster finishes its walk.
       if (!hasGenres) stats.skipped.overLimit += 1;
       // Every other field passes through completely untouched — this is the
       // "never replace" half of the merge discipline: an artist this run
@@ -231,79 +288,191 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit 
     }
   }
 
-  return { artists, stats };
+  return { artists, stats, log };
 }
 
-async function tryFillOne(artist, searchArtist, rosterGenreByLower, stats) {
-  const response = await searchArtist(artist.name);
-  const items = response?.artists?.items ?? [];
+async function tryFillOne(artist, searchArtist, rosterGenreByLower, stats, log) {
+  const skip = reason => { stats.skipped[reason] += 1; log.skipped.push({ name: artist.name, rostrUrl: artist.rostrUrl, reason }); return null; };
 
-  if (items.length === 0) { stats.skipped.noSpotifyMatch += 1; return null; }
-
-  const exactMatches = items.filter(item => isExactNameMatch(item.name, artist.name));
-  if (exactMatches.length === 0) { stats.skipped.nameMismatch += 1; return null; }
-
-  const rosterFollowers = artist.spotifyFollowers ?? 0;
-  if (rosterFollowers <= 0) { stats.skipped.noRosterFollowerCount += 1; return null; }
-
-  const verified = exactMatches.filter(item => withinFollowerTolerance(item.followers?.total ?? 0, rosterFollowers));
-  if (verified.length === 0) { stats.skipped.followerMismatch += 1; return null; }
-  if (verified.length > 1) { stats.skipped.ambiguousMatch += 1; return null; }
-
-  const match = verified[0];
-  const mapped = [];
-  for (const tag of match.genres ?? []) {
-    const genre = mapSpotifyGenre(tag, rosterGenreByLower);
-    if (genre) { if (!mapped.includes(genre)) mapped.push(genre); }
-    else { stats.unmappedTags.set(tag, (stats.unmappedTags.get(tag) ?? 0) + 1); }
+  let response;
+  try {
+    response = await searchArtist(artist.name);
+  } catch (err) {
+    stats.skipped.lookupFailed += 1;
+    log.skipped.push({ name: artist.name, rostrUrl: artist.rostrUrl, reason: 'lookupFailed', error: String(err?.message ?? err) });
+    return null;
   }
 
-  if (mapped.length === 0) { stats.skipped.noMappableGenres += 1; return null; }
-  return mapped.sort();
-}
+  const results = response?.results ?? [];
+  const exactMatches = results.filter(item => isExactNameMatch(item.artistName, artist.name));
+  if (exactMatches.length === 0) return skip('noNameMatch');
 
-// --- Production Spotify client (not exercised by the unit tests — those
-// inject a fake searchArtist instead). Mirrors lib/spotify.ts's
-// getAccessToken; see the module doc comment for why this can't just import
-// it. ---
+  const genredMatches = exactMatches.filter(item => item.primaryGenreName);
+  if (genredMatches.length === 0) return skip('noGenreOnRecord');
 
-let cachedToken = null;
-
-async function getAccessToken() {
-  const clientId = process.env.SPOTIFY_CLIENT_ID;
-  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
-  if (!clientId || !clientSecret) {
-    throw new Error('SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be set in the environment to run this script.');
+  let candidate;
+  let matchType;
+  if (genredMatches.length === 1) {
+    candidate = genredMatches[0];
+    matchType = 'unique';
+  } else {
+    const distinctGenres = [...new Set(genredMatches.map(m => m.primaryGenreName))];
+    if (distinctGenres.length > 1) {
+      stats.skipped.ambiguousName += 1;
+      log.skipped.push({
+        name: artist.name,
+        rostrUrl: artist.rostrUrl,
+        reason: 'ambiguousName',
+        competingGenres: distinctGenres,
+        matchCount: exactMatches.length,
+      });
+      return null;
+    }
+    candidate = genredMatches[0];
+    matchType = 'unanimous';
   }
-  if (cachedToken && cachedToken.expiresAt > Date.now()) return cachedToken.token;
 
-  const res = await fetch('https://accounts.spotify.com/api/token', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
-    },
-    body: 'grant_type=client_credentials',
+  const mapped = mapItunesGenre(candidate.primaryGenreName, rosterGenreByLower);
+  if (!mapped) {
+    stats.unmappedGenres.set(candidate.primaryGenreName, (stats.unmappedGenres.get(candidate.primaryGenreName) ?? 0) + 1);
+    return skip('unmappableGenre');
+  }
+
+  log.filled.push({
+    name: artist.name,
+    rostrUrl: artist.rostrUrl,
+    primaryGenreName: candidate.primaryGenreName,
+    mappedGenre: mapped,
+    matchType,
+    matchCount: genredMatches.length,
+    artistId: candidate.artistId,
+    artistLinkUrl: candidate.artistLinkUrl,
   });
-  if (!res.ok) throw new Error(`Spotify token request failed: ${res.status} ${res.statusText}`);
 
-  const data = await res.json();
-  cachedToken = { token: data.access_token, expiresAt: Date.now() + (data.expires_in - 60) * 1000 };
-  return cachedToken.token;
+  return mapped;
+}
+
+// --- Production iTunes client (not exercised by the unit tests — those
+// inject a fake searchArtist instead). ---
+
+const ITUNES_MAX_RETRIES = 4;
+const ITUNES_BASE_BACKOFF_MS = 1000;
+const ITUNES_MAX_BACKOFF_MS = 30_000;
+
+function backoffDelayMs(attempt) {
+  const exponential = ITUNES_BASE_BACKOFF_MS * 2 ** attempt;
+  const jitter = Math.random() * ITUNES_BASE_BACKOFF_MS;
+  return Math.min(exponential + jitter, ITUNES_MAX_BACKOFF_MS);
+}
+
+/**
+ * Fetches `url`, retrying with a bounded exponential backoff on 403/429
+ * (Apple's rate-limit responses) and on transport-level failures (fetch
+ * throwing — DNS hiccup, connection reset, etc.), since both are typically
+ * transient over a ~3,010-request run. Any other non-OK HTTP status is
+ * treated as non-retryable and thrown immediately. If every retry is
+ * exhausted, throws — the caller (searchArtistLive, and above it
+ * tryFillOne) is responsible for turning that into a `lookupFailed` skip
+ * for just that one artist rather than aborting the whole run.
+ */
+async function fetchWithRetry(url) {
+  let lastErr;
+  for (let attempt = 0; attempt <= ITUNES_MAX_RETRIES; attempt += 1) {
+    let res;
+    try {
+      res = await fetch(url);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < ITUNES_MAX_RETRIES) { await delay(backoffDelayMs(attempt)); continue; }
+      throw lastErr;
+    }
+    if (res.ok) return res;
+    if ((res.status === 429 || res.status === 403) && attempt < ITUNES_MAX_RETRIES) {
+      await delay(backoffDelayMs(attempt));
+      continue;
+    }
+    throw new Error(`iTunes search failed: ${res.status} ${res.statusText}`);
+  }
+  throw lastErr ?? new Error('iTunes search failed: retries exhausted');
 }
 
 async function searchArtistLive(name) {
-  const token = await getAccessToken();
-  // limit=10 (rather than lib/spotify.ts's limit=1 for the live badge lookup)
-  // because this needs to find an EXACT name match if one exists at all, not
-  // just accept whatever search ranks first — see the module doc comment on
-  // why "top hit" isn't a strong enough match to write real data from.
-  const res = await fetch(
-    `https://api.spotify.com/v1/search?q=${encodeURIComponent(name)}&type=artist&limit=10`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  if (!res.ok) return { artists: { items: [] } };
+  const url = `https://itunes.apple.com/search?term=${encodeURIComponent(name)}&entity=musicArtist&limit=25`;
+  const res = await fetchWithRetry(url);
   return res.json();
+}
+
+// --- Provenance log merge ---
+//
+// The real run plan is repeated `node scripts/backfill-genres.mjs --write
+// --limit 500` passes walking the roster in ~5-minute chunks rather than one
+// ~25-minute pass that loses everything if Apple throttles us near the end
+// (a filled artist stops being eligible, so each chunk naturally picks up
+// where the last one left off). That means the log has to accumulate across
+// runs instead of being overwritten each time, or the user would end up with
+// only the last chunk's ~500 entries instead of the full ~2,100-artist
+// picture — which defeats the log's whole purpose as a durable record for
+// the later broad-genre-narrowing work.
+
+/**
+ * Reads and validates an existing provenance log at `logPath`, or returns
+ * null if no file is there yet (the normal first-run case). Throws — never
+ * silently discards — if the file exists but is unparseable or doesn't match
+ * the expected shape, so a corrupt log fails the run the same way the
+ * artist/email-count guard does, rather than quietly losing accumulated
+ * provenance to JSON.parse swallowing the problem.
+ */
+export function loadExistingProvenanceLog(logPath) {
+  if (!existsSync(logPath)) return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(logPath, 'utf-8'));
+  } catch (err) {
+    throw new Error(`existing provenance log at ${logPath} is not valid JSON (${err.message})`);
+  }
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.filled) || !Array.isArray(parsed.skipped) || !Array.isArray(parsed.runs)) {
+    throw new Error(`existing provenance log at ${logPath} doesn't match the expected shape (needs filled/skipped/runs arrays)`);
+  }
+  return parsed;
+}
+
+/**
+ * Merges one run's filled/skipped entries into an existing provenance log
+ * (or starts a fresh one if `existingLog` is null), keyed by `rostrUrl`.
+ *
+ * - The current run wins on conflict: if an artist appears in this run's
+ *   filled or skipped list, whatever entry it had from a previous run is
+ *   replaced, never duplicated.
+ * - An artist can legitimately move between collections across runs (e.g.
+ *   skipped as `ambiguousName` in an earlier chunk, then filled once a
+ *   later run — or a rerun after an alias-table fix — resolves it cleanly).
+ *   A stale entry for that artist must not survive in the other collection;
+ *   keying everything through one `rostrUrl -> {type, entry}` map guarantees
+ *   that structurally rather than by remembering to clean up both arrays.
+ * - `runs` is an appendable per-run history (timestamp, that run's stats,
+ *   that run's unmapped-genre tally) rather than a single generatedAt/stats
+ *   pair, so the user can see the shape of each chunk later.
+ */
+export function mergeProvenanceLog(existingLog, runMeta, runLog) {
+  const byUrl = new Map();
+  for (const entry of existingLog?.filled ?? []) byUrl.set(entry.rostrUrl, { type: 'filled', entry });
+  for (const entry of existingLog?.skipped ?? []) byUrl.set(entry.rostrUrl, { type: 'skipped', entry });
+  for (const entry of runLog.filled) byUrl.set(entry.rostrUrl, { type: 'filled', entry });
+  for (const entry of runLog.skipped) byUrl.set(entry.rostrUrl, { type: 'skipped', entry });
+
+  const filled = [];
+  const skipped = [];
+  for (const { type, entry } of byUrl.values()) {
+    (type === 'filled' ? filled : skipped).push(entry);
+  }
+
+  return {
+    source: 'itunes',
+    runs: [...(existingLog?.runs ?? []), runMeta],
+    filled,
+    skipped,
+  };
 }
 
 // --- CLI ---
@@ -323,11 +492,14 @@ async function main() {
   const flag = (name, fallback) => { const i = argv.indexOf(name); return i !== -1 ? argv[i + 1] : fallback; };
 
   const defaultRoster = join(__dirname, '..', 'data', 'roster.json');
+  const defaultLog = join(__dirname, '..', 'data', 'genre-backfill-log.json');
   const rosterPath = resolve(flag('--roster', null), defaultRoster);
   const outPath = resolve(flag('--out', null), rosterPath);
+  const logPath = resolve(flag('--log', null), defaultLog);
+  const explicitLog = argv.includes('--log');
   const limitArg = flag('--limit', null);
   const limit = limitArg != null ? Number(limitArg) : undefined;
-  const delayMs = Number(flag('--delay', '350'));
+  const delayMs = Number(flag('--delay', '500'));
 
   if (!existsSync(rosterPath)) { console.error(`Roster not found: ${rosterPath}`); process.exit(1); }
 
@@ -343,7 +515,7 @@ async function main() {
   console.log(`Loaded ${before.artists} artists (${before.emails} unique manager emails) from ${rosterPath}`);
   if (!write) console.log('DRY RUN — pass --write to save changes. Nothing will be written to disk.');
 
-  const { artists, stats } = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit });
+  const { artists, stats, log } = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit });
 
   const after = { artists: artists.length, emails: uniqueEmailCount(artists) };
   const artistsLost = before.artists - after.artists;
@@ -353,11 +525,11 @@ async function main() {
   console.log(`Eligible (genres: [] at the start): ${stats.eligible}, attempted: ${stats.attempted}${limit != null ? ` (--limit ${limit})` : ''}`);
   console.log(`Genres filled: ${stats.filled}`);
   console.log(`Skipped — ${formatSkipped(stats.skipped)}`);
-  if (stats.unmappedTags.size > 0) {
-    console.log(`Unmapped Spotify tags (${stats.unmappedTags.size} distinct — not added to the roster's vocabulary):`);
-    [...stats.unmappedTags.entries()].sort((a, b) => b[1] - a[1]).forEach(([tag, count]) => console.log(`  "${tag}": ${count}`));
+  if (stats.unmappedGenres.size > 0) {
+    console.log(`Unmapped iTunes genres (${stats.unmappedGenres.size} distinct — not added to the roster's vocabulary):`);
+    [...stats.unmappedGenres.entries()].sort((a, b) => b[1] - a[1]).forEach(([genre, count]) => console.log(`  "${genre}": ${count}`));
   } else {
-    console.log('Unmapped Spotify tags: none');
+    console.log('Unmapped iTunes genres: none');
   }
   console.log(`artists lost: ${artistsLost} / emails lost: ${emailsLost}`);
 
@@ -371,8 +543,46 @@ async function main() {
     process.exit(1);
   }
 
+  // Log-write rule: on a real --write run, always write the provenance log
+  // (default path alongside roster.json unless --log overrides it). On a
+  // dry run, only write it if --log was passed explicitly — otherwise the
+  // "dry run writes nothing" guarantee this whole script is built around
+  // would have a silent exception.
+  const shouldWriteLog = write || explicitLog;
+  if (shouldWriteLog) {
+    let existingLog;
+    try {
+      existingLog = loadExistingProvenanceLog(logPath);
+    } catch (err) {
+      // Same posture as the artist/email-count guard above: refuse to write
+      // anything (log OR roster) rather than silently discarding whatever
+      // provenance the previous chunked runs had already accumulated.
+      console.error(`Refusing to write: ${err.message}. Fix or remove the file before re-running with --log/--write.`);
+      process.exit(1);
+    }
+
+    const runMeta = {
+      generatedAt: new Date().toISOString(),
+      source: 'itunes',
+      stats: {
+        totalArtists: stats.totalArtists,
+        eligible: stats.eligible,
+        attempted: stats.attempted,
+        filled: stats.filled,
+        skipped: stats.skipped,
+      },
+      unmappedGenres: Object.fromEntries(stats.unmappedGenres),
+    };
+    const mergedLog = mergeProvenanceLog(existingLog, runMeta, log);
+    // Compact on purpose — no pretty-printing indent. At ~2,100 accumulated
+    // entries a 4-space-indented file would be needlessly large in the repo
+    // for a machine-readable log nobody hand-edits.
+    writeFileSync(logPath, JSON.stringify(mergedLog));
+    console.log(`Wrote provenance log: ${logPath} (${mergedLog.filled.length} filled, ${mergedLog.skipped.length} skipped across ${mergedLog.runs.length} run(s))`);
+  }
+
   if (!write) {
-    console.log(`Dry run complete — no file written. Re-run with --write to save these changes to ${outPath}.`);
+    console.log(`Dry run complete — no roster file written. Re-run with --write to save these changes to ${outPath}.`);
     return;
   }
 
