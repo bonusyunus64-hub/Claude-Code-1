@@ -1,5 +1,6 @@
 import { getRedis, isKvConfigured, STATE_KEY } from '@/lib/kv';
 import { getAccountDailyCap } from '@/lib/accounts';
+import { DEFAULT_DAILY_CAP } from '@/lib/sendLimits';
 
 // The daily cap used to be a localStorage counter, which meant a page reload or a
 // second device could quietly send past it. The count now lives in Redis and is
@@ -49,12 +50,21 @@ export async function recordSends(n: number, accountId?: string): Promise<void> 
 
 /**
  * The cap is a user setting that already syncs to the settings hash, so we read it
- * there rather than trusting a value posted by the client. 0 means "no limit".
+ * there rather than trusting a value posted by the client. 0 means "no limit" — but
+ * only when that 0 was actually stored on purpose. `raw` being null/undefined means
+ * `tp_daily_cap` was never written at all (a fresh install, or an existing one from
+ * before this setting existed) and defaults to DEFAULT_DAILY_CAP rather than
+ * unlimited; an explicitly stored `"0"` is the operator picking DAILY_CAP_OPTIONS'
+ * "None" and must still mean unlimited. The dashboard always writes the field as
+ * `String(value)` (see useAccountSettings.ts's setDailyCap), so "never set" and
+ * "explicitly set to zero" are distinguishable here by null/undefined vs. the
+ * string "0", not by both collapsing to the same falsy check.
  */
 export async function getDailyCap(): Promise<number> {
   if (!isKvConfigured()) return 0;
   const raw = await getRedis().hget<unknown>(STATE_KEY, 'tp_daily_cap');
-  const cap = Number(typeof raw === 'string' ? raw : raw ?? 0);
+  if (raw === null || raw === undefined) return DEFAULT_DAILY_CAP;
+  const cap = Number(raw);
   return Number.isFinite(cap) && cap > 0 ? cap : 0;
 }
 

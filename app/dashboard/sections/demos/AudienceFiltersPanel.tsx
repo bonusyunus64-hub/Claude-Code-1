@@ -1,4 +1,5 @@
 import { REACHABILITY_MAX_COMPANY_SIZE } from '../../constants';
+import { MAX_CAMPAIGN_RECIPIENTS } from '@/lib/sendLimits';
 
 const FOLLOWER_STEPS = [
   { label: 'Any', value: 0 },
@@ -230,7 +231,18 @@ export function AudienceFiltersPanel(props: AudienceFiltersPanelProps) {
           {audienceEstimateLoading ? (
             'Counting matching artists…'
           ) : audienceEstimate ? (
-            <>Current filters match <span className="text-zinc-200 font-medium">{audienceEstimate.artists}</span> artist{audienceEstimate.artists === 1 ? '' : 's'}, <span className="text-zinc-200 font-medium">{audienceEstimate.inboxes}</span> manager inbox{audienceEstimate.inboxes === 1 ? '' : 'es'}.</>
+            <>
+              Current filters match <span className="text-zinc-200 font-medium">{audienceEstimate.artists}</span> artist{audienceEstimate.artists === 1 ? '' : 's'}, <span className="text-zinc-200 font-medium">{audienceEstimate.inboxes}</span> manager inbox{audienceEstimate.inboxes === 1 ? '' : 'es'}.
+              {/* Early heads-up only — this estimate is pre-blacklist/pre-customContacts, so it
+                  can undercount slightly versus the send-time total that MAX_CAMPAIGN_RECIPIENTS
+                  is actually enforced against (see lib/sendLimits.ts). Close enough to flag "you're
+                  about to hit the wall" before the operator even clicks Preview. */}
+              {audienceEstimate.inboxes > MAX_CAMPAIGN_RECIPIENTS && (
+                <span className="block mt-1 text-amber-400">
+                  Over the {MAX_CAMPAIGN_RECIPIENTS}-recipient campaign limit — narrow your filters before sending.
+                </span>
+              )}
+            </>
           ) : (
             'Select a genre above (or turn on "Search every genre") to see how many artists match.'
           )}

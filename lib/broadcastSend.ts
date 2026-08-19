@@ -8,6 +8,7 @@ import { resolveAccount } from '@/lib/accounts';
 import { checkCapAllows, recordSends } from '@/lib/sendQuota';
 import { getBlacklist } from '@/lib/doNotContact';
 import { defaultBroadcastSubject } from '@/lib/emailDefaults';
+import { MAX_CAMPAIGN_RECIPIENTS } from '@/lib/sendLimits';
 
 /** A filtered target (radio station or playlist curator) worth pitching. */
 export interface BroadcastTarget {
@@ -93,6 +94,21 @@ export async function sendBroadcast(
     const threadId = threadIds?.[msg.to.toLowerCase()];
     return threadId ? { ...msg, inReplyTo: threadId } : msg;
   });
+
+  // Hard blast-radius ceiling (operator-chosen) — see MAX_CAMPAIGN_RECIPIENTS' doc
+  // comment in lib/sendLimits.ts and lib/demosSend.ts's identical check for the
+  // full reasoning: checked against the FULL matched target list (post-dedup/
+  // blacklist, exactly what pagination below runs over), before paginate/
+  // checkCapAllows/recordSends, and rebuilt from scratch every request so it can't
+  // be walked around by paging with a rising offset. Wording matches this
+  // channel's own vocabulary — "stations" for the radio route, "curators" for the
+  // playlist-curator route — rather than the generic "recipients" demos uses.
+  if (allMessages.length > MAX_CAMPAIGN_RECIPIENTS) {
+    const noun = nameVar === 'stationName' ? 'stations' : 'curators';
+    return NextResponse.json({
+      error: `Your filters match ${allMessages.length} ${noun}. A campaign can send to at most ${MAX_CAMPAIGN_RECIPIENTS} — narrow your filters and try again.`,
+    }, { status: 400 });
+  }
 
   const { batch, total, nextOffset: pageNextOffset } = paginate(allMessages, offset ?? 0, limit ?? DEFAULT_SEND_BATCH_SIZE);
 

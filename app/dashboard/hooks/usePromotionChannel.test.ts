@@ -7,6 +7,7 @@ vi.mock('@/lib/remoteSync', () => ({
 }));
 
 import { usePromotionChannel, PromotionChannelConfig } from './usePromotionChannel';
+import { MAX_CAMPAIGN_RECIPIENTS } from '@/lib/sendLimits';
 import type { Campaign } from '../types';
 
 interface TestTarget { name: string; emails: string[] }
@@ -158,6 +159,40 @@ describe('usePromotionChannel', () => {
 
       expect(sendFetch).toHaveBeenCalled();
       expect(result.current.sendResult).toEqual({ sent: 1, failed: 0, total: 1 });
+    });
+
+    it('blocks the send when the matched audience exceeds MAX_CAMPAIGN_RECIPIENTS, naming stations', async () => {
+      const stations = Array.from({ length: MAX_CAMPAIGN_RECIPIENTS + 1 }, (_, i) => ({ name: `Station ${i}`, emails: [`station${i}@x.com`] }));
+      const previewFetch = vi.fn(async () => ({ json: async () => ({ stations }) }));
+      vi.stubGlobal('fetch', previewFetch);
+      const { result } = renderChannel();
+      await act(async () => { await result.current.handlePreview(); });
+
+      const sendFetch = vi.fn();
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      expect(sendFetch).not.toHaveBeenCalled();
+      expect(result.current.sendError).toContain(String(MAX_CAMPAIGN_RECIPIENTS + 1));
+      expect(result.current.sendError).toContain('stations');
+    });
+
+    it('blocks the send when the matched audience exceeds MAX_CAMPAIGN_RECIPIENTS, naming curators', async () => {
+      const curators = Array.from({ length: MAX_CAMPAIGN_RECIPIENTS + 1 }, (_, i) => ({ name: `Curator ${i}`, emails: [`curator${i}@x.com`] }));
+      const previewFetch = vi.fn(async () => ({ json: async () => ({ curators }) }));
+      vi.stubGlobal('fetch', previewFetch);
+      const { result } = renderChannel({
+        campaignType: 'playlists', previewEndpoint: '/api/playlist-preview', resultsKey: 'curators',
+        secondaryFilterKey: 'platforms', nameVar: 'curatorName',
+      });
+      await act(async () => { await result.current.handlePreview(); });
+
+      const sendFetch = vi.fn();
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      expect(sendFetch).not.toHaveBeenCalled();
+      expect(result.current.sendError).toContain('curators');
     });
   });
 

@@ -5,6 +5,7 @@ import { syncStorage } from '@/lib/remoteSync';
 import type { EmailAccount, NewAccountForm, DeliverabilityResult, FailedEmailEntry } from '../types';
 import { DEFAULT_SIGN_OFF, BLANK_ACCOUNT, DEFAULT_SEND_WINDOW_START_HOUR, DEFAULT_SEND_WINDOW_END_HOUR, DEFAULT_CONTACT_COOLDOWN_DAYS } from '../constants';
 import type { SendWindowSettings } from '@/lib/sendWindow';
+import { DEFAULT_DAILY_CAP } from '@/lib/sendLimits';
 
 /**
  * Tolerates both the current FailedEmailEntry[] shape and the legacy
@@ -168,7 +169,14 @@ export function useAccountSettings() {
   const [signOffImageError, setSignOffImageError] = useState('');
 
   const [sendDelay, setSendDelay] = useState(0);
-  const [dailySendCap, setDailySendCap] = useState(0);
+  // Defaults to DEFAULT_DAILY_CAP (50), matching lib/sendQuota.ts's getDailyCap
+  // default for the same "never set" case — a fresh page load with nothing in
+  // localStorage/synced settings yet should show the number the server will
+  // actually enforce, not a 0 that reads as "unlimited". page.tsx's initial-load
+  // effect (see the `tp_daily_cap` localStorage read) only overrides this when a
+  // saved value actually exists, so an explicit "None" (stored `"0"`) still wins
+  // once it loads.
+  const [dailySendCap, setDailySendCap] = useState(DEFAULT_DAILY_CAP);
   // How many days must pass before the same address is fair game again for a
   // *different* track — a send-pacing setting alongside sendDelay/dailySendCap
   // above, synced the same way (see setContactCooldown below). 0 = off, same

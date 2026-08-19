@@ -9,6 +9,7 @@ vi.mock('@/lib/remoteSync', () => ({
 import { useDemosFlow, DemosFlowConfig } from './useDemosFlow';
 import { REACHABILITY_MAX_COMPANY_SIZE } from '../constants';
 import { assignSubjectVariant } from '@/lib/recipients';
+import { MAX_CAMPAIGN_RECIPIENTS } from '@/lib/sendLimits';
 import type { Artist, Campaign, CustomContact } from '../types';
 
 function artist(overrides: Partial<Artist> = {}): Artist {
@@ -239,6 +240,24 @@ describe('useDemosFlow', () => {
 
       expect(accountCapError).toHaveBeenCalledWith('acct-1', 1);
       expect(sendFetch).not.toHaveBeenCalled();
+    });
+
+    it('blocks the send when the matched audience exceeds MAX_CAMPAIGN_RECIPIENTS, without calling fetch', async () => {
+      const artists = Array.from(
+        { length: MAX_CAMPAIGN_RECIPIENTS + 1 },
+        (_, i) => artist({ name: `Artist ${i}`, managerEmails: [`artist${i}@example.com`] })
+      );
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists }) })));
+      const { result } = renderDemos();
+      await act(async () => { await result.current.handlePreview(); });
+
+      const sendFetch = vi.fn();
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      expect(sendFetch).not.toHaveBeenCalled();
+      expect(result.current.sendError).toContain(String(MAX_CAMPAIGN_RECIPIENTS + 1));
+      expect(result.current.sendError).toContain('narrow your filters');
     });
   });
 

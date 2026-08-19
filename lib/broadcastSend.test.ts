@@ -25,6 +25,7 @@ vi.mock('@/lib/mailSend', async () => {
 });
 
 import { sendBroadcast, BroadcastSendPayload, BroadcastTarget } from './broadcastSend';
+import { MAX_CAMPAIGN_RECIPIENTS } from './sendLimits';
 
 const BASE_PAYLOAD: BroadcastSendPayload = {
   trackTitle: 'Track',
@@ -37,6 +38,10 @@ const TARGETS: BroadcastTarget[] = [
   { name: 'Station A', emails: ['a@example.com'] },
   { name: 'Station B', emails: ['b@example.com'] },
 ];
+
+function makeTargets(n: number, prefix: string): BroadcastTarget[] {
+  return Array.from({ length: n }, (_, i) => ({ name: `${prefix} ${i}`, emails: [`${prefix.toLowerCase()}${i}@example.com`] }));
+}
 
 describe('sendBroadcast', () => {
   beforeEach(() => {
@@ -126,5 +131,51 @@ describe('sendBroadcast', () => {
     const sentMessages = sendMessagesPooled.mock.calls[0][1];
     expect(sentMessages).toHaveLength(1);
     expect(recordSends).toHaveBeenCalledWith(1, undefined);
+  });
+
+  describe('MAX_CAMPAIGN_RECIPIENTS ceiling', () => {
+    it('sends normally at exactly the ceiling (25 is allowed)', async () => {
+      const targets = makeTargets(MAX_CAMPAIGN_RECIPIENTS, 'Station');
+      // limit raised past DEFAULT_SEND_BATCH_SIZE (10) so this one request covers
+      // the whole 25-recipient audience in a single page — the point of this test
+      // is the ceiling's boundary, not pagination.
+      const res = await sendBroadcast({ ...BASE_PAYLOAD, limit: MAX_CAMPAIGN_RECIPIENTS }, targets, 'stationName');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.total).toBe(MAX_CAMPAIGN_RECIPIENTS);
+      expect(body.sent).toBe(MAX_CAMPAIGN_RECIPIENTS);
+      expect(recordSends).toHaveBeenCalledWith(MAX_CAMPAIGN_RECIPIENTS, undefined);
+    });
+
+    it('refuses a radio send one over the ceiling, naming stations in the error', async () => {
+      const targets = makeTargets(MAX_CAMPAIGN_RECIPIENTS + 1, 'Station');
+      const res = await sendBroadcast(BASE_PAYLOAD, targets, 'stationName');
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain(String(MAX_CAMPAIGN_RECIPIENTS + 1));
+      expect(body.error).toContain(String(MAX_CAMPAIGN_RECIPIENTS));
+      expect(body.error).toContain('stations');
+      expect(sendMessagesPooled).not.toHaveBeenCalled();
+      expect(recordSends).not.toHaveBeenCalled();
+    });
+
+    it('refuses a curator send one over the ceiling, naming curators in the error', async () => {
+      const targets = makeTargets(MAX_CAMPAIGN_RECIPIENTS + 1, 'Curator');
+      const res = await sendBroadcast(BASE_PAYLOAD, targets, 'curatorName');
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('curators');
+      expect(body.error).not.toContain('stations');
+      expect(sendMessagesPooled).not.toHaveBeenCalled();
+      expect(recordSends).not.toHaveBeenCalled();
+    });
+
+    it('cannot be walked around by paging: an over-limit audience is still refused on a request with a non-zero offset', async () => {
+      const targets = makeTargets(MAX_CAMPAIGN_RECIPIENTS + 1, 'Station');
+      const res = await sendBroadcast({ ...BASE_PAYLOAD, offset: 10, limit: 5 }, targets, 'stationName');
+      expect(res.status).toBe(400);
+      expect(sendMessagesPooled).not.toHaveBeenCalled();
+      expect(recordSends).not.toHaveBeenCalled();
+    });
   });
 });

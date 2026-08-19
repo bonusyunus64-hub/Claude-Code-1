@@ -36,6 +36,7 @@ vi.mock('@/lib/kv', () => ({
 }));
 
 import { checkCapAllows, getSendsToday, recordSends, getDailyCap, todayKey } from './sendQuota';
+import { DEFAULT_DAILY_CAP } from './sendLimits';
 
 function storeAccount(id: string, dailyCap?: number) {
   return hset('trackpitch:accounts', { [id]: JSON.stringify({ id, encryptedPass: 'irrelevant-for-cap-checks', smtpUser: `${id}@example.com`, dailyCap }) });
@@ -133,6 +134,12 @@ describe('sendQuota', () => {
     });
 
     it('imposes no per-account limit when the account has none set', async () => {
+      // Pinned to explicit "None" so this test isolates the per-account cap it's
+      // actually about — since Part B, an untouched tp_daily_cap now defaults to
+      // DEFAULT_DAILY_CAP (50) rather than unlimited (see the 'getDailyCap default'
+      // describe block below), so leaving it unset here would make the *global*
+      // cap the thing that binds at 1000 sends, not the (absent) account cap.
+      await hset('trackpitch:settings', { tp_daily_cap: '0' });
       await storeAccount('acct-1', undefined);
       await recordSends(1000, 'acct-1');
       const result = await checkCapAllows(1000, 'acct-1');
@@ -168,10 +175,32 @@ describe('sendQuota', () => {
     });
 
     it('is a no-op when no accountId is passed', async () => {
+      // Pinned to explicit "None" for the same reason as the test above — an
+      // unset tp_daily_cap now defaults to 50, which would otherwise bind here
+      // instead of demonstrating the per-account check is skipped.
+      await hset('trackpitch:settings', { tp_daily_cap: '0' });
       await storeAccount('acct-1', 5);
       await recordSends(5, 'acct-1');
       const result = await checkCapAllows(1000);
       expect(result).toEqual({ allowed: 1000 });
+    });
+  });
+
+  describe('getDailyCap default (Part B)', () => {
+    it('defaults to DEFAULT_DAILY_CAP when tp_daily_cap has never been stored', async () => {
+      // Nothing hset for tp_daily_cap in this test — the "never touched the
+      // setting" case, distinct from an explicitly stored "0".
+      expect(await getDailyCap()).toBe(DEFAULT_DAILY_CAP);
+    });
+
+    it('honours an explicitly stored "0" as None (unlimited), not the default', async () => {
+      await hset('trackpitch:settings', { tp_daily_cap: '0' });
+      expect(await getDailyCap()).toBe(0);
+    });
+
+    it('honours an explicitly stored non-zero value', async () => {
+      await hset('trackpitch:settings', { tp_daily_cap: '200' });
+      expect(await getDailyCap()).toBe(200);
     });
   });
 });

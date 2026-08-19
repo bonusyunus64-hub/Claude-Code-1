@@ -10,6 +10,7 @@ import {
   permanentlyFailedEmails, checkRecipientsValidity, shuffle, payloadForPendingSend,
 } from '../utils';
 import { REACHABILITY_MAX_COMPANY_SIZE } from '../constants';
+import { MAX_CAMPAIGN_RECIPIENTS } from '@/lib/sendLimits';
 
 export type SortOrder = 'followers-desc' | 'followers-asc' | 'alpha-asc' | 'alpha-desc' | 'random';
 
@@ -295,6 +296,17 @@ export function useDemosFlow(config: DemosFlowConfig) {
 
   async function handleSend() {
     if (!trackTitle || !driveLink) return;
+    // Client-side half of the MAX_CAMPAIGN_RECIPIENTS blast-radius ceiling — the
+    // server (lib/demosSend.ts) is authoritative and re-checks this against its own
+    // freshly-rebuilt recipient list before sending anything, but surfacing it here
+    // means the operator finds out the moment they click Send rather than only
+    // after a round-trip to a 400. Checked ahead of the unfiltered-send confirm()
+    // below on purpose: there's no point asking "continue?" for a send that's
+    // already guaranteed to be refused.
+    if (totalEmails > MAX_CAMPAIGN_RECIPIENTS) {
+      setSendError(`Your filters match ${totalEmails} recipients. A campaign can send to at most ${MAX_CAMPAIGN_RECIPIENTS} — narrow your filters (fewer genres, or turn on "Independent contacts only") and try again.`);
+      return;
+    }
     // Client-side half of the unfiltered-send guard (Task B) — the server-side
     // half is lib/demosSend.ts requiring this same matchAllGenres flag before
     // it will run an empty genre selection as "every artist" at all, so a

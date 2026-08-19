@@ -34,6 +34,7 @@ vi.mock('@/lib/mailSend', async () => {
 
 import { sendFollowUp, FollowUpSendPayload } from './followUpSend';
 import type { CampaignRecord } from './campaigns';
+import { MAX_CAMPAIGN_RECIPIENTS } from './sendLimits';
 
 const BASE_CAMPAIGN: CampaignRecord = {
   id: 'camp-1',
@@ -222,6 +223,24 @@ describe('sendFollowUp', () => {
     await sendFollowUp(BASE_PAYLOAD);
     const saved = saveCampaign.mock.calls[0][0];
     expect(saved.followUpSentAt).toBeTypeOf('number');
+  });
+
+  it('is unaffected by MAX_CAMPAIGN_RECIPIENTS: a follow-up on a >25-recipient legacy campaign still sends', async () => {
+    // Part A's blast-radius ceiling deliberately does NOT apply here — a follow-up
+    // can only re-mail people already contacted within this same campaign, so it
+    // can never widen the blast radius, and capping it would break follow-ups on
+    // any campaign sent before the ceiling existed (which could be arbitrarily
+    // large). Uses MAX_CAMPAIGN_RECIPIENTS + a margin, not a hardcoded number, so
+    // this stays proven-over-the-ceiling even if the constant's value changes.
+    const legacySize = MAX_CAMPAIGN_RECIPIENTS + 5;
+    const manyEmails = Array.from({ length: legacySize }, (_, i) => `legacy${i}@example.com`);
+    listCampaigns.mockResolvedValue([{ ...BASE_CAMPAIGN, emails: manyEmails, messageIds: {} }]);
+    const res = await sendFollowUp(BASE_PAYLOAD);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.total).toBe(legacySize);
+    expect(sendMessagesPooled).toHaveBeenCalled();
+    expect(sendMessagesPooled.mock.calls[0][1].length).toBeGreaterThan(0);
   });
 
   it('does not set followUpSentAt when a transient failure leaves a target unresolved', async () => {

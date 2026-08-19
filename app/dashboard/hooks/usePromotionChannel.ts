@@ -8,6 +8,7 @@ import {
   sendInBatches, countSendableRecipients, findDuplicateRecipients, findCooldownRecipients, messageIdsFromResults,
   permanentlyFailedEmails, checkRecipientsValidity, payloadForPendingSend,
 } from '../utils';
+import { MAX_CAMPAIGN_RECIPIENTS } from '@/lib/sendLimits';
 
 export type SendOutcome = { sent: number; failed: number; total: number };
 
@@ -168,6 +169,16 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
 
   const handleSend = useCallback(async () => {
     if (!trackTitle || !driveLink) return;
+    // Client-side half of the MAX_CAMPAIGN_RECIPIENTS blast-radius ceiling — see
+    // useDemosFlow's identical check for the full reasoning; the server
+    // (lib/broadcastSend.ts) is authoritative and re-checks this against its own
+    // freshly-rebuilt target list. Wording matches this channel's own vocabulary
+    // (stations vs. curators), same as the server-side error.
+    if (totalEmails > MAX_CAMPAIGN_RECIPIENTS) {
+      const noun = nameVar === 'stationName' ? 'stations' : 'curators';
+      setSendError(`Your filters match ${totalEmails} ${noun}. A campaign can send to at most ${MAX_CAMPAIGN_RECIPIENTS} — narrow your filters and try again.`);
+      return;
+    }
     if (dailySendCap > 0 && sendsToday + totalEmails > dailySendCap) {
       setSendError(`Daily send limit reached (${sendsToday}/${dailySendCap} sent today). Wait until tomorrow or raise the limit in Account settings.`);
       return;
@@ -239,7 +250,7 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
     trackTitle, driveLink, dailySendCap, sendsToday, totalEmails, selectedAccountId, accountCapError,
     selectedGenres, selectedSecondary, secondaryFilterKey, template, subject, senderName, signOff, signOffImage,
     matchMode, sendDelay, blacklist, sendEndpoint, campaignType, upsertCampaign, recordFailedEmails, refreshSendsToday,
-    sendWindowSettings,
+    sendWindowSettings, nameVar,
   ]);
 
   const savePreset = useCallback(() => {

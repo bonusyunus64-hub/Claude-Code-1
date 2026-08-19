@@ -9,6 +9,7 @@ import { resolveAccount } from '@/lib/accounts';
 import { checkCapAllows, recordSends } from '@/lib/sendQuota';
 import { getBlacklist } from '@/lib/doNotContact';
 import { DEFAULT_DEMOS_SUBJECT } from '@/lib/emailDefaults';
+import { MAX_CAMPAIGN_RECIPIENTS } from '@/lib/sendLimits';
 
 export interface DemosSendPayload {
   trackTitle: string;
@@ -162,6 +163,26 @@ export async function sendDemos(payload: DemosSendPayload) {
     const threadId = threadIds?.[msg.to.toLowerCase()];
     return threadId ? { ...msg, inReplyTo: threadId } : msg;
   });
+
+  // Hard blast-radius ceiling (operator-chosen, see MAX_CAMPAIGN_RECIPIENTS' doc
+  // comment): checked against the FULL matched recipient set — roster-derived
+  // recipients and customContacts together, after dedup/blacklist/exclusion
+  // filtering, i.e. exactly what pagination below runs over — not the current
+  // page. A per-page check wouldn't cap anything: the dashboard just keeps paging
+  // with a rising offset until the audience is exhausted (sendInBatches in
+  // app/dashboard/utils.ts), so this has to fire before paginate/checkCapAllows/
+  // recordSends and evaluate identically no matter what `offset` this particular
+  // request carries — allMessages is rebuilt from scratch on every request, so an
+  // over-limit campaign can't slip through one page at a time. Refuses outright
+  // rather than truncating to the first MAX_CAMPAIGN_RECIPIENTS: truncating would
+  // silently pick who gets left out based on whatever sort order happened to be
+  // active. Checked before recordSends so a refused campaign never consumes any
+  // daily quota.
+  if (allMessages.length > MAX_CAMPAIGN_RECIPIENTS) {
+    return NextResponse.json({
+      error: `Your filters match ${allMessages.length} recipients. A campaign can send to at most ${MAX_CAMPAIGN_RECIPIENTS} — narrow your filters (fewer genres, or turn on "Independent contacts only") and try again.`,
+    }, { status: 400 });
+  }
 
   const { batch, total, nextOffset: pageNextOffset } = paginate(allMessages, offset ?? 0, limit ?? DEFAULT_SEND_BATCH_SIZE);
 
