@@ -398,6 +398,94 @@ describe('usePromotionChannel', () => {
     });
   });
 
+  describe('excludeNewsroom toggle (radio\'s "Exclude newsroom addresses")', () => {
+    it('defaults to off', () => {
+      const { result } = renderChannel();
+      expect(result.current.excludeNewsroom).toBe(false);
+    });
+
+    it('toggles on and off, and resets preview/send state like the other filters', async () => {
+      const { result } = renderChannel();
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ stations: [{ name: 'S', emails: ['a@x.com'] }] }) })));
+      await act(async () => { await result.current.handlePreview(); });
+      expect(result.current.previewDone).toBe(true);
+
+      act(() => result.current.toggleExcludeNewsroom());
+      expect(result.current.excludeNewsroom).toBe(true);
+      expect(result.current.previewDone).toBe(false);
+
+      act(() => result.current.toggleExcludeNewsroom());
+      expect(result.current.excludeNewsroom).toBe(false);
+    });
+
+    it('seeds allRegions and the baseline impact count from the genres endpoint on mount', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ genres: ['Pop'], regions: ['National', 'International'], newsroomExcludedCount: 32 }),
+      })));
+      const { result } = renderChannel();
+      await waitFor(() => expect(result.current.allRegions).toEqual(['National', 'International']));
+      expect(result.current.newsroomBaselineExcludedCount).toBe(32);
+    });
+
+    it('sends excludeNewsroom in the preview request body, and stores the returned impact count', async () => {
+      // Rendered under the default beforeEach fetch stub first (mount's own
+      // genresEndpoint fetch), so previewFetch below only ever sees the preview
+      // call itself — mirrors the "resets preview/send state" genre test above.
+      const { result } = renderChannel();
+      act(() => result.current.toggleExcludeNewsroom());
+
+      const previewFetch = vi.fn(async (_url: string, _init?: RequestInit) => ({
+        json: async () => ({ stations: [{ name: 'S', emails: ['a@x.com'] }], newsroomExcludedCount: 5 }),
+      }));
+      vi.stubGlobal('fetch', previewFetch);
+      await act(async () => { await result.current.handlePreview(); });
+
+      const body = JSON.parse((previewFetch.mock.calls[0][1] as RequestInit).body as string);
+      expect(body.excludeNewsroom).toBe(true);
+      expect(result.current.newsroomExcludedCount).toBe(5);
+    });
+
+    it('includes excludeNewsroom in the send payload', async () => {
+      const previewFetch = vi.fn(async () => ({ json: async () => ({ stations: [{ name: 'S', emails: ['a@x.com'] }] }) }));
+      vi.stubGlobal('fetch', previewFetch);
+      const { result } = renderChannel();
+      act(() => result.current.toggleExcludeNewsroom());
+      await act(async () => { await result.current.handlePreview(); });
+
+      const sendFetch = vi.fn(async (_url: string, _init?: RequestInit) => ({
+        ok: true, json: async () => ({ results: [{ to: 'a@x.com', success: true }], total: 1, nextOffset: null }),
+      }));
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      const body = JSON.parse((sendFetch.mock.calls[0][1] as RequestInit).body as string);
+      expect(body.excludeNewsroom).toBe(true);
+    });
+
+    it('saves and loads excludeNewsroom as part of a filter preset', () => {
+      const { result } = renderChannel();
+      act(() => result.current.toggleExcludeNewsroom());
+      act(() => result.current.setNewPresetName('News-free'));
+      act(() => result.current.savePreset());
+
+      const preset = result.current.presets[0];
+      expect(preset.excludeNewsroom).toBe(true);
+
+      act(() => result.current.setExcludeNewsroom(false));
+      act(() => result.current.loadPreset(preset));
+      expect(result.current.excludeNewsroom).toBe(true);
+    });
+
+    it('loading a preset saved before this toggle existed defaults it to off', () => {
+      const { result } = renderChannel();
+      act(() => result.current.toggleExcludeNewsroom()); // start it on, to prove loadPreset overrides to false
+      const legacyPreset = { id: '1', name: 'Old preset', genres: [], matchMode: 'any' as const, locations: [] };
+      act(() => result.current.loadPreset(legacyPreset));
+      expect(result.current.excludeNewsroom).toBe(false);
+    });
+  });
+
   describe('derived values', () => {
     it('canSend requires a track title, drive link, and a completed preview', async () => {
       const { result } = renderChannel({ trackTitle: '' });

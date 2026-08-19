@@ -24,6 +24,9 @@ export interface ChannelFilterPreset {
   name: string;
   genres: string[];
   matchMode: 'any' | 'all';
+  /** Radio-only "Exclude newsroom addresses" toggle state; absent on presets
+   *  saved before this field existed, and on non-radio channels. */
+  excludeNewsroom?: boolean;
   [secondaryFilterKey: string]: unknown;
 }
 
@@ -86,12 +89,22 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
     recordFailedEmails, pitchedEmailMap, lastContactedMap, contactCooldownDays, upsertCampaign, sendWindowSettings,
   } = config;
 
-  // Genres list has no synced-settings dependency (unlike presets/template library
-  // below), so it's safe for this hook to fetch it itself on mount rather than
-  // needing the parent to hydrate it after hydrateFromRemote().
+  // Genres/regions list has no synced-settings dependency (unlike presets/template
+  // library below), so it's safe for this hook to fetch it itself on mount rather
+  // than needing the parent to hydrate it after hydrateFromRemote(). `regions` and
+  // `newsroomExcludedCount` are radio-specific (playlists has neither a region
+  // filter nor a newsroom concept) but harmless for a channel that doesn't use
+  // them — same tolerance the hook already has for `nameVar === 'stationName'`
+  // checks elsewhere in here.
   const [allGenres, setAllGenres] = useState<string[]>([]);
+  const [allRegions, setAllRegions] = useState<string[]>([]);
+  const [newsroomBaselineExcludedCount, setNewsroomBaselineExcludedCount] = useState(0);
   useEffect(() => {
-    fetch(genresEndpoint).then(r => r.json()).then(d => setAllGenres(d.genres || [])).catch(() => {});
+    fetch(genresEndpoint).then(r => r.json()).then(d => {
+      setAllGenres(d.genres || []);
+      setAllRegions(d.regions || []);
+      setNewsroomBaselineExcludedCount(d.newsroomExcludedCount ?? 0);
+    }).catch(() => {});
   }, [genresEndpoint]);
 
   const [genreSearch, setGenreSearch] = useState('');
@@ -99,6 +112,14 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
   const [showGenreDropdown, setShowGenreDropdown] = useState(false);
   const [matchMode, setMatchMode] = useState<'any' | 'all'>('any');
   const [selectedSecondary, setSelectedSecondary] = useState<string[]>([]);
+  // "Exclude newsroom addresses" — opt-in, default off (see lib/radio.ts's
+  // filterRadioStations doc comment for why). newsroomExcludedCount is the impact
+  // of this toggle for the *current* genre/location filters, refreshed by every
+  // Preview call regardless of the toggle's own state, so the operator can see
+  // the cost before flipping it — newsroomBaselineExcludedCount above (no
+  // filters applied) is only the fallback shown before a Preview has run.
+  const [excludeNewsroom, setExcludeNewsroom] = useState(false);
+  const [newsroomExcludedCount, setNewsroomExcludedCount] = useState<number | null>(null);
 
   const [results, setResults] = useState<Target[]>([]);
   const [previewDone, setPreviewDone] = useState(false);
@@ -135,6 +156,11 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
     resetPreview();
   }, [resetPreview]);
 
+  const toggleExcludeNewsroom = useCallback(() => {
+    setExcludeNewsroom(prev => !prev);
+    resetPreview();
+  }, [resetPreview]);
+
   const presetsStorageKey = `tp_${campaignType}_presets`;
   const templatesStorageKey = `tp_${campaignType}_templates`;
 
@@ -144,17 +170,18 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
       const res = await fetch(previewEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ genres: selectedGenres, [secondaryFilterKey]: selectedSecondary, matchMode }),
+        body: JSON.stringify({ genres: selectedGenres, [secondaryFilterKey]: selectedSecondary, matchMode, excludeNewsroom }),
       });
       const data = await res.json();
       const items = (data[resultsKey] || []) as Target[];
       setResults(items);
       setPreviewDone(true);
+      if (typeof data.newsroomExcludedCount === 'number') setNewsroomExcludedCount(data.newsroomExcludedCount);
       checkRecipientsValidity(items.flatMap(t => t.emails)).then(setInvalidEmails);
     } finally {
       setPreviewLoading(false);
     }
-  }, [previewEndpoint, resultsKey, secondaryFilterKey, selectedGenres, selectedSecondary, matchMode]);
+  }, [previewEndpoint, resultsKey, secondaryFilterKey, selectedGenres, selectedSecondary, matchMode, excludeNewsroom]);
 
   const { sendable: totalEmails, excludedByBlacklist } = countSendableRecipients(blacklist, results.flatMap(t => t.emails));
   const canSend = !!trackTitle && !!driveLink && previewDone;
@@ -192,6 +219,12 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
       const sendPayload = {
         trackTitle, driveLink, genres: selectedGenres, [secondaryFilterKey]: selectedSecondary,
         emailTemplate: template, subjectTemplate: subject, senderName, signOff, signOffImage, matchMode,
+        // Re-applied server-side by /api/radio-send (and by the send-window queue
+        // drain, lib/sendDispatch.ts) so a queued or retried send re-filters the
+        // same way this preview did — the server rebuilds the target list from
+        // scratch rather than trusting `results` above, same as every other
+        // filter here (genres, locations, matchMode).
+        excludeNewsroom,
         sendDelay: sendDelay > 0 ? sendDelay : undefined,
         blacklist: blacklist.length > 0 ? blacklist : undefined,
         accountId: selectedAccountId || undefined,
@@ -249,26 +282,30 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
   }, [
     trackTitle, driveLink, dailySendCap, sendsToday, totalEmails, selectedAccountId, accountCapError,
     selectedGenres, selectedSecondary, secondaryFilterKey, template, subject, senderName, signOff, signOffImage,
-    matchMode, sendDelay, blacklist, sendEndpoint, campaignType, upsertCampaign, recordFailedEmails, refreshSendsToday,
+    matchMode, excludeNewsroom, sendDelay, blacklist, sendEndpoint, campaignType, upsertCampaign, recordFailedEmails, refreshSendsToday,
     sendWindowSettings, nameVar,
   ]);
 
   const savePreset = useCallback(() => {
     const name = newPresetName.trim();
     if (!name) return;
-    const preset: ChannelFilterPreset = { id: Date.now().toString(), name, genres: selectedGenres, matchMode, [secondaryFilterKey]: selectedSecondary };
+    const preset: ChannelFilterPreset = { id: Date.now().toString(), name, genres: selectedGenres, matchMode, excludeNewsroom, [secondaryFilterKey]: selectedSecondary };
     setPresets(prev => {
       const updated = [...prev, preset];
       syncStorage.setItem(presetsStorageKey, JSON.stringify(updated));
       return updated;
     });
     setNewPresetName('');
-  }, [newPresetName, selectedGenres, matchMode, selectedSecondary, secondaryFilterKey, presetsStorageKey]);
+  }, [newPresetName, selectedGenres, matchMode, excludeNewsroom, selectedSecondary, secondaryFilterKey, presetsStorageKey]);
 
   const loadPreset = useCallback((preset: ChannelFilterPreset) => {
     setSelectedGenres(preset.genres);
     setSelectedSecondary((preset[secondaryFilterKey] as string[] | undefined) ?? []);
     setMatchMode(preset.matchMode);
+    // Backward-compatible: presets saved before this toggle existed have no
+    // `excludeNewsroom` field, and must keep loading as the off default they
+    // were saved under, not silently start excluding newsroom addresses.
+    setExcludeNewsroom((preset.excludeNewsroom as boolean | undefined) ?? false);
     resetPreview();
   }, [secondaryFilterKey, resetPreview]);
 
@@ -309,6 +346,15 @@ export function usePromotionChannel<Target extends { name: string; emails: strin
     allGenres, genreSearch, setGenreSearch, selectedGenres, setSelectedGenres, toggleGenre,
     showGenreDropdown, setShowGenreDropdown, filteredGenres, matchMode, setMatchMode,
     selectedSecondary, setSelectedSecondary, toggleSecondary,
+    /** Full region list (domestic + International + country-tagged International
+     *  options), server-derived — see lib/radio.ts's getAllRadioRegions. Unused
+     *  by non-region channels. */
+    allRegions,
+    excludeNewsroom, setExcludeNewsroom, toggleExcludeNewsroom,
+    /** Impact of the toggle for the current filters — null until a Preview has
+     *  run; newsroomBaselineExcludedCount (no filters) is the fallback shown
+     *  before that first Preview. */
+    newsroomExcludedCount, newsroomBaselineExcludedCount,
 
     template, subject, setTemplate, setSubject,
     templateLibrary, newTemplateName, setNewTemplateName, saveTemplateToLibrary, loadTemplateFromLibrary, deleteTemplateFromLibrary,

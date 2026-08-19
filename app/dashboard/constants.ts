@@ -59,8 +59,6 @@ export const DEFAULT_SIGN_OFF = `Best regards,
  */
 export const REACHABILITY_MAX_COMPANY_SIZE = 2;
 
-export const LOCATION_OPTIONS = ['National', 'ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA', 'International'];
-
 // open.spotify.com links are universal links, so mobile browsers hand off to the
 // Spotify app automatically when it's installed; otherwise they fall back to the web player.
 // Note: a trailing "/artists" category segment breaks the mobile app's universal link

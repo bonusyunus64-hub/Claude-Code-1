@@ -37,6 +37,9 @@ export interface RadioStation {
   region: string;
   genres: string[];
   emails: string[];
+  /** See lib/radio.ts's RadioStation for what this is; kept in sync with that
+   *  interface (this file's dashboard-facing duplicate of it). */
+  newsroomEmails?: string[];
   phone?: string;
 }
 

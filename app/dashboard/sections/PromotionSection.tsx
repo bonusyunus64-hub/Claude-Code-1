@@ -1,6 +1,6 @@
 import type { EmailAccount, RadioStation } from '../types';
 import type { PromotionChannel } from '../hooks/usePromotionChannel';
-import { DEFAULT_RADIO_TEMPLATE, DEFAULT_RADIO_SUBJECT, LOCATION_OPTIONS } from '../constants';
+import { DEFAULT_RADIO_TEMPLATE, DEFAULT_RADIO_SUBJECT } from '../constants';
 import { CopyChip } from '../components/CopyChip';
 import { PitchedBadge } from '../components/PitchedBadge';
 import { SpamScoreBadge } from '../components/SpamScoreBadge';
@@ -35,6 +35,13 @@ export function PromotionSection(props: PromotionSectionProps) {
     pitchedEmailMap, selectedAccount, setActiveSection, addFailedToBlacklist, setPreviewModalType, setPreviewModalIdx,
     radio, radioPitchCount, contactCooldownDays,
   } = props;
+
+  // Contextual impact once a Preview has run (scoped to the current genre/location
+  // filters); the unfiltered baseline (~32) until then — see usePromotionChannel's
+  // doc comment on these two fields for why both exist.
+  const newsroomImpact = radio.previewDone && radio.newsroomExcludedCount !== null
+    ? radio.newsroomExcludedCount
+    : radio.newsroomBaselineExcludedCount;
 
   return (
     <>
@@ -200,9 +207,9 @@ export function PromotionSection(props: PromotionSectionProps) {
           {/* Location Filter */}
           <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-4">
             <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">Location Filter</h2>
-            <p className="text-sm text-zinc-500">Filter stations by region. Leave empty to include all locations.</p>
+            <p className="text-sm text-zinc-500">Filter stations by region. Leave empty to include all locations. &ldquo;International&rdquo; includes every international station, even the ones below with a specific country — pick a country instead if you only want that one.</p>
             <div className="flex flex-wrap gap-2">
-              {LOCATION_OPTIONS.map(loc => (
+              {radio.allRegions.map(loc => (
                 <button key={loc} onClick={() => radio.toggleSecondary(loc)}
                   className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${
                     radio.selectedSecondary.includes(loc)
@@ -217,6 +224,24 @@ export function PromotionSection(props: PromotionSectionProps) {
                   className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1 transition">Clear</button>
               )}
             </div>
+          </section>
+
+          {/* Newsroom Filter */}
+          <section className="bg-zinc-900 rounded-xl border border-zinc-800 p-4 md:p-6 space-y-2">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input type="checkbox" checked={radio.excludeNewsroom} onChange={radio.toggleExcludeNewsroom}
+                className="mt-0.5 h-4 w-4 rounded border-zinc-700 bg-zinc-800 text-violet-600 focus:ring-violet-500 focus:ring-offset-zinc-950" />
+              <span>
+                <span className="text-sm font-medium text-zinc-200">Exclude newsroom addresses</span>
+                <p className="text-xs text-zinc-500 mt-0.5">
+                  Many stations only list a news desk (news@, newsroom@...) — they cover news, not music, so pitching a track there rarely works. Turning this on skips those addresses.
+                  {' '}Stations whose <span className="text-zinc-400">only</span> contact is a news desk will disappear from your results entirely — that&rsquo;s currently{' '}
+                  <span className="text-amber-400 font-medium">{newsroomImpact}</span>{' '}
+                  station{newsroomImpact !== 1 ? 's' : ''}
+                  {radio.previewDone ? ' with your current filters' : ' across all stations — preview to see the number for your current filters'}.
+                </p>
+              </span>
+            </label>
           </section>
 
           {/* Preview */}

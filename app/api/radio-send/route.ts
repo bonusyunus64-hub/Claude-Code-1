@@ -11,6 +11,7 @@ interface RadioSendPayload extends BroadcastSendPayload {
   genres: string[];
   locations: string[];
   matchMode?: 'any' | 'all';
+  excludeNewsroom?: boolean;
 }
 
 export async function POST(req: NextRequest) {
@@ -18,6 +19,6 @@ export async function POST(req: NextRequest) {
   if (!parsed.ok) return parsed.response;
 
   const payload = parsed.data;
-  const stations = filterRadioStations(payload.genres ?? [], payload.locations ?? [], payload.matchMode ?? 'any');
+  const stations = filterRadioStations(payload.genres ?? [], payload.locations ?? [], payload.matchMode ?? 'any', payload.excludeNewsroom ?? false);
   return sendBroadcast(payload, stations, 'stationName');
 }

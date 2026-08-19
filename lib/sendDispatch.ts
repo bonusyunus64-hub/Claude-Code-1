@@ -35,8 +35,8 @@ export async function dispatchQueuedSend(
       return sendDemos(payload as unknown as DemosSendPayload);
 
     case '/api/radio-send': {
-      const p = payload as unknown as BroadcastSendPayload & { genres?: string[]; locations?: string[]; matchMode?: 'any' | 'all' };
-      const stations = filterRadioStations(p.genres ?? [], p.locations ?? [], p.matchMode ?? 'any');
+      const p = payload as unknown as BroadcastSendPayload & { genres?: string[]; locations?: string[]; matchMode?: 'any' | 'all'; excludeNewsroom?: boolean };
+      const stations = filterRadioStations(p.genres ?? [], p.locations ?? [], p.matchMode ?? 'any', p.excludeNewsroom ?? false);
       return sendBroadcast(p, stations, 'stationName');
     }
 
