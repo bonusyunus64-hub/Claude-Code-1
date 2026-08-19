@@ -5,7 +5,7 @@ import { join } from 'path';
 import {
   backfillGenres, isExactNameMatch, normalizeItunesGenreTag, mapItunesGenre,
   uniqueEmailCount, ITUNES_GENRE_ALIASES, mergeProvenanceLog, loadExistingProvenanceLog,
-  PERMANENT_SKIP_REASONS,
+  PERMANENT_SKIP_REASONS, validateRetryReasons,
 } from './backfill-genres.mjs';
 
 // Fixtures for loadExistingProvenanceLog live in the OS temp dir, not the
@@ -44,7 +44,14 @@ function artist(overrides = {}) {
   };
 }
 
-const ROSTER_GENRES = ['Hip Hop', 'Hip Hop & Rap', 'Metalcore', 'Indie', 'K Pop', 'Pop', 'Rap', 'Rock', 'Rap Metal', 'Dance / Edm', 'Singer Songwriter', 'Pop Singer Songwriter', 'Afro Pop', 'Afropop', 'Alternative'];
+const ROSTER_GENRES = [
+  'Hip Hop', 'Hip Hop & Rap', 'Metalcore', 'Indie', 'K Pop', 'Pop', 'Rap', 'Rock', 'Rap Metal',
+  'Dance / Edm', 'Singer Songwriter', 'Pop Singer Songwriter', 'Afro Pop', 'Afropop', 'Alternative',
+  // Targets of the 2026-08-19 alias additions (Part 1) — must be present
+  // verbatim for those aliases (and the "every alias target exists"
+  // guard test below) to resolve.
+  'Folk', 'Latin Pop', 'Jazz', 'Country', 'Alternative Hip Hop', 'Afrobeat', 'Afrobeats',
+];
 
 function itunesArtist({ name, artistId, genre }) {
   return {
@@ -114,6 +121,39 @@ describe('mapItunesGenre', () => {
     expect(mapItunesGenre('Worldwide', rosterGenreByLower)).toBeNull();
     expect(mapItunesGenre('Punjabi', rosterGenreByLower)).toBeNull();
     expect(mapItunesGenre('Arabic', rosterGenreByLower)).toBeNull();
+  });
+
+  describe('the seven aliases added 2026-08-19 for previously-unmappableGenre artists', () => {
+    it('resolves each of the seven to its documented target', () => {
+      expect(mapItunesGenre('Alternative Folk', rosterGenreByLower)).toBe('Folk');
+      expect(mapItunesGenre('Pop Latino', rosterGenreByLower)).toBe('Latin Pop');
+      expect(mapItunesGenre('Contemporary Jazz', rosterGenreByLower)).toBe('Jazz');
+      expect(mapItunesGenre('Contemporary Country', rosterGenreByLower)).toBe('Country');
+      expect(mapItunesGenre('Alternative Rap', rosterGenreByLower)).toBe('Alternative Hip Hop');
+      expect(mapItunesGenre('Adult Contemporary', rosterGenreByLower)).toBe('Pop');
+      expect(mapItunesGenre('African', rosterGenreByLower)).toBe('Afrobeat');
+    });
+
+    it('maps "African" to "Afrobeat" specifically, not the distinct "Afrobeats" entry', () => {
+      // Both "Afrobeat" and "Afrobeats" are real, separate roster genres —
+      // asserting the exact string here guards against a future edit
+      // silently drifting onto the wrong one of the two.
+      const mapped = mapItunesGenre('African', rosterGenreByLower);
+      expect(mapped).toBe('Afrobeat');
+      expect(mapped).not.toBe('Afrobeats');
+    });
+
+    it('leaves the four deliberately-unmapped tags unresolved (no alias added for them, on purpose)', () => {
+      // "Worldwide" and "Self-Development" are evidence of a wrong iTunes
+      // match (a podcast/audiobook sharing a musician's name), not a genre
+      // gap; "Instrumental" and "Easy Listening" have no honest equivalent
+      // in the roster vocabulary. See ITUNES_GENRE_ALIASES's trailing
+      // comment in backfill-genres.mjs for the full reasoning.
+      expect(mapItunesGenre('Worldwide', rosterGenreByLower)).toBeNull();
+      expect(mapItunesGenre('Instrumental', rosterGenreByLower)).toBeNull();
+      expect(mapItunesGenre('Easy Listening', rosterGenreByLower)).toBeNull();
+      expect(mapItunesGenre('Self-Development', rosterGenreByLower)).toBeNull();
+    });
   });
 });
 
@@ -334,6 +374,37 @@ describe('PERMANENT_SKIP_REASONS', () => {
   });
 });
 
+describe('validateRetryReasons', () => {
+  it('parses a single reason into a one-element Set', () => {
+    expect(validateRetryReasons('unmappableGenre')).toEqual(new Set(['unmappableGenre']));
+  });
+
+  it('parses comma-separated reasons, trimming whitespace', () => {
+    expect(validateRetryReasons('unmappableGenre, noNameMatch')).toEqual(
+      new Set(['unmappableGenre', 'noNameMatch'])
+    );
+  });
+
+  it('throws, listing the valid reasons, on an unrecognised reason', () => {
+    expect(() => validateRetryReasons('nonsense')).toThrow(/unrecognised reason.*"nonsense"/);
+    expect(() => validateRetryReasons('nonsense')).toThrow(/ambiguousName/); // valid reasons listed in the message
+  });
+
+  it('throws on a mix of valid and invalid reasons, rather than silently keeping only the valid ones', () => {
+    expect(() => validateRetryReasons('unmappableGenre,nonsense')).toThrow(/"nonsense"/);
+  });
+
+  it('throws on reasons that are real skip reasons but not permanent ones (lookupFailed, overLimit) — retrying them via this flag would silently match nothing', () => {
+    expect(() => validateRetryReasons('lookupFailed')).toThrow(/unrecognised reason.*"lookupFailed"/);
+    expect(() => validateRetryReasons('overLimit')).toThrow(/unrecognised reason.*"overLimit"/);
+  });
+
+  it('throws on empty input rather than matching everything or nothing silently', () => {
+    expect(() => validateRetryReasons('')).toThrow(/at least one reason/);
+    expect(() => validateRetryReasons(',,')).toThrow(/at least one reason/);
+  });
+});
+
 describe('backfillGenres — resuming from an existing provenance log', () => {
   it('does not re-attempt (no searchArtist call for) an artist previously skipped as ambiguousName', async () => {
     const skippedBefore = artist({ name: 'Harpy', rostrUrl: 'https://www.rostr.cc/profile/harpy' });
@@ -424,6 +495,35 @@ describe('backfillGenres — resuming from an existing provenance log', () => {
     expect(artists[0].genres).toEqual(['Rock']);
     expect(stats.alreadySkipped).toBe(0);
     expect(stats.attempted).toBe(1);
+  });
+
+  it('--retry-reasons re-attempts only artists most recently skipped under a listed reason, leaving other permanent skips excluded', async () => {
+    const unmappable = artist({ name: 'Was Unmappable', rostrUrl: 'https://www.rostr.cc/profile/was-unmappable' });
+    const ambiguous = artist({ name: 'Was Ambiguous', rostrUrl: 'https://www.rostr.cc/profile/was-ambiguous' });
+    const existingLog = {
+      source: 'itunes',
+      runs: [],
+      filled: [],
+      skipped: [
+        { name: 'Was Unmappable', rostrUrl: unmappable.rostrUrl, reason: 'unmappableGenre' },
+        { name: 'Was Ambiguous', rostrUrl: ambiguous.rostrUrl, reason: 'ambiguousName', competingGenres: ['Pop', 'Rock'], matchCount: 2 },
+      ],
+    };
+    const searchArtist = vi.fn(async name => ({ results: [itunesArtist({ name, genre: 'Pop' })] }));
+
+    const { artists, stats } = await backfillGenres(
+      { artists: [unmappable, ambiguous], genres: ROSTER_GENRES },
+      { searchArtist, existingLog, retryReasons: new Set(['unmappableGenre']) }
+    );
+
+    // Only the unmappableGenre artist was re-attempted.
+    expect(searchArtist).toHaveBeenCalledTimes(1);
+    expect(searchArtist).toHaveBeenCalledWith('Was Unmappable');
+    expect(artists[0].genres).toEqual(['Pop']);
+    // The ambiguousName artist stayed excluded, untouched.
+    expect(artists[1].genres).toEqual([]);
+    expect(stats.attempted).toBe(1);
+    expect(stats.alreadySkipped).toBe(1);
   });
 
   it('behaves exactly as before when there is no existing log (fresh start, existingLog: null / omitted)', async () => {

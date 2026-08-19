@@ -132,7 +132,7 @@
 // that re-running the exact same lookup can't change).
 //
 // Usage:
-//   node scripts/backfill-genres.mjs [--roster data/roster.json] [--out data/roster.json] [--log data/genre-backfill-log.json] [--limit N] [--delay 500] [--write] [--retry-skipped]
+//   node scripts/backfill-genres.mjs [--roster data/roster.json] [--out data/roster.json] [--log data/genre-backfill-log.json] [--limit N] [--delay 500] [--write] [--retry-skipped | --retry-reasons r1,r2,...]
 //   --retry-skipped disables the provenance-log skip exclusion described
 //   above, so every genre-less artist is a candidate again regardless of
 //   what an earlier chunk logged for it. Use it deliberately (e.g. after
@@ -140,6 +140,28 @@
 //   previously-ambiguous or previously-unmappable case differently) — not
 //   as the default chunking mode, since that's exactly the re-spend this
 //   flag exists to let you opt back into.
+//
+//   --retry-reasons <comma-separated PERMANENT_SKIP_REASONS>, e.g.
+//   `--retry-reasons unmappableGenre` or
+//   `--retry-reasons unmappableGenre,noNameMatch`, is the targeted version
+//   of --retry-skipped: it re-attempts only artists whose most recently
+//   logged skip reason is in the given list, leaving every other
+//   permanently-skipped artist excluded exactly as the default resume
+//   behaviour would. This exists because of a real cost asymmetry: a change
+//   to ITUNES_GENRE_ALIASES (like the seven added 2026-08-19) can only ever
+//   change the outcome for artists logged as unmappableGenre — 26 of them
+//   as of that log — never for the other 881 permanently-skipped artists
+//   logged as ambiguousName/noNameMatch/noGenreOnRecord, whose lookups an
+//   alias-table change cannot affect at all. `--retry-skipped` would
+//   re-look-up all 907 (~45 minutes at the default --delay); `--retry-reasons
+//   unmappableGenre` re-attempts exactly the 26 that could possibly resolve
+//   differently (~80 seconds). An unrecognised reason name fails the run
+//   loudly (see validateRetryReasons) rather than silently matching nothing
+//   — a silent no-op here would look identical to "the alias fix didn't
+//   work" and send someone debugging in the wrong direction. Passing both
+//   --retry-skipped and --retry-reasons together is a CLI error (see main
+//   below): --retry-skipped already retries every reason, so combining them
+//   is ambiguous rather than one meaningfully overriding the other.
 //
 // No API key or signup needed — iTunes Search is a public, keyless endpoint.
 // Apple throttles aggressively against it in practice (roughly 20 calls/min
@@ -212,7 +234,58 @@ export const ITUNES_GENRE_ALIASES = new Map([
   // tag carries no pop-specific signal, so it maps to the broader of the
   // two rather than guessing a subgenre iTunes never actually claimed.
   ['singer/songwriter', 'Singer Songwriter'],
+  // The following seven were user-decided mappings for tags found among the
+  // 26 artists that had previously skipped as unmappableGenre (2026-08-19).
+  // Each target was verified to exist verbatim in the real roster.json
+  // genres array before being added here.
+  //
+  // "Alternative Folk" has no standalone entry; "Folk" is the closest
+  // existing genre and the "alternative" qualifier isn't worth a new tag
+  // for 4 artists.
+  ['alternative folk', 'Folk'],
+  // "Pop Latino" is iTunes' tag for Latin-market pop; the roster's own
+  // "Latin Pop" is the same genre under ROSTR's naming convention.
+  ['pop latino', 'Latin Pop'],
+  // "Contemporary Jazz" -> the roster's plain "Jazz"; not worth a
+  // sub-genre split for 1 artist.
+  ['contemporary jazz', 'Jazz'],
+  // "Contemporary Country" -> the roster's plain "Country"; same reasoning.
+  ['contemporary country', 'Country'],
+  // "Alternative Rap" -> "Alternative Hip Hop", the roster's existing genre
+  // for the same idea under its own naming convention.
+  ['alternative rap', 'Alternative Hip Hop'],
+  // "Adult Contemporary" -> "Pop": the closest broad existing bucket; the
+  // roster has no dedicated adult-contemporary genre.
+  ['adult contemporary', 'Pop'],
+  // "African" -> "Afrobeat" — NOT "Afrobeats". Both "Afrobeat" and
+  // "Afrobeats" are separate, real entries in the roster vocabulary (the
+  // former the older Fela Kuti-lineage genre, the latter the contemporary
+  // West African pop sound); this alias intentionally targets "Afrobeat"
+  // exactly, per the user's explicit call, not the more commonly-searched
+  // "Afrobeats".
+  ['african', 'Afrobeat'],
 ]);
+
+/**
+ * Deliberately absent from ITUNES_GENRE_ALIASES above, even though they're
+ * the remaining tags among the same 26 previously-unmappableGenre artists
+ * not covered by the seven aliases just added. A future reader auditing
+ * "why isn't X mapped yet" should find the reasoning here instead of
+ * re-deriving it or "helpfully" adding an alias that shouldn't exist:
+ *
+ *   - "Worldwide" (9 artists) and "Self-Development" (1 artist): strong
+ *     evidence of a WRONG iTunes match rather than a genre gap — iTunes
+ *     likely returned a podcast, audiobook, or unrelated catalog entry that
+ *     happens to share the roster artist's name, not an honest genre tag
+ *     for a musician. Aliasing these would launder a bad match into a
+ *     confident-looking genre write.
+ *   - "Instrumental" (2 artists) and "Easy Listening" (1 artist): real
+ *     genre tags, but the roster vocabulary has no honest equivalent for
+ *     either — every existing genre is either a specific style these don't
+ *     belong to, or would require inventing a new roster genre, which this
+ *     script deliberately does not do (see the module doc comment on
+ *     vocabulary growth).
+ */
 
 /**
  * Maps one iTunes genre tag to an existing ROSTR genre string, or null if
@@ -273,13 +346,56 @@ export const PERMANENT_SKIP_REASONS = new Set(['noNameMatch', 'noGenreOnRecord',
  * being attempted again, same as any other genre-less artist. That's a
  * safe default in either direction: it costs one extra lookup, not a wrong
  * write, and it's why this function only ever looks at `skipped`.
+ *
+ * `retryReasons`, when given (a Set of PERMANENT_SKIP_REASONS values), is
+ * the --retry-reasons escape hatch: an artist whose logged reason is IN
+ * that set is left out of the exclusion (so it gets re-attempted this run),
+ * while every other permanently-skipped artist stays excluded exactly as
+ * before. This is what lets a targeted alias-table fix (e.g. Part 1's seven
+ * new aliases, which can only change the outcome for artists logged as
+ * unmappableGenre) re-attempt just the ~26 artists that fix could possibly
+ * affect, instead of --retry-skipped's blanket re-attempt of everything
+ * (907 artists as of the 2026-08-19 log — roughly 45 minutes at the default
+ * --delay, versus ~80 seconds for the 26).
  */
-function previouslySkippedUrls(existingLog) {
+function previouslySkippedUrls(existingLog, retryReasons) {
   const urls = new Set();
   for (const entry of existingLog?.skipped ?? []) {
-    if (PERMANENT_SKIP_REASONS.has(entry.reason)) urls.add(entry.rostrUrl);
+    if (!PERMANENT_SKIP_REASONS.has(entry.reason)) continue;
+    if (retryReasons && retryReasons.has(entry.reason)) continue;
+    urls.add(entry.rostrUrl);
   }
   return urls;
+}
+
+/**
+ * Validates and normalises the comma-separated value passed to
+ * --retry-reasons (e.g. "unmappableGenre" or "unmappableGenre,noNameMatch")
+ * into a Set of skip reasons. Only PERMANENT_SKIP_REASONS are ever valid
+ * here — those are the only reasons previouslySkippedUrls excludes an
+ * artist for in the first place, so anything else (a typo, or a real but
+ * inapplicable reason like `lookupFailed`, which is never excluded to begin
+ * with, or `overLimit`, which is never logged per-artist at all) would
+ * silently match zero artists rather than doing what was asked. Throwing
+ * here, with the valid options listed, is deliberate: a silent no-op would
+ * produce a dry run that "ran" but attempted nothing, which looks identical
+ * to "the alias/matching fix didn't help" and sends someone debugging in
+ * exactly the wrong direction.
+ */
+export function validateRetryReasons(raw) {
+  const valid = [...PERMANENT_SKIP_REASONS].sort();
+  const reasons = String(raw ?? '').split(',').map(r => r.trim()).filter(Boolean);
+  if (reasons.length === 0) {
+    throw new Error(`--retry-reasons requires at least one reason. Valid reasons are: ${valid.join(', ')}`);
+  }
+  const invalid = reasons.filter(r => !PERMANENT_SKIP_REASONS.has(r));
+  if (invalid.length > 0) {
+    throw new Error(
+      `--retry-reasons: unrecognised reason(s) ${invalid.map(r => `"${r}"`).join(', ')}. ` +
+      `Valid reasons are: ${valid.join(', ')}.`
+    );
+  }
+  return new Set(reasons);
 }
 
 export function uniqueEmailCount(artists) {
@@ -298,9 +414,14 @@ export function uniqueEmailCount(artists) {
  * fixture without any real network access — see searchArtistLive below for
  * the production implementation this stands in for.
  */
-export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit, existingLog = null, retrySkipped = false } = {}) {
+export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit, existingLog = null, retrySkipped = false, retryReasons = null } = {}) {
   const rosterGenreByLower = new Map((roster.genres || []).map(g => [g.toLowerCase(), g]));
-  const skipExclusions = retrySkipped ? new Set() : previouslySkippedUrls(existingLog);
+  // retrySkipped (--retry-skipped) is the broader "retry everything" mode
+  // and takes precedence structurally — but main() below actually rejects
+  // passing both flags together rather than relying on this precedence, so
+  // a caller never has to think about which one "wins": see the CLI section
+  // for why an explicit error beats silent precedence here.
+  const skipExclusions = retrySkipped ? new Set() : previouslySkippedUrls(existingLog, retryReasons);
 
   const stats = {
     totalArtists: roster.artists.length,
@@ -585,6 +706,29 @@ async function main() {
   const write = argv.includes('--write');
   const retrySkipped = argv.includes('--retry-skipped');
   const flag = (name, fallback) => { const i = argv.indexOf(name); return i !== -1 ? argv[i + 1] : fallback; };
+  const retryReasonsArg = flag('--retry-reasons', null);
+
+  // --retry-skipped and --retry-reasons together is a CLI error rather than
+  // one silently winning over the other: --retry-skipped already means
+  // "retry every permanent skip reason", so --retry-reasons alongside it
+  // can't narrow anything — it would either be redundant or misleadingly
+  // suggest a narrower retry is happening when it isn't. Rejecting the
+  // combination outright means a reader of a run's command line never has
+  // to guess which flag took precedence.
+  if (retrySkipped && retryReasonsArg != null) {
+    console.error('--retry-skipped and --retry-reasons are mutually exclusive: --retry-skipped already retries every permanent skip reason, so combining it with --retry-reasons is ambiguous. Pass only one.');
+    process.exit(1);
+  }
+
+  let retryReasons = null;
+  if (retryReasonsArg != null) {
+    try {
+      retryReasons = validateRetryReasons(retryReasonsArg);
+    } catch (err) {
+      console.error(err.message);
+      process.exit(1);
+    }
+  }
 
   const defaultRoster = join(__dirname, '..', 'data', 'roster.json');
   const defaultLog = join(__dirname, '..', 'data', 'genre-backfill-log.json');
@@ -629,8 +773,9 @@ async function main() {
   console.log(`Loaded ${before.artists} artists (${before.emails} unique manager emails) from ${rosterPath}`);
   if (!write) console.log('DRY RUN — pass --write to save changes. Nothing will be written to disk.');
   if (retrySkipped) console.log('--retry-skipped passed — ignoring the provenance log; every genre-less artist is a candidate again.');
+  if (retryReasons) console.log(`--retry-reasons ${[...retryReasons].join(',')} passed — only artists most recently skipped under [${[...retryReasons].join(', ')}] are candidates again; every other previously-skipped artist stays excluded.`);
 
-  const { artists, stats, log } = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit, existingLog, retrySkipped });
+  const { artists, stats, log } = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit, existingLog, retrySkipped, retryReasons });
 
   const after = { artists: artists.length, emails: uniqueEmailCount(artists) };
   const artistsLost = before.artists - after.artists;

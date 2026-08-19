@@ -7221,7 +7221,9 @@
     {
       "name": "Al Nicol",
       "rostrUrl": "https://www.rostr.cc/profile/alnicol",
-      "genres": [],
+      "genres": [
+        "Folk"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 103526,
@@ -12963,7 +12965,9 @@
     {
       "name": "Angel Seka",
       "rostrUrl": "https://www.rostr.cc/profile/angelseka",
-      "genres": [],
+      "genres": [
+        "Jazz"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 126030,
@@ -29067,7 +29071,9 @@
     {
       "name": "Africa Express",
       "rostrUrl": "https://www.rostr.cc/profile/africaexpress",
-      "genres": [],
+      "genres": [
+        "Afrobeat"
+      ],
       "type": "Group",
       "gender": "",
       "spotifyFollowers": 206578,
@@ -44224,7 +44230,9 @@
     {
       "name": "Sydnie Christmas",
       "rostrUrl": "https://www.rostr.cc/profile/sydniechristmas",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 221134,
@@ -77072,7 +77080,9 @@
     {
       "name": "Alizzz",
       "rostrUrl": "https://www.rostr.cc/profile/alizzz",
-      "genres": [],
+      "genres": [
+        "Latin Pop"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 494103,
@@ -89419,7 +89429,9 @@
     {
       "name": "Meghan Patrick",
       "rostrUrl": "https://www.rostr.cc/profile/meghanpatrick",
-      "genres": [],
+      "genres": [
+        "Country"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 675252,
@@ -110098,7 +110110,9 @@
     {
       "name": "Genesis Owusu",
       "rostrUrl": "https://www.rostr.cc/profile/genesisowusu",
-      "genres": [],
+      "genres": [
+        "Alternative Hip Hop"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 775076,
@@ -116613,7 +116627,9 @@
     {
       "name": "Searows",
       "rostrUrl": "https://www.rostr.cc/profile/searows",
-      "genres": [],
+      "genres": [
+        "Folk"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 1226185,
@@ -125211,7 +125227,9 @@
     {
       "name": "Fish in a Birdcage",
       "rostrUrl": "https://www.rostr.cc/profile/fishinabirdcage",
-      "genres": [],
+      "genres": [
+        "Folk"
+      ],
       "type": "Group",
       "gender": "",
       "spotifyFollowers": 981301,
@@ -132668,7 +132686,9 @@
     {
       "name": "Danna Paola",
       "rostrUrl": "https://www.rostr.cc/profile/dannapaola",
-      "genres": [],
+      "genres": [
+        "Latin Pop"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 1484367,
@@ -141566,7 +141586,9 @@
     {
       "name": "Sen Senra",
       "rostrUrl": "https://www.rostr.cc/profile/sensenra",
-      "genres": [],
+      "genres": [
+        "Latin Pop"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 2054554,
@@ -142010,7 +142032,9 @@
     {
       "name": "Annabelle Dinda",
       "rostrUrl": "https://www.rostr.cc/profile/annabelledinda",
-      "genres": [],
+      "genres": [
+        "Folk"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 2026534,
@@ -154735,7 +154759,9 @@
     {
       "name": "Alexander Acha",
       "rostrUrl": "https://www.rostr.cc/profile/alexanderacha",
-      "genres": [],
+      "genres": [
+        "Latin Pop"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 3034340,
