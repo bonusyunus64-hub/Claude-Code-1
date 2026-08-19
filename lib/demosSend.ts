@@ -8,6 +8,7 @@ import {
 import { resolveAccount } from '@/lib/accounts';
 import { checkCapAllows, recordSends } from '@/lib/sendQuota';
 import { getBlacklist } from '@/lib/doNotContact';
+import { DEFAULT_DEMOS_SUBJECT } from '@/lib/emailDefaults';
 
 export interface DemosSendPayload {
   trackTitle: string;
@@ -103,7 +104,7 @@ export async function sendDemos(payload: DemosSendPayload) {
     sendDelay, blacklist, excludeEmails, customContacts, threadIds, offset, limit,
   } = payload;
 
-  const subjectTpl = subjectTemplate?.trim() || `Music Submission: {{trackTitle}} for {{artistName}}`;
+  const subjectTpl = subjectTemplate?.trim() || DEFAULT_DEMOS_SUBJECT;
 
   // A roster query happens when genres are actually selected, or the caller has
   // explicitly confirmed it wants the unfiltered "every genre" query (see

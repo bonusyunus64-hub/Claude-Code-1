@@ -6,7 +6,8 @@ vi.mock('@/lib/remoteSync', () => ({
   syncStorage: { setItem: vi.fn(), removeItem: vi.fn() },
 }));
 
-import { useDemosFlow, DemosFlowConfig, REACHABILITY_MAX_COMPANY_SIZE } from './useDemosFlow';
+import { useDemosFlow, DemosFlowConfig } from './useDemosFlow';
+import { REACHABILITY_MAX_COMPANY_SIZE } from '../constants';
 import { assignSubjectVariant } from '@/lib/recipients';
 import type { Artist, Campaign, CustomContact } from '../types';
 

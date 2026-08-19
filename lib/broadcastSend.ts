@@ -7,6 +7,7 @@ import {
 import { resolveAccount } from '@/lib/accounts';
 import { checkCapAllows, recordSends } from '@/lib/sendQuota';
 import { getBlacklist } from '@/lib/doNotContact';
+import { defaultBroadcastSubject } from '@/lib/emailDefaults';
 
 /** A filtered target (radio station or playlist curator) worth pitching. */
 export interface BroadcastTarget {
@@ -53,7 +54,7 @@ export async function sendBroadcast(
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
   }
 
-  const subjectTpl = subjectTemplate?.trim() || `Music Submission: {{trackTitle}} for {{${nameVar}}}`;
+  const subjectTpl = subjectTemplate?.trim() || defaultBroadcastSubject(nameVar);
 
   const { account, error: accountError } = await resolveAccount(accountId);
   if (accountError) return NextResponse.json({ error: accountError }, { status: 400 });

@@ -4,6 +4,7 @@ import { resolveSmtpConfig, createTransport, formatFromHeader } from '@/lib/mail
 import { resolveAccount } from '@/lib/accounts';
 import { recordSends } from '@/lib/sendQuota';
 import { readJsonBody } from '@/lib/readJsonBody';
+import { DEFAULT_DEMOS_SUBJECT } from '@/lib/emailDefaults';
 
 interface TestEmailPayload {
   to: string;
@@ -70,7 +71,7 @@ export async function POST(req: NextRequest) {
     const bodyParts = [renderTemplate(emailTemplate, vars)];
     if (signOff?.trim()) bodyParts.push(renderTemplate(signOff, vars));
     text = bodyParts.join('\n\n');
-    const subjectTpl = subjectTemplate?.trim() || 'Music Submission: {{trackTitle}} for {{artistName}}';
+    const subjectTpl = subjectTemplate?.trim() || DEFAULT_DEMOS_SUBJECT;
     subject = `[TEST] ${renderTemplate(subjectTpl, vars)}`;
     html = `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#333">${textToHtml(text)}</div>`;
   }

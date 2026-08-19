@@ -88,6 +88,24 @@ describe('sendBroadcast', () => {
     expect(body.total).toBe(1);
   });
 
+  it('falls back to the app default subject, not the old "Music Submission:" wording, when subjectTemplate is blank', async () => {
+    const res = await sendBroadcast({ ...BASE_PAYLOAD, subjectTemplate: '  ' }, TARGETS, 'stationName');
+    expect(res.status).toBe(200);
+    const sentMessages = sendMessagesPooled.mock.calls[0][1];
+    expect(sentMessages.find((m: { to: string }) => m.to === 'a@example.com').subject).toBe('Track for Station A');
+  });
+
+  it('uses {{curatorName}}, not a hardcoded {{stationName}}, in the default subject for a curator send', async () => {
+    const res = await sendBroadcast({ ...BASE_PAYLOAD, subjectTemplate: undefined }, TARGETS, 'curatorName');
+    expect(res.status).toBe(200);
+    const sentMessages = sendMessagesPooled.mock.calls[0][1];
+    // vars only has `curatorName` set (see sendBroadcast's vars object), so a
+    // default subject that still referenced {{stationName}} would render with
+    // the placeholder left un-substituted rather than the target's actual name.
+    expect(sentMessages.find((m: { to: string }) => m.to === 'a@example.com').subject).toBe('Track for Station A');
+    expect(sentMessages.find((m: { to: string }) => m.to === 'a@example.com').subject).not.toContain('{{');
+  });
+
   it('stops with a 429 when the send cap allows nothing at all', async () => {
     checkCapAllows.mockResolvedValue({ allowed: 0, error: 'Daily send limit reached' });
     const res = await sendBroadcast(BASE_PAYLOAD, TARGETS, 'stationName');

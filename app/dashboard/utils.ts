@@ -8,13 +8,8 @@ import type { EmailTierInfo } from '@/lib/roster';
 // company" threshold — reused here (see companySizeLabel below) rather than
 // hardcoded a second time, so the "small company" bucket in the roster-tier
 // breakdown can never silently drift out of sync with what "Independent
-// contacts only" itself means by "small." Note: useDemosFlow.ts imports
-// several helpers back from this file, so this is a deliberate circular
-// import; it's safe here because every use of the constant below happens
-// inside a function body (companySizeLabel/companySizeLabels), never at
-// module-top-level, so it's never read before useDemosFlow.ts has finished
-// initializing it.
-import { REACHABILITY_MAX_COMPANY_SIZE } from './hooks/useDemosFlow';
+// contacts only" itself means by "small."
+import { REACHABILITY_MAX_COMPANY_SIZE } from './constants';
 export { renderTemplate as renderTemplateClient, pronounFor as pronounForClient } from '@/lib/emailTemplate';
 // nonRespondedRecipients only pulls in lib/emailTemplate.ts at runtime (its other
 // imports — CampaignRecord from lib/campaigns, OutboundMessage from lib/mailSend —
@@ -723,9 +718,6 @@ function followerBandLabel(tier: EmailTierInfo): string {
     ?? CONTACTED_FOLLOWER_BANDS[CONTACTED_FOLLOWER_BANDS.length - 1][0];
 }
 
-/** Both computed lazily inside a function body (never at module top-level) so
- *  REACHABILITY_MAX_COMPANY_SIZE is never read before useDemosFlow.ts has
- *  finished initializing it — see the circular-import note on that import above. */
 function companySizeLabels(): [small: string, larger: string] {
   return [`Small company (≤${REACHABILITY_MAX_COMPANY_SIZE} artists)`, `Larger company (${REACHABILITY_MAX_COMPANY_SIZE + 1}+ artists)`];
 }

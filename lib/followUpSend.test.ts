@@ -161,6 +161,17 @@ describe('sendFollowUp', () => {
     expect(msg.subject).toBe('Global subject Track');
   });
 
+  it('falls back to the app default follow-up subject, not the old "Following Up:" wording, when both the campaign snapshot and global settings are blank', async () => {
+    listCampaigns.mockResolvedValue([{ ...BASE_CAMPAIGN, followUpTemplate: undefined, followUpSubject: undefined }]);
+    hgetall.mockResolvedValue({ tp_followup_template: 'Global body {{driveLink}}', tp_followup_subject: '' });
+    await sendFollowUp(BASE_PAYLOAD);
+    const sentMessages = sendMessagesPooled.mock.calls[0][1];
+    const msg = sentMessages.find((m: { to: string }) => m.to === 'a@example.com');
+    // DEFAULT_FOLLOWUP_SUBJECT is `Re: {{trackTitle}} for {{artistName}}` — Track's
+    // artist isn't set on BASE_CAMPAIGN, so it renders with an empty {{artistName}}.
+    expect(msg.subject).toBe('Re: Track for ');
+  });
+
   it('400s when the resolved template is blank', async () => {
     listCampaigns.mockResolvedValue([{ ...BASE_CAMPAIGN, followUpTemplate: undefined, followUpSubject: undefined }]);
     hgetall.mockResolvedValue({ tp_followup_template: '', tp_followup_subject: '' });

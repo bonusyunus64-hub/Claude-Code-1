@@ -34,14 +34,30 @@ I'm {{senderName}}, reaching out about a track called "{{trackTitle}}" that I th
 
 If a producer or music director there has a few minutes, I'd love to know whether it's a fit — and if it's not the right sound for the station, a quick no is completely fine too.`;
 
-export const DEFAULT_DEMOS_SUBJECT = `{{trackTitle}} for {{artistName}}`;
-// "Re: " + the demos subject's own shape, matching how a real mail client would thread
-// a reply — see DEFAULT_FOLLOWUP_TEMPLATE's comment on why this reads as a reply.
-export const DEFAULT_FOLLOWUP_SUBJECT = `Re: {{trackTitle}} for {{artistName}}`;
-export const DEFAULT_RADIO_SUBJECT = `{{trackTitle}} for {{stationName}}`;
+// Defined in lib/emailDefaults.ts, not here: the server-side send routes need
+// these same defaults for their subjectTemplate?.trim() || '...' fallbacks, and
+// lib/ must not import from app/ — so lib/ is the source of truth and this is
+// just a re-export, kept so every existing dashboard import of these names
+// (useTemplateDrafts.ts, MainTemplatePanel.tsx, FollowUpTemplatePanel.tsx,
+// PromotionSection.tsx) keeps working unchanged.
+export { DEFAULT_DEMOS_SUBJECT, DEFAULT_FOLLOWUP_SUBJECT, DEFAULT_RADIO_SUBJECT } from '@/lib/emailDefaults';
 
 export const DEFAULT_SIGN_OFF = `Best regards,
 {{senderName}}`;
+
+/**
+ * The management-company-size threshold behind the "Independent contacts
+ * only" reachability toggle (see AudienceFiltersPanel.tsx). 2 rather than a
+ * user-adjustable number: it's not exposed as a raw input because the point
+ * of this control is a single plain-English on/off, not another number for a
+ * non-technical solo operator to guess at — and 2 is where the roster's own
+ * shape draws a natural line (1,960 of 2,666 management companies on the
+ * roster represent 2 artists or fewer; the next size bracket up is already a
+ * multi-artist operation with a triaged inbox, the exact kind of address this
+ * filter exists to screen out). Combined with freemailOnly via OR at the
+ * lib/roster.ts level — see getArtistsByGenres' doc comment on why.
+ */
+export const REACHABILITY_MAX_COMPANY_SIZE = 2;
 
 export const LOCATION_OPTIONS = ['National', 'ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA', 'International'];
 

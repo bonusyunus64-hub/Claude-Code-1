@@ -1,4 +1,4 @@
-import { REACHABILITY_MAX_COMPANY_SIZE } from '../../hooks/useDemosFlow';
+import { REACHABILITY_MAX_COMPANY_SIZE } from '../../constants';
 
 const FOLLOWER_STEPS = [
   { label: 'Any', value: 0 },
@@ -49,7 +49,7 @@ export interface AudienceFiltersPanelProps {
    * principled answer to "what management-company-size cutoff do I want,"
    * but does have one to "do I want to skip the majors" — so that's the only
    * decision exposed here; the underlying threshold lives in
-   * useDemosFlow.ts's REACHABILITY_MAX_COMPANY_SIZE.
+   * constants.ts's REACHABILITY_MAX_COMPANY_SIZE.
    */
   reachableOnly: boolean;
   setReachableOnly: (updater: (prev: boolean) => boolean) => void;

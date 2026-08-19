@@ -9,22 +9,9 @@ import {
   sendInBatches, countSendableRecipients, findDuplicateRecipients, findCooldownRecipients, messageIdsFromResults,
   permanentlyFailedEmails, checkRecipientsValidity, shuffle, payloadForPendingSend,
 } from '../utils';
+import { REACHABILITY_MAX_COMPANY_SIZE } from '../constants';
 
 export type SortOrder = 'followers-desc' | 'followers-asc' | 'alpha-asc' | 'alpha-desc' | 'random';
-
-/**
- * The management-company-size threshold behind the "Independent contacts
- * only" reachability toggle (see AudienceFiltersPanel.tsx). 2 rather than a
- * user-adjustable number: it's not exposed as a raw input because the point
- * of this control is a single plain-English on/off, not another number for a
- * non-technical solo operator to guess at — and 2 is where the roster's own
- * shape draws a natural line (1,960 of 2,666 management companies on the
- * roster represent 2 artists or fewer; the next size bracket up is already a
- * multi-artist operation with a triaged inbox, the exact kind of address this
- * filter exists to screen out). Combined with freemailOnly via OR at the
- * lib/roster.ts level — see getArtistsByGenres' doc comment on why.
- */
-export const REACHABILITY_MAX_COMPANY_SIZE = 2;
 
 /** A lightweight, debounced re-run of the same /api/preview query the real
  *  Preview button uses, just to show a live "how many does this match"

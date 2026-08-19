@@ -181,7 +181,7 @@ export interface DemosFilterPreset {
   maxInstagram: number;
   matchMode: 'any' | 'all';
   /** The "Independent contacts only" reachability toggle — see
-   *  app/dashboard/hooks/useDemosFlow.ts's REACHABILITY_MAX_COMPANY_SIZE for
+   *  app/dashboard/constants.ts's REACHABILITY_MAX_COMPANY_SIZE for
    *  what it maps to underneath. Optional/missing on presets saved before
    *  this existed, which loadDemosPreset treats as off (its prior behavior). */
   reachableOnly?: boolean;

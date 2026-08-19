@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { AnalyticsStats, Campaign, RateBreakdown, RosterTierStats, SubjectTestSummary, TierBreakdown } from '../types';
 import { campaignsNeedingFollowUp, computeRosterTierStats, MIN_TIER_SAMPLE_SIZE, type ReplyToChase } from '../utils';
-import { REACHABILITY_MAX_COMPANY_SIZE } from '../hooks/useDemosFlow';
+import { REACHABILITY_MAX_COMPANY_SIZE } from '../constants';
 import { CopyableName } from '../components/CopyableName';
 import { CopyChip } from '../components/CopyChip';
 

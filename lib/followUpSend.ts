@@ -6,6 +6,7 @@ import { resolveSmtpConfig, sendMessagesPooled, paginate, DEFAULT_SEND_BATCH_SIZ
 import { checkCapAllows, recordSends } from '@/lib/sendQuota';
 import { nonRespondedRecipients, resolveFollowUpContent, buildFollowUpMessage, mergeEmailList } from '@/lib/autoFollowUp';
 import { getBlacklist } from '@/lib/doNotContact';
+import { DEFAULT_FOLLOWUP_SUBJECT } from '@/lib/emailDefaults';
 
 export interface FollowUpSendPayload {
   campaignId: string;
@@ -75,8 +76,14 @@ export async function sendFollowUp(payload: FollowUpSendPayload): Promise<NextRe
   if (isKvConfigured()) {
     const settings = (await getRedis().hgetall<Record<string, unknown>>(STATE_KEY)) ?? {};
     globalTemplate = typeof settings['tp_followup_template'] === 'string' ? settings['tp_followup_template'] : '';
+    // Stale wording here used to read "Following Up: ..." — different words than
+    // DEFAULT_FOLLOWUP_SUBJECT ("Re: ..."), so a grep for the old "Music Submission:"
+    // fallbacks elsewhere in this codebase wouldn't have caught it. Aligned with the
+    // app's real default so a blank global follow-up subject (pre-existing accounts
+    // that never set tp_followup_subject) produces the same subject the dashboard
+    // itself shows as the default.
     globalSubject = (typeof settings['tp_followup_subject'] === 'string' && settings['tp_followup_subject'].trim())
-      || 'Following Up: {{trackTitle}} for {{artistName}}';
+      || DEFAULT_FOLLOWUP_SUBJECT;
   }
 
   const { template: followUpTemplate, subject: subjectTemplate } = resolveFollowUpContent(campaign, globalTemplate, globalSubject);
