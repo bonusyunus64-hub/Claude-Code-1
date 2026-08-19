@@ -121,8 +121,25 @@
 // refuses to write anything (log or roster) rather than risk silently
 // discarding accumulated provenance — see loadExistingProvenanceLog.
 //
+// RESUMING SKIPS THE ARTISTS WE ALREADY KNOW WILL SKIP. Filling drops an
+// artist out of the genre-less walk, but a skip does NOT — `genres` stays
+// `[]`, so a skipped artist sits exactly where it was and is the very next
+// thing the following chunk sees. Left alone, that means every chunk starts
+// by re-spending API calls on the same skip backlog before it ever reaches
+// a new artist, and that backlog only grows: see PERMANENT_SKIP_REASONS
+// and stats.alreadySkipped below for the fix (load the provenance log,
+// don't re-attempt an artist whose most recent logged skip reason is one
+// that re-running the exact same lookup can't change).
+//
 // Usage:
-//   node scripts/backfill-genres.mjs [--roster data/roster.json] [--out data/roster.json] [--log data/genre-backfill-log.json] [--limit N] [--delay 500] [--write]
+//   node scripts/backfill-genres.mjs [--roster data/roster.json] [--out data/roster.json] [--log data/genre-backfill-log.json] [--limit N] [--delay 500] [--write] [--retry-skipped]
+//   --retry-skipped disables the provenance-log skip exclusion described
+//   above, so every genre-less artist is a candidate again regardless of
+//   what an earlier chunk logged for it. Use it deliberately (e.g. after
+//   fixing something in the matching/alias logic that might resolve a
+//   previously-ambiguous or previously-unmappable case differently) — not
+//   as the default chunking mode, since that's exactly the re-spend this
+//   flag exists to let you opt back into.
 //
 // No API key or signup needed — iTunes Search is a public, keyless endpoint.
 // Apple throttles aggressively against it in practice (roughly 20 calls/min
@@ -220,6 +237,51 @@ function delay(ms) {
   return ms > 0 ? new Promise(resolve => setTimeout(resolve, ms)) : Promise.resolve();
 }
 
+/**
+ * Skip reasons that are permanent: re-running the identical iTunes lookup
+ * for the identical artist name can't produce a different exact-match set,
+ * so an artist logged under one of these has nothing to gain from being
+ * re-attempted by a later chunk. All four are conclusions about the DATA
+ * (no exact name match at all; matches exist but none carry a genre;
+ * matches exist and disagree on genre; the matched genre doesn't map into
+ * the roster vocabulary) rather than about this one request's luck.
+ *
+ * `lookupFailed` is deliberately excluded — it means Apple throttled the
+ * request or it errored transport-side, which says nothing about the
+ * artist and can easily go the other way on retry. `overLimit` is also
+ * excluded (redundantly — it's never written to the per-artist log at all,
+ * see the comment in backfillGenres) so it's included here in neither name
+ * nor spirit, and this set is asserted against by name in
+ * scripts/backfill-genres.test.mjs.
+ */
+export const PERMANENT_SKIP_REASONS = new Set(['noNameMatch', 'noGenreOnRecord', 'ambiguousName', 'unmappableGenre']);
+
+/**
+ * Builds the set of rostrUrls a resumed run should not re-attempt: every
+ * artist whose most recent provenance-log entry is a skip under one of
+ * PERMANENT_SKIP_REASONS. `existingLog.skipped` already holds at most one
+ * entry per rostrUrl — mergeProvenanceLog's whole contract is collapsing
+ * every run's entries down to "the latest one wins" — so there's no
+ * separate "most recent" lookup to do here beyond reading that array.
+ *
+ * An artist that's already in `existingLog.filled` needs no handling here:
+ * it has a genre on record, so the ordinary `hasGenres` check in
+ * backfillGenres already leaves it alone. If the roster and the log
+ * disagree — the log says filled but the roster's copy of that artist
+ * still has `genres: []` (a mismatched --roster/--log pairing, most
+ * likely) — that artist simply isn't in this set, so it falls through to
+ * being attempted again, same as any other genre-less artist. That's a
+ * safe default in either direction: it costs one extra lookup, not a wrong
+ * write, and it's why this function only ever looks at `skipped`.
+ */
+function previouslySkippedUrls(existingLog) {
+  const urls = new Set();
+  for (const entry of existingLog?.skipped ?? []) {
+    if (PERMANENT_SKIP_REASONS.has(entry.reason)) urls.add(entry.rostrUrl);
+  }
+  return urls;
+}
+
 export function uniqueEmailCount(artists) {
   return new Set(artists.flatMap(a => (a.managerEmails || []).map(e => String(e).trim().toLowerCase()))).size;
 }
@@ -236,14 +298,24 @@ export function uniqueEmailCount(artists) {
  * fixture without any real network access — see searchArtistLive below for
  * the production implementation this stands in for.
  */
-export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit } = {}) {
+export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit, existingLog = null, retrySkipped = false } = {}) {
   const rosterGenreByLower = new Map((roster.genres || []).map(g => [g.toLowerCase(), g]));
+  const skipExclusions = retrySkipped ? new Set() : previouslySkippedUrls(existingLog);
 
   const stats = {
     totalArtists: roster.artists.length,
     eligible: 0, // started with genres: []
-    attempted: 0, // eligible AND under the --limit cap
+    attempted: 0, // eligible, not already permanently skipped, AND under the --limit cap
     filled: 0,
+    // Eligible artists deferred because a PRIOR run already logged them
+    // under a PERMANENT_SKIP_REASONS reason (see previouslySkippedUrls).
+    // Deliberately NOT part of `stats.skipped`: those counters describe
+    // outcomes of a lookup THIS run actually made, and an alreadySkipped
+    // artist has no lookup this run to have an outcome — counting it as
+    // e.g. overLimit would misreport "waiting for a later chunk" (true of
+    // overLimit) as this artist's actual status (permanently resolved,
+    // not waiting on anything). --retry-skipped forces this to 0.
+    alreadySkipped: 0,
     skipped: {
       overLimit: 0,
       noNameMatch: 0, // no exact (case-insensitive) name match among the results at all
@@ -262,6 +334,22 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit 
   for (const original of roster.artists) {
     const hasGenres = Array.isArray(original.genres) && original.genres.length > 0;
     if (!hasGenres) stats.eligible += 1;
+
+    const alreadyPermanentlySkipped = !hasGenres && skipExclusions.has(original.rostrUrl);
+    if (alreadyPermanentlySkipped) {
+      // Deliberately does NOT consume the --limit budget and does NOT call
+      // searchArtist: the whole point is that a `--limit 500` chunk reaches
+      // 500 artists this run has never seen a verdict on, not 500 minus
+      // however many of this chunk's slots go to re-confirming the same
+      // permanent skip a previous chunk already logged. Nothing is
+      // re-logged either — the existing log entry from the earlier run
+      // already says everything there is to say about this artist, and
+      // mergeProvenanceLog leaves an entry alone unless THIS run's log
+      // contains a replacement for its rostrUrl.
+      stats.alreadySkipped += 1;
+      artists.push(original);
+      continue;
+    }
 
     if (!hasGenres && (limit == null || stats.attempted < limit)) {
       stats.attempted += 1;
@@ -406,13 +494,19 @@ async function searchArtistLive(name) {
 //
 // The real run plan is repeated `node scripts/backfill-genres.mjs --write
 // --limit 500` passes walking the roster in ~5-minute chunks rather than one
-// ~25-minute pass that loses everything if Apple throttles us near the end
-// (a filled artist stops being eligible, so each chunk naturally picks up
-// where the last one left off). That means the log has to accumulate across
-// runs instead of being overwritten each time, or the user would end up with
-// only the last chunk's ~500 entries instead of the full ~2,100-artist
-// picture — which defeats the log's whole purpose as a durable record for
-// the later broad-genre-narrowing work.
+// ~25-minute pass that loses everything if Apple throttles us near the end.
+// A FILLED artist stops being eligible (non-empty `genres`), so those
+// naturally drop out of every later chunk's walk on their own. A SKIPPED
+// artist does NOT — `genres` stays `[]`, so it sits right where it was and
+// would otherwise be re-attempted, at full API cost, by every subsequent
+// chunk. That's what PERMANENT_SKIP_REASONS and stats.alreadySkipped (in
+// backfillGenres above) exist to fix: this log is also what makes chunking
+// work at all, by giving each new chunk a record of which genre-less
+// artists it can skip re-asking about. That means the log has to accumulate
+// across runs instead of being overwritten each time, or the user would end
+// up with only the last chunk's ~500 entries instead of the full picture —
+// which defeats the log's whole purpose as a durable record for both
+// resuming chunks and the later broad-genre-narrowing work.
 
 /**
  * Reads and validates an existing provenance log at `logPath`, or returns
@@ -489,6 +583,7 @@ function formatSkipped(skipped) {
 async function main() {
   const argv = process.argv.slice(2);
   const write = argv.includes('--write');
+  const retrySkipped = argv.includes('--retry-skipped');
   const flag = (name, fallback) => { const i = argv.indexOf(name); return i !== -1 ? argv[i + 1] : fallback; };
 
   const defaultRoster = join(__dirname, '..', 'data', 'roster.json');
@@ -511,11 +606,31 @@ async function main() {
     process.exit(1);
   }
 
+  // Loaded unconditionally, and BEFORE the run rather than only at write
+  // time: resuming (skipping artists a previous chunk already logged under
+  // a permanent reason, see PERMANENT_SKIP_REASONS) depends on this log and
+  // has to be correct on a dry run too, not just on a --write run — a dry
+  // run is exactly how you'd sanity-check the resume behaviour before
+  // trusting it to a --write chunk. A corrupt log is refused here, before
+  // any lookups happen, for the same reason the existing guard refuses to
+  // WRITE over one: this script must never silently discard or silently
+  // misinterpret accumulated provenance. (This is unrelated to whether the
+  // log ends up written to disk this run — that's still gated below by
+  // `write || explicitLog`.)
+  let existingLog;
+  try {
+    existingLog = loadExistingProvenanceLog(logPath);
+  } catch (err) {
+    console.error(`Refusing to run: ${err.message}. Fix or remove the file before re-running.`);
+    process.exit(1);
+  }
+
   const before = { artists: roster.artists.length, emails: uniqueEmailCount(roster.artists) };
   console.log(`Loaded ${before.artists} artists (${before.emails} unique manager emails) from ${rosterPath}`);
   if (!write) console.log('DRY RUN — pass --write to save changes. Nothing will be written to disk.');
+  if (retrySkipped) console.log('--retry-skipped passed — ignoring the provenance log; every genre-less artist is a candidate again.');
 
-  const { artists, stats, log } = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit });
+  const { artists, stats, log } = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit, existingLog, retrySkipped });
 
   const after = { artists: artists.length, emails: uniqueEmailCount(artists) };
   const artistsLost = before.artists - after.artists;
@@ -523,6 +638,7 @@ async function main() {
 
   console.log(`Artists before: ${before.artists}, after: ${after.artists}`);
   console.log(`Eligible (genres: [] at the start): ${stats.eligible}, attempted: ${stats.attempted}${limit != null ? ` (--limit ${limit})` : ''}`);
+  console.log(`Already skipped in an earlier run, not re-attempted (see PERMANENT_SKIP_REASONS): ${stats.alreadySkipped}${retrySkipped ? ' [should be 0 — --retry-skipped was passed]' : ''}`);
   console.log(`Genres filled: ${stats.filled}`);
   console.log(`Skipped — ${formatSkipped(stats.skipped)}`);
   if (stats.unmappedGenres.size > 0) {
@@ -550,17 +666,10 @@ async function main() {
   // would have a silent exception.
   const shouldWriteLog = write || explicitLog;
   if (shouldWriteLog) {
-    let existingLog;
-    try {
-      existingLog = loadExistingProvenanceLog(logPath);
-    } catch (err) {
-      // Same posture as the artist/email-count guard above: refuse to write
-      // anything (log OR roster) rather than silently discarding whatever
-      // provenance the previous chunked runs had already accumulated.
-      console.error(`Refusing to write: ${err.message}. Fix or remove the file before re-running with --log/--write.`);
-      process.exit(1);
-    }
-
+    // existingLog was already loaded above (before the run, so the resume
+    // exclusion could use it) — reused here rather than re-read, which also
+    // avoids merging against a file that could in principle have changed on
+    // disk between the two reads.
     const runMeta = {
       generatedAt: new Date().toISOString(),
       source: 'itunes',
@@ -568,6 +677,7 @@ async function main() {
         totalArtists: stats.totalArtists,
         eligible: stats.eligible,
         attempted: stats.attempted,
+        alreadySkipped: stats.alreadySkipped,
         filled: stats.filled,
         skipped: stats.skipped,
       },

@@ -5,6 +5,7 @@ import { join } from 'path';
 import {
   backfillGenres, isExactNameMatch, normalizeItunesGenreTag, mapItunesGenre,
   uniqueEmailCount, ITUNES_GENRE_ALIASES, mergeProvenanceLog, loadExistingProvenanceLog,
+  PERMANENT_SKIP_REASONS,
 } from './backfill-genres.mjs';
 
 // Fixtures for loadExistingProvenanceLog live in the OS temp dir, not the
@@ -320,6 +321,127 @@ describe('backfillGenres', () => {
     expect(artists[0].spotifyFollowers).toBe(12_345);
     expect(artists[0].managementCompany).toBe('Bea Management');
     expect(artists[0].genres).toEqual(['Pop']);
+  });
+});
+
+describe('PERMANENT_SKIP_REASONS', () => {
+  it('contains exactly the four reasons that are safe to never re-attempt, and neither lookupFailed nor overLimit', () => {
+    expect([...PERMANENT_SKIP_REASONS].sort()).toEqual(
+      ['ambiguousName', 'noGenreOnRecord', 'noNameMatch', 'unmappableGenre'].sort()
+    );
+    expect(PERMANENT_SKIP_REASONS.has('lookupFailed')).toBe(false);
+    expect(PERMANENT_SKIP_REASONS.has('overLimit')).toBe(false);
+  });
+});
+
+describe('backfillGenres — resuming from an existing provenance log', () => {
+  it('does not re-attempt (no searchArtist call for) an artist previously skipped as ambiguousName', async () => {
+    const skippedBefore = artist({ name: 'Harpy', rostrUrl: 'https://www.rostr.cc/profile/harpy' });
+    const existingLog = {
+      source: 'itunes',
+      runs: [],
+      filled: [],
+      skipped: [{ name: 'Harpy', rostrUrl: skippedBefore.rostrUrl, reason: 'ambiguousName', competingGenres: ['Pop', 'Rock'], matchCount: 2 }],
+    };
+    const searchArtist = vi.fn(async () => ({ results: [itunesArtist({ name: 'Harpy', genre: 'Rock' })] }));
+
+    const { artists, stats } = await backfillGenres({ artists: [skippedBefore], genres: ROSTER_GENRES }, { searchArtist, existingLog });
+
+    expect(searchArtist).not.toHaveBeenCalled();
+    expect(artists[0].genres).toEqual([]); // untouched — still exactly as it came in
+    expect(stats.alreadySkipped).toBe(1);
+    expect(stats.eligible).toBe(1); // still true: it started with genres: []
+    expect(stats.attempted).toBe(0);
+  });
+
+  it('DOES re-attempt an artist whose most recent logged skip was lookupFailed — that reason is transient, not permanent', async () => {
+    const target = artist({ name: 'Flaky Lookup', rostrUrl: 'https://www.rostr.cc/profile/flaky-lookup' });
+    const existingLog = {
+      source: 'itunes',
+      runs: [],
+      filled: [],
+      skipped: [{ name: 'Flaky Lookup', rostrUrl: target.rostrUrl, reason: 'lookupFailed', error: 'network exploded' }],
+    };
+    const searchArtist = vi.fn(async () => ({ results: [itunesArtist({ name: 'Flaky Lookup', genre: 'Pop' })] }));
+
+    const { artists, stats } = await backfillGenres({ artists: [target], genres: ROSTER_GENRES }, { searchArtist, existingLog });
+
+    expect(searchArtist).toHaveBeenCalledTimes(1);
+    expect(artists[0].genres).toEqual(['Pop']);
+    expect(stats.alreadySkipped).toBe(0);
+    expect(stats.attempted).toBe(1);
+    expect(stats.filled).toBe(1);
+  });
+
+  it('excluding previously-skipped artists does not consume the --limit budget — a limit-N chunk still reaches N genuinely new artists', async () => {
+    const excludedCount = 3;
+    const newCount = 2;
+    const excluded = Array.from({ length: excludedCount }, (_, i) =>
+      artist({ name: `Excluded ${i}`, rostrUrl: `https://www.rostr.cc/profile/excluded-${i}` })
+    );
+    const fresh = Array.from({ length: newCount }, (_, i) =>
+      artist({ name: `Fresh ${i}`, rostrUrl: `https://www.rostr.cc/profile/fresh-${i}` })
+    );
+    const existingLog = {
+      source: 'itunes',
+      runs: [],
+      filled: [],
+      skipped: excluded.map(a => ({ name: a.name, rostrUrl: a.rostrUrl, reason: 'ambiguousName', competingGenres: ['Pop', 'Rock'], matchCount: 2 })),
+    };
+    // Excluded artists come first in roster order — exactly the pathological
+    // ordering the real roster hits, since a skip never drops out of the
+    // genre-less walk the way a fill does.
+    const searchArtist = vi.fn(async name => ({ results: [itunesArtist({ name, genre: 'Pop' })] }));
+
+    const { stats } = await backfillGenres(
+      { artists: [...excluded, ...fresh], genres: ROSTER_GENRES },
+      { searchArtist, existingLog, limit: newCount }
+    );
+
+    expect(stats.alreadySkipped).toBe(excludedCount);
+    expect(stats.attempted).toBe(newCount);
+    expect(stats.filled).toBe(newCount);
+    expect(searchArtist).toHaveBeenCalledTimes(newCount);
+    expect(stats.skipped.overLimit).toBe(0);
+  });
+
+  it('--retry-skipped (retrySkipped: true) re-attempts artists the exclusion would otherwise defer', async () => {
+    const target = artist({ name: 'Harpy', rostrUrl: 'https://www.rostr.cc/profile/harpy' });
+    const existingLog = {
+      source: 'itunes',
+      runs: [],
+      filled: [],
+      skipped: [{ name: 'Harpy', rostrUrl: target.rostrUrl, reason: 'ambiguousName', competingGenres: ['Pop', 'Rock'], matchCount: 2 }],
+    };
+    const searchArtist = vi.fn(async () => ({ results: [itunesArtist({ name: 'Harpy', genre: 'Rock' })] }));
+
+    const { artists, stats } = await backfillGenres(
+      { artists: [target], genres: ROSTER_GENRES },
+      { searchArtist, existingLog, retrySkipped: true }
+    );
+
+    expect(searchArtist).toHaveBeenCalledTimes(1);
+    expect(artists[0].genres).toEqual(['Rock']);
+    expect(stats.alreadySkipped).toBe(0);
+    expect(stats.attempted).toBe(1);
+  });
+
+  it('behaves exactly as before when there is no existing log (fresh start, existingLog: null / omitted)', async () => {
+    const targets = [artist({ name: 'Will Fill' }), artist({ name: 'Will Skip' })];
+    const searchArtist = vi.fn(async name => {
+      if (name === 'Will Fill') return { results: [itunesArtist({ name, genre: 'Pop' })] };
+      return { results: [] };
+    });
+
+    const withNullLog = await backfillGenres({ artists: targets, genres: ROSTER_GENRES }, { searchArtist, existingLog: null });
+    expect(withNullLog.stats.alreadySkipped).toBe(0);
+    expect(withNullLog.stats.attempted).toBe(2);
+    expect(withNullLog.stats.filled).toBe(1);
+    expect(withNullLog.stats.skipped.noNameMatch).toBe(1);
+
+    const withOmittedLog = await backfillGenres({ artists: targets, genres: ROSTER_GENRES }, { searchArtist });
+    expect(withOmittedLog.stats.alreadySkipped).toBe(0);
+    expect(withOmittedLog.stats.attempted).toBe(2);
   });
 });
 
