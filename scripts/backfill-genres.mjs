@@ -641,8 +641,23 @@ export function uniqueEmailCount(artists) {
  * — no Spotify calls, no chance of the three discography-only skip reasons
  * appearing. See scripts/discography-match.mjs's resolveByDiscography for
  * what `discographyDeps` needs to supply.
+ *
+ * `onProgress`, if supplied, is called with one `{ type: 'attempt', ... }`
+ * event per artist this run actually attempts (see the loop below for the
+ * exact fields) and one `{ type: 'rate', ... }` event every 25 attempts
+ * carrying the measured attempts/minute and a projected finish time for
+ * THIS run. Left undefined (the default), backfillGenres stays completely
+ * silent — no console output of any kind. That default matters:
+ * scripts/backfill-genres.test.mjs calls this function directly hundreds of
+ * times, and a boolean flag plus scattered console.log calls would either
+ * spam the test reporter by default or need every single test to remember
+ * to opt out. An event callback also lets tests assert on the events that
+ * fired instead of parsing captured stdout, and lets main() below own all
+ * the actual formatting/printing — see formatAttemptLine/formatRateLine in
+ * the CLI section for what turns these events into the log lines a
+ * multi-hour --write run prints.
  */
-export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit, existingLog = null, retrySkipped = false, retryReasons = null, discography = false, discographyDeps = null } = {}) {
+export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit, existingLog = null, retrySkipped = false, retryReasons = null, discography = false, discographyDeps = null, onProgress = null } = {}) {
   const rosterGenreByLower = new Map((roster.genres || []).map(g => [g.toLowerCase(), g]));
   // retrySkipped (--retry-skipped) is the broader "retry everything" mode
   // and takes precedence structurally — but main() below actually rejects
@@ -650,6 +665,22 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit,
   // a caller never has to think about which one "wins": see the CLI section
   // for why an explicit error beats silent precedence here.
   const skipExclusions = retrySkipped ? new Set() : previouslySkippedUrls(existingLog, retryReasons);
+
+  // Only walked when onProgress is actually supplied — the point is a
+  // "[ 47/250]" position that means the same 250 the main loop below will
+  // actually reach (eligible, not already-permanently-skipped, capped by
+  // --limit), not the roster's raw eligible count, which the chunked-run
+  // plan makes a much bigger and less useful number to print against.
+  const RATE_REPORT_EVERY = 25;
+  let progressTotal = 0;
+  if (onProgress) {
+    for (const a of roster.artists) {
+      const hasGenres = Array.isArray(a.genres) && a.genres.length > 0;
+      if (!hasGenres && !skipExclusions.has(a.rostrUrl)) progressTotal += 1;
+    }
+    if (limit != null) progressTotal = Math.min(limit, progressTotal);
+  }
+  const progressStartedAt = Date.now();
 
   const stats = {
     totalArtists: roster.artists.length,
@@ -715,6 +746,52 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit,
       await delay(delayMs);
       if (filledGenre) { artist.genres = [filledGenre]; stats.filled += 1; }
       artists.push(artist);
+
+      if (onProgress) {
+        // tryFillOne pushes exactly one entry to log.filled (on a fill) or
+        // log.skipped (on every skip path, including a lookupFailed
+        // exception) before returning — the entry it just pushed is always
+        // the last element of whichever array corresponds to filledGenre, so
+        // this reads the outcome back out rather than threading a second
+        // return value through tryFillOne just for reporting.
+        const entry = filledGenre ? log.filled[log.filled.length - 1] : log.skipped[log.skipped.length - 1];
+        const isDiscographyFill = Boolean(filledGenre) && entry.matchType === 'discography';
+        onProgress({
+          type: 'attempt',
+          index: stats.attempted,
+          total: progressTotal,
+          name: artist.name,
+          filled: Boolean(filledGenre),
+          genre: filledGenre || null,
+          reason: filledGenre ? null : entry.reason,
+          discography: isDiscographyFill,
+          // The winning candidate's overlap count from the scoreboard — the
+          // one number that makes a discography fill legible at a glance
+          // without opening the provenance log, which is why this is the one
+          // outcome that gets extra detail in the progress line (see the
+          // "discography-resolved fill" requirement this exists for).
+          winningOverlap: isDiscographyFill
+            ? (entry.scoreboard || []).find(s => s.artistId === entry.artistId)?.overlap ?? null
+            : null,
+        });
+
+        if (stats.attempted % RATE_REPORT_EVERY === 0) {
+          const elapsedMs = Date.now() - progressStartedAt;
+          const perMinute = elapsedMs > 0 ? (stats.attempted / elapsedMs) * 60_000 : null;
+          const remaining = progressTotal - stats.attempted;
+          const projectedFinishAt = remaining <= 0
+            ? new Date()
+            : (perMinute ? new Date(Date.now() + (remaining / perMinute) * 60_000) : null);
+          onProgress({
+            type: 'rate',
+            completed: stats.attempted,
+            total: progressTotal,
+            elapsedMs,
+            perMinute,
+            projectedFinishAt,
+          });
+        }
+      }
     } else {
       // overLimit is counted (stats.skipped.overLimit) but deliberately NOT
       // logged per-artist: in the chunked-run plan (repeated `--write
@@ -1138,6 +1215,40 @@ function formatSkipped(skipped) {
   return Object.entries(skipped).map(([reason, count]) => `${reason}: ${count}`).join(', ');
 }
 
+/**
+ * Turns one `{ type: 'attempt', ... }` event from backfillGenres into a
+ * single log line — one per attempted artist, the whole point being that a
+ * multi-hour `--write` walk redirected to a log file shows continuous signs
+ * of life instead of nothing between "Loaded N artists" and the final
+ * summary. `total`'s width sets the padding so the position column stays a
+ * constant width for the whole run (e.g. "[ 47/250]", not "[47/250]" next to
+ * "[  8/250]") — readable when skimming a scrolled log.
+ */
+function formatAttemptLine(event) {
+  const position = `[${String(event.index).padStart(String(event.total).length)}/${event.total}]`;
+  const outcome = event.filled
+    ? (event.discography
+      ? `filled: ${event.genre} (via discography, winning overlap ${event.winningOverlap})`
+      : `filled: ${event.genre}`)
+    : `skipped: ${event.reason}`;
+  return `${position} ${event.name} -> ${outcome}`;
+}
+
+/**
+ * Turns one `{ type: 'rate', ... }` event into a log line reporting this
+ * run's OWN measured pace — added specifically because the previous two
+ * time estimates for this walk were guesses and both came in low. Nothing
+ * here extrapolates from a documented "~20 calls/min" figure; it's all
+ * derived from progressStartedAt/Date.now() in backfillGenres, i.e. what
+ * this run has actually done so far.
+ */
+function formatRateLine(event) {
+  const elapsedMin = event.elapsedMs / 60_000;
+  const rateText = event.perMinute != null ? event.perMinute.toFixed(1) : 'n/a';
+  const finishText = event.projectedFinishAt ? event.projectedFinishAt.toLocaleTimeString() : 'unknown';
+  return `-- ${event.completed}/${event.total} done, ${elapsedMin.toFixed(1)} min elapsed, ${rateText} artists/min, projected finish ${finishText} --`;
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const write = argv.includes('--write');
@@ -1236,7 +1347,16 @@ async function main() {
     itunesLookupAlbums: makeItunesLookupAlbumsLive(delayMs),
   } : null;
 
-  const { artists, stats, log } = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit, existingLog, retrySkipped, retryReasons, discography, discographyDeps });
+  // The CLI is the one caller that wants progress output — unlike the unit
+  // tests, a real invocation is a human-scale, possibly multi-hour run with
+  // nothing else to show it's alive. See backfillGenres's onProgress doc
+  // comment for why this is opt-in rather than the default.
+  const onProgress = event => {
+    if (event.type === 'attempt') console.log(formatAttemptLine(event));
+    else if (event.type === 'rate') console.log(formatRateLine(event));
+  };
+
+  const { artists, stats, log } = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit, existingLog, retrySkipped, retryReasons, discography, discographyDeps, onProgress });
 
   const after = { artists: artists.length, emails: uniqueEmailCount(artists) };
   const artistsLost = before.artists - after.artists;

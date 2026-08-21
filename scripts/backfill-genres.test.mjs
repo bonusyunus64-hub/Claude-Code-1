@@ -701,6 +701,132 @@ describe('backfillGenres', () => {
   });
 });
 
+describe('backfillGenres — progress reporting (onProgress)', () => {
+  it('emits nothing at all when no onProgress is supplied — the default for every other test in this file', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const targets = [artist({ name: 'Will Fill' }), artist({ name: 'Will Skip' })];
+    const searchArtist = vi.fn(async name => {
+      if (name === 'Will Fill') return { results: [itunesArtist({ name, genre: 'Pop' })] };
+      return { results: [] };
+    });
+
+    const { stats } = await backfillGenres({ artists: targets, genres: ROSTER_GENRES }, { searchArtist });
+
+    expect(stats.attempted).toBe(2); // the run itself still happened normally
+    expect(logSpy).not.toHaveBeenCalled();
+    logSpy.mockRestore();
+  });
+
+  it('emits one "attempt" event per attempted artist, carrying position/total and the fill/skip outcome', async () => {
+    const targets = [
+      artist({ name: 'Will Fill', rostrUrl: 'https://www.rostr.cc/profile/will-fill' }),
+      artist({ name: 'Will Skip', rostrUrl: 'https://www.rostr.cc/profile/will-skip' }),
+    ];
+    const searchArtist = vi.fn(async name => {
+      if (name === 'Will Fill') return { results: [itunesArtist({ name, genre: 'Pop' })] };
+      return { results: [] };
+    });
+    const events = [];
+
+    await backfillGenres({ artists: targets, genres: ROSTER_GENRES }, { searchArtist, onProgress: e => events.push(e) });
+
+    const attempts = events.filter(e => e.type === 'attempt');
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).toMatchObject({
+      index: 1, total: 2, name: 'Will Fill', filled: true, genre: 'Pop', reason: null, discography: false, winningOverlap: null,
+    });
+    expect(attempts[1]).toMatchObject({
+      index: 2, total: 2, name: 'Will Skip', filled: false, genre: null, reason: 'noNameMatch', discography: false, winningOverlap: null,
+    });
+  });
+
+  it('never fires an "attempt" event for an artist skipped as already-permanently-skipped or over the --limit — those are never attempted', async () => {
+    const excluded = artist({ name: 'Excluded', rostrUrl: 'https://www.rostr.cc/profile/excluded' });
+    const overLimit = artist({ name: 'Over Limit', rostrUrl: 'https://www.rostr.cc/profile/over-limit' });
+    const attempted = artist({ name: 'Attempted', rostrUrl: 'https://www.rostr.cc/profile/attempted' });
+    const existingLog = {
+      source: 'itunes', runs: [], filled: [],
+      skipped: [{ name: 'Excluded', rostrUrl: excluded.rostrUrl, reason: 'ambiguousName', competingGenres: ['Pop', 'Rock'], matchCount: 2 }],
+    };
+    const searchArtist = vi.fn(async name => ({ results: [itunesArtist({ name, genre: 'Pop' })] }));
+    const events = [];
+
+    await backfillGenres(
+      { artists: [excluded, attempted, overLimit], genres: ROSTER_GENRES },
+      { searchArtist, existingLog, limit: 1, onProgress: e => events.push(e) }
+    );
+
+    const attempts = events.filter(e => e.type === 'attempt');
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({ index: 1, total: 1, name: 'Attempted' });
+  });
+
+  it('reports the discography resolution and the winning candidate\'s overlap for a discography-resolved fill', async () => {
+    const target = artist({ name: 'Multi Match' });
+    const searchArtist = vi.fn(async () => ({
+      results: [
+        itunesArtist({ name: 'Multi Match', artistId: 1, genre: 'Pop' }),
+        itunesArtist({ name: 'Multi Match', artistId: 2, genre: 'Rock' }),
+      ],
+    }));
+    resolveByDiscography.mockResolvedValueOnce({
+      resolved: true,
+      winner: { item: { artistId: 1, primaryGenreName: 'Pop', artistLinkUrl: 'https://music.apple.com/artist/1' }, mapped: 'Pop' },
+      pinMethod: 'avatar',
+      spotifyArtistId: 'sp-1',
+      ourReleaseCount: 12,
+      scoreboard: [
+        { artistId: 1, rawGenre: 'Pop', mappedGenre: 'Pop', releaseCount: 12, overlap: 9 },
+        { artistId: 2, rawGenre: 'Rock', mappedGenre: 'Rock', releaseCount: 5, overlap: 1 },
+      ],
+    });
+    const discographyDeps = { spotifySearchArtist: vi.fn(), spotifyArtistAlbums: vi.fn(), itunesLookupAlbums: vi.fn() };
+    const events = [];
+
+    await backfillGenres(
+      { artists: [target], genres: ROSTER_GENRES },
+      { searchArtist, discography: true, discographyDeps, onProgress: e => events.push(e) }
+    );
+
+    const attempt = events.find(e => e.type === 'attempt');
+    expect(attempt).toMatchObject({ filled: true, genre: 'Pop', discography: true, winningOverlap: 9 });
+  });
+
+  it('emits a "rate" event every 25 attempts, with the measured completed/total/elapsed/rate/projected finish', async () => {
+    const targets = Array.from({ length: 50 }, (_, i) =>
+      artist({ name: `Artist ${i}`, rostrUrl: `https://www.rostr.cc/profile/artist-${i}` })
+    );
+    let now = 0;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    // Advances the mocked clock on every lookup so elapsedMs/perMinute are
+    // non-trivial and deterministic, rather than depending on real wall time.
+    const searchArtist = vi.fn(async name => { now += 100; return { results: [itunesArtist({ name, genre: 'Pop' })] }; });
+    const events = [];
+
+    await backfillGenres({ artists: targets, genres: ROSTER_GENRES }, { searchArtist, onProgress: e => events.push(e) });
+    nowSpy.mockRestore();
+
+    const rateEvents = events.filter(e => e.type === 'rate');
+    expect(rateEvents).toHaveLength(2); // fires at attempt 25 and attempt 50, never at 1-24 or 26-49
+    expect(rateEvents[0]).toMatchObject({ completed: 25, total: 50 });
+    expect(rateEvents[1]).toMatchObject({ completed: 50, total: 50 });
+    expect(rateEvents[0].elapsedMs).toBe(2500); // 25 lookups * 100ms mocked advance each
+    expect(rateEvents[0].perMinute).toBeCloseTo(600, 0); // 25 artists / 2500ms * 60000
+    expect(rateEvents[0].projectedFinishAt).toBeInstanceOf(Date);
+  });
+
+  it('does not emit a "rate" event at all when fewer than 25 artists are attempted', async () => {
+    const targets = Array.from({ length: 5 }, (_, i) => artist({ name: `Artist ${i}`, rostrUrl: `https://www.rostr.cc/profile/artist-${i}` }));
+    const searchArtist = vi.fn(async name => ({ results: [itunesArtist({ name, genre: 'Pop' })] }));
+    const events = [];
+
+    await backfillGenres({ artists: targets, genres: ROSTER_GENRES }, { searchArtist, onProgress: e => events.push(e) });
+
+    expect(events.filter(e => e.type === 'rate')).toHaveLength(0);
+    expect(events.filter(e => e.type === 'attempt')).toHaveLength(5);
+  });
+});
+
 describe('PERMANENT_SKIP_REASONS', () => {
   it('contains exactly the eight reasons that are safe to never re-attempt, and neither lookupFailed nor overLimit', () => {
     expect([...PERMANENT_SKIP_REASONS].sort()).toEqual(
