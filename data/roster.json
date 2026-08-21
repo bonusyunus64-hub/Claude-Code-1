@@ -186,7 +186,9 @@
     {
       "name": "Peter Fenn",
       "rostrUrl": "https://www.rostr.cc/profile/peterfenn",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 117988,
@@ -1887,7 +1889,9 @@
     {
       "name": "James Newman",
       "rostrUrl": "https://www.rostr.cc/profile/jamesnewman",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 114011,
@@ -17207,7 +17211,9 @@
     {
       "name": "Jake Marsh",
       "rostrUrl": "https://www.rostr.cc/profile/jakemarsh",
-      "genres": [],
+      "genres": [
+        "Alternative"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 168472,
@@ -18639,7 +18645,9 @@
     {
       "name": "Boy Golden",
       "rostrUrl": "https://www.rostr.cc/profile/boygolden",
-      "genres": [],
+      "genres": [
+        "Alternative"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 163503,
@@ -31519,7 +31527,9 @@
     {
       "name": "Sophia James",
       "rostrUrl": "https://www.rostr.cc/profile/sophiajames",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 195896,
@@ -31692,7 +31702,9 @@
     {
       "name": "Monica Martin",
       "rostrUrl": "https://www.rostr.cc/profile/monicamartin",
-      "genres": [],
+      "genres": [
+        "Alternative"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 195535,
@@ -34870,7 +34882,9 @@
     {
       "name": "ScarLip",
       "rostrUrl": "https://www.rostr.cc/profile/scarlip3",
-      "genres": [],
+      "genres": [
+        "Hip Hop & Rap"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 185125,
@@ -37395,7 +37409,9 @@
     {
       "name": "Elle Varner",
       "rostrUrl": "https://www.rostr.cc/profile/ellevarner",
-      "genres": [],
+      "genres": [
+        "R&B/Soul"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 175309,
