@@ -1,12 +1,25 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+// Mocked at the module level (hoisted by vitest above these imports) so the
+// --discography integration tests below can control exactly what
+// resolveByDiscography returns without also having to satisfy its real
+// acceptance-rule math — that math is scripts/discography-match.test.mjs's
+// job. Every OTHER test in this file passes discography: false (the
+// default), so backfillGenres/tryFillOne never call this mock at all —
+// which is itself part of what the "no Spotify fetcher without --discography"
+// tests below are checking.
+vi.mock('./discography-match.mjs', () => ({ resolveByDiscography: vi.fn() }));
+
 import {
   backfillGenres, isExactNameMatch, normalizeItunesGenreTag, mapItunesGenre,
   uniqueEmailCount, ITUNES_GENRE_ALIASES, mergeProvenanceLog, loadExistingProvenanceLog,
-  PERMANENT_SKIP_REASONS, validateRetryReasons,
+  PERMANENT_SKIP_REASONS, validateRetryReasons, NON_MUSIC_GENRES, isNonMusicGenre,
 } from './backfill-genres.mjs';
+import { resolveByDiscography } from './discography-match.mjs';
 
 // Fixtures for loadExistingProvenanceLog live in the OS temp dir, not the
 // repo — cleaned up after every test.
@@ -14,6 +27,7 @@ let workDir;
 
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), 'backfill-genres-test-'));
+  resolveByDiscography.mockReset();
 });
 
 afterEach(() => {
@@ -51,6 +65,14 @@ const ROSTER_GENRES = [
   // verbatim for those aliases (and the "every alias target exists"
   // guard test below) to resolve.
   'Folk', 'Latin Pop', 'Jazz', 'Country', 'Alternative Hip Hop', 'Afrobeat', 'Afrobeats',
+  // Targets of the 2026-08-21 alias additions (Part 2) — same reasoning.
+  'Underground Hip Hop', 'Old School Hip Hop', 'West Coast Hip Hop', 'Southern Hip Hop',
+  'Gangster Rap', 'Latin Hip Hop', 'Christian Hip Hop', 'K Rap', 'K Rock', 'Classical',
+  'Desi', 'Bhangra', 'Brazilian Pop', 'Funk Carioca', 'Latin', 'Rock En Español',
+  'Drum And Bass', 'Bass Music', 'Uk Garage', 'Pop Rock', 'Rock And Roll', 'Progressive Rock',
+  'Gothic Rock', 'Death Metal', 'Psychedelic Rock', 'Americana', 'Blues', 'Faith Music',
+  'Devotional', 'Dancehall', 'Christmas', 'Adult Standards', 'New Age', 'Classical Piano',
+  'Score', 'Soundtrack',
 ];
 
 function itunesArtist({ name, artistId, genre }) {
@@ -119,7 +141,10 @@ describe('mapItunesGenre', () => {
 
   it('returns null for a tag with no direct match and no alias, rather than guessing', () => {
     expect(mapItunesGenre('Worldwide', rosterGenreByLower)).toBeNull();
-    expect(mapItunesGenre('Punjabi', rosterGenreByLower)).toBeNull();
+    // "Punjabi" used to be in this bucket alongside "Arabic" — as of the
+    // 2026-08-21 additions it has a real alias target ("Bhangra"), so it
+    // moved to the describe block below. "Arabic" stays unmapped: see
+    // ITUNES_GENRE_ALIASES's trailing market/format comment.
     expect(mapItunesGenre('Arabic', rosterGenreByLower)).toBeNull();
   });
 
@@ -143,17 +168,100 @@ describe('mapItunesGenre', () => {
       expect(mapped).not.toBe('Afrobeats');
     });
 
-    it('leaves the four deliberately-unmapped tags unresolved (no alias added for them, on purpose)', () => {
+    it('leaves the remaining deliberately-unmapped tags unresolved (no alias added for them, on purpose)', () => {
       // "Worldwide" and "Self-Development" are evidence of a wrong iTunes
       // match (a podcast/audiobook sharing a musician's name), not a genre
-      // gap; "Instrumental" and "Easy Listening" have no honest equivalent
-      // in the roster vocabulary. See ITUNES_GENRE_ALIASES's trailing
-      // comment in backfill-genres.mjs for the full reasoning.
+      // gap; "Instrumental" has no honest equivalent in the roster
+      // vocabulary. See ITUNES_GENRE_ALIASES's trailing comment in
+      // backfill-genres.mjs for the full reasoning. "Easy Listening" used to
+      // be in this group too — see the dedicated test below for why it
+      // isn't anymore.
       expect(mapItunesGenre('Worldwide', rosterGenreByLower)).toBeNull();
       expect(mapItunesGenre('Instrumental', rosterGenreByLower)).toBeNull();
-      expect(mapItunesGenre('Easy Listening', rosterGenreByLower)).toBeNull();
       expect(mapItunesGenre('Self-Development', rosterGenreByLower)).toBeNull();
     });
+  });
+
+  describe('the aliases added 2026-08-21, targeting a slice of the 894 skipped after the iTunes walk', () => {
+    it('resolves a representative tag from each family to its documented target', () => {
+      // Not exhaustive by hand — the "every alias table entry actually
+      // resolves" test above already loops every entry in
+      // ITUNES_GENRE_ALIASES, this alias table included. These spot-check
+      // one per family so a family-level regression fails somewhere
+      // legible, not just in the generic loop.
+      expect(mapItunesGenre('Underground Rap', rosterGenreByLower)).toBe('Underground Hip Hop');
+      expect(mapItunesGenre('Hardcore Rap', rosterGenreByLower)).toBe('Hip Hop & Rap');
+      expect(mapItunesGenre('Korean Hip Hop', rosterGenreByLower)).toBe('K Rap');
+      expect(mapItunesGenre('Korean Rock', rosterGenreByLower)).toBe('K Rock');
+      expect(mapItunesGenre('Telugu', rosterGenreByLower)).toBe('Desi');
+      expect(mapItunesGenre('Punjabi', rosterGenreByLower)).toBe('Bhangra');
+      expect(mapItunesGenre('Brazilian', rosterGenreByLower)).toBe('Brazilian Pop');
+      expect(mapItunesGenre('Bass', rosterGenreByLower)).toBe('Bass Music');
+      expect(mapItunesGenre('Pop/Rock', rosterGenreByLower)).toBe('Pop Rock');
+      expect(mapItunesGenre('New Acoustic', rosterGenreByLower)).toBe('Folk');
+      expect(mapItunesGenre('Teen Pop', rosterGenreByLower)).toBe('Pop');
+      expect(mapItunesGenre('Praise & Worship', rosterGenreByLower)).toBe('Faith Music');
+      expect(mapItunesGenre('Holiday', rosterGenreByLower)).toBe('Christmas');
+      expect(mapItunesGenre('Easy Listening', rosterGenreByLower)).toBe('Adult Standards');
+      expect(mapItunesGenre('Piano', rosterGenreByLower)).toBe('Classical Piano');
+    });
+
+    it('maps "Punjabi" to "Bhangra" now that it has a real target, unlike "Arabic" which stays unmapped', () => {
+      // The two used to be discussed as a pair with no defensible target.
+      // Bhangra is a real, specific roster genre for Punjabi-language music;
+      // nothing comparable exists for Arabic, so it's still deliberately
+      // left off ITUNES_GENRE_ALIASES.
+      expect(mapItunesGenre('Punjabi', rosterGenreByLower)).toBe('Bhangra');
+      expect(mapItunesGenre('Arabic', rosterGenreByLower)).toBeNull();
+    });
+
+    it('leaves the market/format tags unresolved — they describe WHERE or in what FORM, not a genre', () => {
+      const marketOrFormatTags = [
+        'Worldwide', 'Instrumental', 'Vocal', 'Asia', 'Europe', 'France',
+        'Israeli', 'Afrikaans', 'Farsi', 'Worldbeat', 'Arabic',
+      ];
+      for (const tag of marketOrFormatTags) {
+        expect(mapItunesGenre(tag, rosterGenreByLower), `"${tag}" should stay unmapped`).toBeNull();
+      }
+    });
+  });
+});
+
+describe('NON_MUSIC_GENRES / isNonMusicGenre', () => {
+  it('recognises every documented non-music Store category', () => {
+    for (const category of NON_MUSIC_GENRES) {
+      expect(isNonMusicGenre(category)).toBe(true);
+    }
+  });
+
+  it('compares case-insensitively — callers should never rely on iTunes casing staying fixed', () => {
+    expect(isNonMusicGenre('fiction')).toBe(true);
+    expect(isNonMusicGenre('FICTION')).toBe(true);
+    expect(isNonMusicGenre('Historical Romance')).toBe(true);
+    expect(isNonMusicGenre('historical romance')).toBe(true);
+  });
+
+  it('returns false for real music genres and for nullish/empty input', () => {
+    expect(isNonMusicGenre('Pop')).toBe(false);
+    expect(isNonMusicGenre('Alternative')).toBe(false);
+    expect(isNonMusicGenre('')).toBe(false);
+    expect(isNonMusicGenre(null)).toBe(false);
+    expect(isNonMusicGenre(undefined)).toBe(false);
+  });
+});
+
+describe('ITUNES_GENRE_ALIASES against the real roster vocabulary', () => {
+  // The ROSTER_GENRES fixture above is a curated stand-in, not the real
+  // thing — this reads the actual data/roster.json so a typo'd alias target
+  // that happens to slip past the fixture (e.g. because the fixture was
+  // hand-updated alongside the alias) still fails loudly here.
+  it('every alias target exists verbatim in the real data/roster.json genres array', () => {
+    const realRosterPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'data', 'roster.json');
+    const realRoster = JSON.parse(readFileSync(realRosterPath, 'utf-8'));
+    const realGenreSet = new Set(realRoster.genres);
+    for (const [tag, target] of ITUNES_GENRE_ALIASES) {
+      expect(realGenreSet.has(target), `alias "${tag}" -> "${target}" must exist verbatim in the real roster.json genres array`).toBe(true);
+    }
   });
 });
 
@@ -362,12 +470,245 @@ describe('backfillGenres', () => {
     expect(artists[0].managementCompany).toBe('Bea Management');
     expect(artists[0].genres).toEqual(['Pop']);
   });
+
+  describe('non-music discard and map-then-compare agreement (2026-08-21)', () => {
+    it('skips with onlyNonMusicMatches when every genre-bearing exact match is a non-music Store category', async () => {
+      const target = artist({ name: 'James Newman' });
+      const searchArtist = vi.fn(async () => ({
+        results: [
+          itunesArtist({ name: 'James Newman', artistId: 1, genre: 'Fiction' }),
+          itunesArtist({ name: 'James Newman', artistId: 2, genre: 'Horror' }),
+        ],
+      }));
+
+      const { artists, stats, log } = await backfillGenres({ artists: [target], genres: ROSTER_GENRES }, { searchArtist });
+      expect(stats.skipped.onlyNonMusicMatches).toBe(1);
+      expect(artists[0].genres).toEqual([]);
+      const entry = log.skipped.find(e => e.reason === 'onlyNonMusicMatches');
+      expect(entry).toMatchObject({ name: 'James Newman', rostrUrl: target.rostrUrl });
+      expect(entry.candidateGenres.sort()).toEqual(['Fiction', 'Horror']);
+    });
+
+    it('fills as Pop when candidates are "Pop" and "Historical Romance" — the non-music candidate is discarded, not treated as a competing genre', async () => {
+      const target = artist({ name: 'Will Jay' });
+      const searchArtist = vi.fn(async () => ({
+        results: [
+          itunesArtist({ name: 'Will Jay', artistId: 1, genre: 'Pop' }),
+          itunesArtist({ name: 'Will Jay', artistId: 2, genre: 'Historical Romance' }),
+        ],
+      }));
+
+      const { artists, stats, log } = await backfillGenres({ artists: [target], genres: ROSTER_GENRES }, { searchArtist });
+      expect(artists[0].genres).toEqual(['Pop']);
+      expect(stats.filled).toBe(1);
+      expect(stats.skipped.ambiguousName).toBe(0);
+      expect(log.filled[0]).toMatchObject({ mappedGenre: 'Pop', matchType: 'unique', matchCount: 1 });
+      expect(log.filled[0].discardedNonMusic).toEqual(['Historical Romance']);
+      expect(log.filled[0].candidateGenres.sort()).toEqual(['Historical Romance', 'Pop']);
+    });
+
+    it('fills as Alternative when candidates are "Alternative" and "Worldwide" — "Worldwide" never maps, so it drops out rather than counting as a conflict', async () => {
+      const target = artist({ name: 'Peter Fenn' });
+      const searchArtist = vi.fn(async () => ({
+        results: [
+          itunesArtist({ name: 'Peter Fenn', artistId: 1, genre: 'Alternative' }),
+          itunesArtist({ name: 'Peter Fenn', artistId: 2, genre: 'Worldwide' }),
+        ],
+      }));
+
+      const { artists, stats, log } = await backfillGenres({ artists: [target], genres: ROSTER_GENRES }, { searchArtist });
+      expect(artists[0].genres).toEqual(['Alternative']);
+      expect(stats.filled).toBe(1);
+      expect(stats.skipped.ambiguousName).toBe(0);
+      expect(log.filled[0]).toMatchObject({ mappedGenre: 'Alternative', matchType: 'unique', matchCount: 1 });
+      expect(log.filled[0].discardedUnmappable).toEqual(['Worldwide']);
+      // "Worldwide" is a real genre tag, not a Store category — it's
+      // discarded at the mapping step, not the non-music step.
+      expect(log.filled[0].discardedNonMusic).toEqual([]);
+    });
+
+    it('treats two different raw spellings that map to the same roster genre as agreement (unanimous), not ambiguousName', async () => {
+      const target = artist({ name: 'DJ Kappa' });
+      const searchArtist = vi.fn(async () => ({
+        results: [
+          itunesArtist({ name: 'DJ Kappa', artistId: 1, genre: 'Hip-Hop/Rap' }), // aliased
+          itunesArtist({ name: 'DJ Kappa', artistId: 2, genre: 'Hip Hop & Rap' }), // direct match
+        ],
+      }));
+
+      const { artists, stats, log } = await backfillGenres({ artists: [target], genres: ROSTER_GENRES }, { searchArtist });
+      expect(artists[0].genres).toEqual(['Hip Hop & Rap']);
+      expect(stats.filled).toBe(1);
+      expect(stats.skipped.ambiguousName).toBe(0);
+      expect(log.filled[0].matchType).toBe('unanimous');
+      expect(log.filled[0].matchCount).toBe(2);
+      expect(log.filled[0].candidateGenres.sort()).toEqual(['Hip Hop & Rap', 'Hip-Hop/Rap']);
+    });
+
+    it('still skips as ambiguousName when distinct MAPPED genres survive, even after discarding non-music and unmappable candidates', async () => {
+      const target = artist({ name: 'Multi Match' });
+      const searchArtist = vi.fn(async () => ({
+        results: [
+          itunesArtist({ name: 'Multi Match', artistId: 1, genre: 'Pop' }),
+          itunesArtist({ name: 'Multi Match', artistId: 2, genre: 'Fiction' }), // discarded: non-music
+          itunesArtist({ name: 'Multi Match', artistId: 3, genre: 'Worldwide' }), // discarded: unmappable
+          itunesArtist({ name: 'Multi Match', artistId: 4, genre: 'Rock' }),
+        ],
+      }));
+
+      const { artists, stats, log } = await backfillGenres({ artists: [target], genres: ROSTER_GENRES }, { searchArtist });
+      expect(artists[0].genres).toEqual([]);
+      expect(stats.skipped.ambiguousName).toBe(1);
+      const entry = log.skipped.find(e => e.reason === 'ambiguousName');
+      expect(entry.competingGenres.sort()).toEqual(['Pop', 'Rock']);
+      expect(entry.matchCount).toBe(4); // exactMatches.length, unchanged from before this rule existed
+      // Audit-parity fix (2026-08-21): an ambiguousName entry now carries the
+      // same raw-candidate provenance a filled or unmappableGenre entry does.
+      expect(entry.candidateGenres.sort()).toEqual(['Fiction', 'Pop', 'Rock', 'Worldwide']);
+      expect(entry.discardedNonMusic).toEqual(['Fiction']);
+      expect(entry.discardedUnmappable).toEqual(['Worldwide']);
+    });
+
+    it('skips with unmappableGenre, carrying discardedNonMusic/discardedUnmappable provenance, when survivors exist but none map', async () => {
+      const target = artist({ name: 'Untaggable Two' });
+      const searchArtist = vi.fn(async () => ({
+        results: [
+          itunesArtist({ name: 'Untaggable Two', artistId: 1, genre: 'Worldwide' }),
+          itunesArtist({ name: 'Untaggable Two', artistId: 2, genre: 'Fiction' }),
+        ],
+      }));
+
+      const { stats, log } = await backfillGenres({ artists: [target], genres: ROSTER_GENRES }, { searchArtist });
+      expect(stats.skipped.unmappableGenre).toBe(1);
+      expect(stats.unmappedGenres.get('Worldwide')).toBe(1);
+      const entry = log.skipped.find(e => e.reason === 'unmappableGenre');
+      expect(entry.candidateGenres.sort()).toEqual(['Fiction', 'Worldwide']);
+      expect(entry.discardedNonMusic).toEqual(['Fiction']);
+      expect(entry.discardedUnmappable).toEqual(['Worldwide']);
+    });
+  });
+
+  describe('--discography (2026-08-21) — wiring into the ambiguousName tie only', () => {
+    // resolveByDiscography itself is mocked at the top of this file, so
+    // these tests exercise ONLY the wiring in tryFillOne/backfillGenres —
+    // whether it's called at all, with what arguments, and how its return
+    // value becomes a fill or a specific skip reason. The acceptance-rule
+    // math (avatar/name thresholds, the 3x margin, batching, the truncation
+    // guard) is scripts/discography-match.test.mjs's job.
+    function ambiguousArtist(name = 'Multi Match') {
+      return artist({ name });
+    }
+    function ambiguousSearchArtist(name = 'Multi Match') {
+      return vi.fn(async () => ({
+        results: [
+          itunesArtist({ name, artistId: 1, genre: 'Pop' }),
+          itunesArtist({ name, artistId: 2, genre: 'Rock' }),
+        ],
+      }));
+    }
+
+    it('never calls resolveByDiscography, and no discography-only reason can appear, when discography is false (the default)', async () => {
+      const target = ambiguousArtist();
+      const searchArtist = ambiguousSearchArtist();
+
+      const { stats } = await backfillGenres({ artists: [target], genres: ROSTER_GENRES }, { searchArtist });
+      expect(resolveByDiscography).not.toHaveBeenCalled();
+      expect(stats.skipped.ambiguousName).toBe(1);
+      expect(stats.skipped.spotifyArtistNotFound).toBe(0);
+      expect(stats.skipped.noSpotifyReleases).toBe(0);
+      expect(stats.skipped.discographyInconclusive).toBe(0);
+    });
+
+    it('never calls resolveByDiscography when there is no ambiguousName tie to break, even with discography: true', async () => {
+      const target = artist({ name: 'Nova Rivers' });
+      const searchArtist = vi.fn(async () => ({ results: [itunesArtist({ name: 'Nova Rivers', genre: 'Pop' })] }));
+
+      const { artists } = await backfillGenres({ artists: [target], genres: ROSTER_GENRES }, { searchArtist, discography: true, discographyDeps: {} });
+      expect(resolveByDiscography).not.toHaveBeenCalled();
+      expect(artists[0].genres).toEqual(['Pop']);
+    });
+
+    it('fills with matchType "discography" and the full provenance when resolveByDiscography resolves', async () => {
+      const target = ambiguousArtist();
+      const searchArtist = ambiguousSearchArtist();
+      const scoreboard = [
+        { artistId: 1, rawGenre: 'Pop', mappedGenre: 'Pop', releaseCount: 12, overlap: 9 },
+        { artistId: 2, rawGenre: 'Rock', mappedGenre: 'Rock', releaseCount: 5, overlap: 1 },
+      ];
+      resolveByDiscography.mockResolvedValueOnce({
+        resolved: true,
+        winner: { item: { artistId: 1, primaryGenreName: 'Pop', artistLinkUrl: 'https://music.apple.com/artist/1' }, mapped: 'Pop' },
+        pinMethod: 'avatar',
+        spotifyArtistId: 'sp-123',
+        ourReleaseCount: 12,
+        scoreboard,
+      });
+      const discographyDeps = { spotifySearchArtist: vi.fn(), spotifyArtistAlbums: vi.fn(), itunesLookupAlbums: vi.fn() };
+
+      const { artists, stats, log } = await backfillGenres({ artists: [target], genres: ROSTER_GENRES }, { searchArtist, discography: true, discographyDeps });
+
+      expect(resolveByDiscography).toHaveBeenCalledTimes(1);
+      // Called with the roster artist and the surviving mapped candidates —
+      // not the raw exact-match list, and with the injected deps untouched.
+      const [calledArtist, calledCandidates, calledDeps] = resolveByDiscography.mock.calls[0];
+      expect(calledArtist.name).toBe('Multi Match');
+      expect(calledCandidates).toHaveLength(2);
+      expect(calledDeps).toBe(discographyDeps);
+
+      expect(artists[0].genres).toEqual(['Pop']);
+      expect(stats.filled).toBe(1);
+      expect(stats.skipped.ambiguousName).toBe(0);
+      expect(log.filled).toHaveLength(1);
+      expect(log.filled[0]).toMatchObject({
+        name: 'Multi Match',
+        mappedGenre: 'Pop',
+        matchType: 'discography',
+        matchCount: 1,
+        artistId: 1,
+        pinMethod: 'avatar',
+        spotifyArtistId: 'sp-123',
+        ourReleaseCount: 12,
+      });
+      expect(log.filled[0].scoreboard).toEqual(scoreboard);
+      expect(log.filled[0].candidateGenres.sort()).toEqual(['Pop', 'Rock']);
+    });
+
+    it.each(['spotifyArtistNotFound', 'noSpotifyReleases', 'discographyInconclusive'])(
+      'skips with reason %s (not ambiguousName) when resolveByDiscography returns that reason, carrying candidateGenres/discardedNonMusic/discardedUnmappable',
+      async reason => {
+        const target = ambiguousArtist();
+        const searchArtist = ambiguousSearchArtist();
+        const scoreboard = reason === 'discographyInconclusive'
+          ? [{ artistId: 1, rawGenre: 'Pop', mappedGenre: 'Pop', releaseCount: 3, overlap: 1 }, { artistId: 2, rawGenre: 'Rock', mappedGenre: 'Rock', releaseCount: 2, overlap: 1 }]
+          : [];
+        resolveByDiscography.mockResolvedValueOnce({ resolved: false, reason, scoreboard });
+        const discographyDeps = { spotifySearchArtist: vi.fn(), spotifyArtistAlbums: vi.fn(), itunesLookupAlbums: vi.fn() };
+
+        const { artists, stats, log } = await backfillGenres({ artists: [target], genres: ROSTER_GENRES }, { searchArtist, discography: true, discographyDeps });
+
+        expect(artists[0].genres).toEqual([]);
+        expect(stats.skipped[reason]).toBe(1);
+        expect(stats.skipped.ambiguousName).toBe(0); // NOT counted as ambiguousName — see PERMANENT_SKIP_REASONS
+        const entry = log.skipped.find(e => e.reason === reason);
+        expect(entry).toBeTruthy();
+        expect(entry.competingGenres.sort()).toEqual(['Pop', 'Rock']);
+        expect(entry.candidateGenres.sort()).toEqual(['Pop', 'Rock']);
+        expect(entry.discardedNonMusic).toEqual([]);
+        expect(entry.discardedUnmappable).toEqual([]);
+        expect(entry.scoreboard).toEqual(scoreboard);
+      }
+    );
+  });
 });
 
 describe('PERMANENT_SKIP_REASONS', () => {
-  it('contains exactly the four reasons that are safe to never re-attempt, and neither lookupFailed nor overLimit', () => {
+  it('contains exactly the eight reasons that are safe to never re-attempt, and neither lookupFailed nor overLimit', () => {
     expect([...PERMANENT_SKIP_REASONS].sort()).toEqual(
-      ['ambiguousName', 'noGenreOnRecord', 'noNameMatch', 'unmappableGenre'].sort()
+      [
+        'ambiguousName', 'noGenreOnRecord', 'noNameMatch', 'onlyNonMusicMatches', 'unmappableGenre',
+        // Added 2026-08-21 for --discography — see scripts/discography-match.mjs.
+        'spotifyArtistNotFound', 'noSpotifyReleases', 'discographyInconclusive',
+      ].sort()
     );
     expect(PERMANENT_SKIP_REASONS.has('lookupFailed')).toBe(false);
     expect(PERMANENT_SKIP_REASONS.has('overLimit')).toBe(false);
@@ -382,6 +723,16 @@ describe('validateRetryReasons', () => {
   it('parses comma-separated reasons, trimming whitespace', () => {
     expect(validateRetryReasons('unmappableGenre, noNameMatch')).toEqual(
       new Set(['unmappableGenre', 'noNameMatch'])
+    );
+  });
+
+  it('accepts the new onlyNonMusicMatches reason (2026-08-21) as a valid permanent-skip reason', () => {
+    expect(validateRetryReasons('onlyNonMusicMatches')).toEqual(new Set(['onlyNonMusicMatches']));
+  });
+
+  it('accepts the three --discography skip reasons (2026-08-21) as valid permanent-skip reasons', () => {
+    expect(validateRetryReasons('spotifyArtistNotFound,noSpotifyReleases,discographyInconclusive')).toEqual(
+      new Set(['spotifyArtistNotFound', 'noSpotifyReleases', 'discographyInconclusive'])
     );
   });
 

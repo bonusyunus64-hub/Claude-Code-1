@@ -66,17 +66,41 @@
 //   1. filter iTunes results to exact, case-insensitive artistName matches
 //      (not "top search hit" — a fuzzy top hit is exactly the failure mode
 //      this guards against) that also carry a primaryGenreName
-//   2. exactly one such match -> accept it (matchType "unique")
-//   3. more than one, and they all report the SAME primaryGenreName ->
-//      accept it (matchType "unanimous" — agreement across independent
-//      collisions is itself evidence, the way it wasn't when only one
-//      Spotify candidate needed sanity-checking against a follower count)
-//   4. more than one, reporting DIFFERENT genres -> skip as ambiguousName,
-//      can't safely pick one
-// Measured on the same sample, this rule yields roughly 70% fill (~2,100 of
-// 3,010) with zero known-wrong writes — lower coverage than a naive
-// approach, on purpose: every skip here is a case the data genuinely can't
-// resolve safely, logged and left for a human rather than guessed at.
+//   2. drop any whose primaryGenreName is a non-music iTunes Store category
+//      (see NON_MUSIC_GENRES) — an audiobook/podcast/app-section hit that
+//      happens to share the roster artist's name, not a genre a musician
+//      could carry. Zero survivors -> skip as onlyNonMusicMatches.
+//   3. map each survivor's raw genre into the roster's own vocabulary (see
+//      mapItunesGenre) and compare on the MAPPED genre, not the raw tag —
+//      "Hip-Hop/Rap" and "Rap" are different iTunes spellings of the same
+//      roster genre and should count as agreement, not disagreement. Zero
+//      survivors map -> skip as unmappableGenre.
+//   4. exactly one distinct mapped genre survives -> accept it (matchType
+//      "unique" if only one candidate got that far, "unanimous" if several
+//      independent candidates all mapped to the same genre — agreement
+//      across independent collisions is itself evidence, the way it wasn't
+//      when only one Spotify candidate needed sanity-checking against a
+//      follower count)
+//   5. more than one DISTINCT mapped genre survives -> skip as
+//      ambiguousName, can't safely pick one — UNLESS --discography is
+//      passed, in which case this is exactly the tie it exists to break by
+//      comparing discographies instead of voting on genre tags; see the CLI
+//      section below and scripts/discography-match.mjs.
+// Steps 2-3 (added 2026-08-21) are deliberately more permissive than the
+// original four-step rule: discarding non-music noise and comparing on the
+// mapped genre rather than the raw tag resolves candidates that used to
+// collide for the wrong reason — an "Alternative" vs "Worldwide" pair used
+// to read as ambiguousName even though "Worldwide" was never a real
+// competing genre, and a "Pop" vs "Historical Romance" pair now correctly
+// fills as Pop instead of laundering the Historical Romance hit into a vote.
+// Every fill/skip decision keeps its full raw-candidate provenance in the
+// log (see PROVENANCE LOG below) specifically so this more permissive rule
+// stays auditable.
+// Measured on the original four-step rule's sample, that rule yielded
+// roughly 70% fill (~2,100 of 3,010) with zero known-wrong writes — lower
+// coverage than a naive approach, on purpose: every skip here is a case the
+// data genuinely can't resolve safely, logged and left for a human rather
+// than guessed at.
 //
 // Vocabulary: the roster uses 636 ROSTR-style genre strings ("Dance / Edm",
 // "Hip Hop & Rap", "Metalcore"); iTunes returns a single Title-Case tag per
@@ -95,13 +119,23 @@
 // PROVENANCE LOG: every run that would write (see the CLI section for the
 // exact rule) also produces data/genre-backfill-log.json — one entry per
 // filled artist (name, rostrUrl, the raw iTunes primaryGenreName, the
-// mapped ROSTR genre it became, matchType/matchCount, and the iTunes
-// artistId/artistLinkUrl so a human can go check the match) and one entry
-// per skipped artist (name, rostrUrl, reason, and for ambiguousName the
-// competing genres and how many artists shared the name) — overLimit skips
-// are counted in stats but deliberately NOT logged per-artist, see the
-// comment in backfillGenres for why. It deliberately carries NO manager
-// emails or names — it must stay safe to commit, unlike data/*.xlsx or
+// mapped ROSTR genre it became, matchType/matchCount, the iTunes
+// artistId/artistLinkUrl so a human can go check the match, and — since the
+// 2026-08-21 map-then-compare rule made agreement more permissive — the full
+// raw candidateGenres list plus discardedNonMusic/discardedUnmappable, so a
+// human can audit exactly which raw tags were treated as agreement) and one
+// entry per skipped artist (name, rostrUrl, reason, candidateGenres/
+// discardedNonMusic/discardedUnmappable same as a filled entry, and for
+// ambiguousName specifically the competing MAPPED genres and how many
+// artists shared the name) — overLimit skips are counted in stats but
+// deliberately NOT logged per-artist, see the comment in backfillGenres for
+// why. A --discography fill instead carries matchType 'discography',
+// matchCount 1 (it's an identification, not a vote), and three extra
+// fields — pinMethod, spotifyArtistId, and the full per-candidate
+// scoreboard (see scripts/discography-match.mjs's resolveByDiscography) —
+// so the pick is auditable the same way an ordinary fill's artistId/
+// artistLinkUrl are. It deliberately carries NO manager emails or names —
+// it must stay safe to commit, unlike data/*.xlsx or
 // rostr-raw-collection.json (both gitignored specifically because they
 // carry contact data).
 //
@@ -132,7 +166,22 @@
 // that re-running the exact same lookup can't change).
 //
 // Usage:
-//   node scripts/backfill-genres.mjs [--roster data/roster.json] [--out data/roster.json] [--log data/genre-backfill-log.json] [--limit N] [--delay 500] [--write] [--retry-skipped | --retry-reasons r1,r2,...]
+//   node scripts/backfill-genres.mjs [--roster data/roster.json] [--out data/roster.json] [--log data/genre-backfill-log.json] [--limit N] [--delay 500] [--write] [--discography] [--retry-skipped | --retry-reasons r1,r2,...]
+//
+//   --discography (added 2026-08-21) breaks ambiguousName ties — several
+//   exact-name iTunes matches that disagree on mapped genre — by comparing
+//   each candidate's discography against our artist's real one on Spotify,
+//   instead of leaving them all as an unresolvable vote. See
+//   scripts/discography-match.mjs's resolveByDiscography for the algorithm
+//   and tryFillOne below for where it engages. It needs Spotify credentials
+//   in the environment (SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET) — this
+//   script never loads .env.local itself, so run it as
+//   `node --env-file=.env.local scripts/backfill-genres.mjs --discography`.
+//   Omitting the flag is byte-identical to not having this feature at all:
+//   no Spotify calls are made and none of the three discography-specific
+//   skip reasons (spotifyArtistNotFound/noSpotifyReleases/
+//   discographyInconclusive) can appear.
+//
 //   --retry-skipped disables the provenance-log skip exclusion described
 //   above, so every genre-less artist is a candidate again regardless of
 //   what an earlier chunk logged for it. Use it deliberately (e.g. after
@@ -175,6 +224,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
+import { resolveByDiscography } from './discography-match.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -264,6 +314,112 @@ export const ITUNES_GENRE_ALIASES = new Map([
   // exactly, per the user's explicit call, not the more commonly-searched
   // "Afrobeats".
   ['african', 'Afrobeat'],
+
+  // The following were added 2026-08-21, targeting a defined slice of the
+  // 894 artists left skipped after the walk that filled 2,116. Every target
+  // below was checked to exist verbatim in the real roster.json genres array
+  // before being added (same discipline as the seven above).
+
+  // --- Hip-hop: regional/era tags with a distinct roster subgenre map to
+  // that subgenre; tags with no distinct roster subgenre fall through to the
+  // roster's general "Hip Hop & Rap" bucket instead of inventing one. ---
+  ['underground rap', 'Underground Hip Hop'],
+  ['old school rap', 'Old School Hip Hop'],
+  ['west coast rap', 'West Coast Hip Hop'],
+  ['dirty south', 'Southern Hip Hop'],
+  ['gangsta rap', 'Gangster Rap'],
+  ['hardcore rap', 'Hip Hop & Rap'],
+  ['uk hip hop', 'Hip Hop & Rap'],
+  ['maghreb hip hop', 'Hip Hop & Rap'],
+  ['hip hop in russian', 'Hip Hop & Rap'],
+  ['country hip hop/rap', 'Hip Hop & Rap'],
+  ['latin rap', 'Latin Hip Hop'],
+  ['christian rap', 'Christian Hip Hop'],
+  // "Korean Hip Hop" -> the roster's own "K Rap", not "Hip Hop & Rap" — the
+  // roster already draws the K-genre line this way for K Pop/K Rock, so this
+  // follows the existing convention rather than the general bucket.
+  ['korean hip hop', 'K Rap'],
+
+  // --- Korean (non-hip-hop) ---
+  ['korean indie', 'K Pop'],
+  ['korean folk pop', 'K Pop'],
+  ['korean rock', 'K Rock'],
+  ['korean classical', 'Classical'],
+
+  // --- Indian / desi: the roster's umbrella for Indian-market pop and
+  // regional-language genres is "Desi" — language-specific iTunes tags
+  // (Telugu, Marathi, ...) fold into it rather than each becoming its own
+  // roster genre for a handful of artists. ---
+  ['indian pop', 'Desi'],
+  ['indian', 'Desi'],
+  ['regional indian', 'Desi'],
+  ['telugu', 'Desi'],
+  ['marathi', 'Desi'],
+  ['malayalam', 'Desi'],
+  ['odia', 'Desi'],
+  ['assamese', 'Desi'],
+  ['haryanvi', 'Desi'],
+  // "Punjabi" -> "Bhangra": the roster has no standalone "Punjabi" genre,
+  // but Bhangra is the Punjabi-language genre it does carry. Previously
+  // grouped with "Arabic" as a pair with no defensible target (see the
+  // market/format comment below); Punjabi gets one now because Bhangra is a
+  // real, specific roster genre in a way nothing is for Arabic.
+  ['punjabi', 'Bhangra'],
+  ['indian classical', 'Classical'],
+
+  // --- Brazilian / Latin ---
+  ['brazilian', 'Brazilian Pop'],
+  ['axé', 'Brazilian Pop'],
+  ['baile funk', 'Funk Carioca'],
+  ['música tropical', 'Latin'],
+  ['rock y alternativo', 'Rock En Español'],
+
+  // --- Electronic ---
+  ["jungle/drum'n'bass", 'Drum And Bass'],
+  ['bass', 'Bass Music'],
+  ['garage', 'Uk Garage'],
+
+  // --- Rock / metal ---
+  ['pop/rock', 'Pop Rock'],
+  ['adult alternative', 'Alternative'],
+  ['rock & roll', 'Rock And Roll'],
+  ['prog rock/art rock', 'Progressive Rock'],
+  ['goth rock', 'Gothic Rock'],
+  ['death metal/black metal', 'Death Metal'],
+  ['psychedelic', 'Psychedelic Rock'],
+  ['alternative country', 'Americana'],
+
+  // --- Folk / acoustic ---
+  ['new acoustic', 'Folk'],
+  ['acoustic blues', 'Blues'],
+  ['contemporary singer/songwriter', 'Singer Songwriter'],
+
+  // --- Pop: all four fold into the roster's plain "Pop" rather than a
+  // market- or era-qualified subgenre the roster doesn't carry. ---
+  ['teen pop', 'Pop'],
+  ['traditional pop', 'Pop'],
+  ['pop in russian', 'Pop'],
+  ['turkish pop', 'Pop'],
+
+  // --- Faith ---
+  ['praise & worship', 'Faith Music'],
+  ['inspirational', 'Faith Music'],
+  ['devotional & spiritual', 'Devotional'],
+  ['indonesian religious', 'Devotional'],
+  // "Islamic" -> "Devotional", not a language/market tag — this is a
+  // faith-content category, and Devotional is the roster's home for
+  // religious content generally (see devotional & spiritual just above).
+  ['islamic', 'Devotional'],
+
+  // --- Other ---
+  ['afro beat', 'Afrobeat'],
+  ['modern dancehall', 'Dancehall'],
+  ['holiday', 'Christmas'],
+  ['easy listening', 'Adult Standards'],
+  ['relaxation', 'New Age'],
+  ['piano', 'Classical Piano'],
+  ['original score', 'Score'],
+  ['tv soundtrack', 'Soundtrack'],
 ]);
 
 /**
@@ -279,13 +435,68 @@ export const ITUNES_GENRE_ALIASES = new Map([
  *     happens to share the roster artist's name, not an honest genre tag
  *     for a musician. Aliasing these would launder a bad match into a
  *     confident-looking genre write.
- *   - "Instrumental" (2 artists) and "Easy Listening" (1 artist): real
- *     genre tags, but the roster vocabulary has no honest equivalent for
- *     either — every existing genre is either a specific style these don't
- *     belong to, or would require inventing a new roster genre, which this
- *     script deliberately does not do (see the module doc comment on
- *     vocabulary growth).
+ *   - "Instrumental" (1 artist): a real genre tag, but the roster
+ *     vocabulary has no honest equivalent for it — every existing genre is
+ *     either a specific style it doesn't belong to, or would require
+ *     inventing a new roster genre, which this script deliberately does not
+ *     do (see the module doc comment on vocabulary growth). "Easy
+ *     Listening" was grouped here too until 2026-08-21, when it gained an
+ *     alias to "Adult Standards" above.
+ *
+ * A second, larger group (added 2026-08-21): tags that describe a MARKET or
+ * FORMAT rather than a genre, where aliasing to any single roster genre
+ * would be a guess dressed up as a mapping. These should stay unmapped
+ * indefinitely, not just until someone finds a plausible-looking target:
+ * worldwide, instrumental, vocal, asia, europe, france, israeli, afrikaans,
+ * farsi, worldbeat, arabic. ("Worldwide" and "instrumental" therefore have
+ * two independent reasons to stay unmapped — the bullets above, and this
+ * one.) "Arabic" was previously discussed alongside "Punjabi" as a pair with
+ * no defensible target; "Punjabi" now has one — "Bhangra" — and moved into
+ * ITUNES_GENRE_ALIASES above. "Arabic" stays here: no roster genre names the
+ * Arabic-language/Arab-market genre space the way Bhangra does for Punjabi.
  */
+
+/**
+ * iTunes' /search endpoint, even queried with entity=musicArtist, still
+ * occasionally returns audiobook, podcast, and App Store rows under an exact
+ * artistName match — because the name collision is with an author, host, or
+ * narrator, not a musician. `primaryGenreName` on those rows is a Store
+ * category, not a genre ("Fiction", "Mysteries & Thrillers",
+ * "Self-Improvement"), and mapping one into the roster's genre vocabulary
+ * would write a confidently wrong tag onto a real musician's record — see
+ * the module doc comment's "James Newman" (Pop / Fiction / Horror), "Will
+ * Jay" (Pop / Family Stories for Young Adults), and "Peter Fenn" (Art &
+ * Architecture / Pop) skips, all discovered before this filter existed.
+ *
+ * This is a judgement call, not an exhaustive taxonomy of every non-music
+ * iTunes category Apple has ever used — it is the set observed among this
+ * roster's actual candidates. A reviewer re-running this script against a
+ * later snapshot, or seeing a new plausibly-bogus category show up in
+ * `unmappedGenres` or an ambiguousName log entry, should treat this as a
+ * living list and extend it, not assume it's complete.
+ */
+export const NON_MUSIC_GENRES = new Set([
+  'Fiction', 'Nonfiction', 'Fiction & Literature', 'Horror', 'Erotica',
+  'Comics & Graphic Novels', 'Biographies & Memoirs', 'Historical Romance',
+  'Contemporary Romance', 'Mysteries & Thrillers', 'Military History',
+  'Poetry', 'Theater', 'Documentary', 'Drama', 'Science & Nature', 'Finance',
+  'Business & Personal Finance', 'Self-Improvement', 'Fitness & Workout',
+  'Art & Architecture', 'Family Stories for Young Adults',
+]);
+
+/**
+ * Case-insensitive membership check against NON_MUSIC_GENRES. Callers should
+ * never compare a raw `primaryGenreName` against the Set directly — nothing
+ * here guarantees Apple's casing on these categories is stable, and this
+ * script has no live-fetch test coverage to catch it drifting.
+ */
+export function isNonMusicGenre(genreName) {
+  const lower = String(genreName || '').trim().toLowerCase();
+  for (const category of NON_MUSIC_GENRES) {
+    if (category.toLowerCase() === lower) return true;
+  }
+  return false;
+}
 
 /**
  * Maps one iTunes genre tag to an existing ROSTR genre string, or null if
@@ -314,10 +525,16 @@ function delay(ms) {
  * Skip reasons that are permanent: re-running the identical iTunes lookup
  * for the identical artist name can't produce a different exact-match set,
  * so an artist logged under one of these has nothing to gain from being
- * re-attempted by a later chunk. All four are conclusions about the DATA
+ * re-attempted by a later chunk. All eight are conclusions about the DATA
  * (no exact name match at all; matches exist but none carry a genre;
- * matches exist and disagree on genre; the matched genre doesn't map into
- * the roster vocabulary) rather than about this one request's luck.
+ * genre-carrying matches exist but every one is a non-music Store category;
+ * matches exist and disagree on mapped genre; the matched genre(s) don't map
+ * into the roster vocabulary; or — the three added 2026-08-21 for
+ * --discography, see resolveByDiscography in scripts/discography-match.mjs —
+ * no Spotify artist could be pinned for our artist at all, our pinned
+ * Spotify artist has no releases to compare against, or every candidate's
+ * discography overlap fell short of the acceptance rule) rather than about
+ * this one request's luck.
  *
  * `lookupFailed` is deliberately excluded — it means Apple throttled the
  * request or it errored transport-side, which says nothing about the
@@ -327,7 +544,10 @@ function delay(ms) {
  * nor spirit, and this set is asserted against by name in
  * scripts/backfill-genres.test.mjs.
  */
-export const PERMANENT_SKIP_REASONS = new Set(['noNameMatch', 'noGenreOnRecord', 'ambiguousName', 'unmappableGenre']);
+export const PERMANENT_SKIP_REASONS = new Set([
+  'noNameMatch', 'noGenreOnRecord', 'onlyNonMusicMatches', 'ambiguousName', 'unmappableGenre',
+  'spotifyArtistNotFound', 'noSpotifyReleases', 'discographyInconclusive',
+]);
 
 /**
  * Builds the set of rostrUrls a resumed run should not re-attempt: every
@@ -413,8 +633,16 @@ export function uniqueEmailCount(artists) {
  * exercise the whole matching/mapping/skip-reason logic against a small
  * fixture without any real network access — see searchArtistLive below for
  * the production implementation this stands in for.
+ *
+ * `discography` (--discography) and `discographyDeps` are threaded straight
+ * through to tryFillOne, which is the only place they're used: when
+ * `discography` is false (the default), tryFillOne never references
+ * `discographyDeps` at all, so passing neither is exactly today's behaviour
+ * — no Spotify calls, no chance of the three discography-only skip reasons
+ * appearing. See scripts/discography-match.mjs's resolveByDiscography for
+ * what `discographyDeps` needs to supply.
  */
-export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit, existingLog = null, retrySkipped = false, retryReasons = null } = {}) {
+export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit, existingLog = null, retrySkipped = false, retryReasons = null, discography = false, discographyDeps = null } = {}) {
   const rosterGenreByLower = new Map((roster.genres || []).map(g => [g.toLowerCase(), g]));
   // retrySkipped (--retry-skipped) is the broader "retry everything" mode
   // and takes precedence structurally — but main() below actually rejects
@@ -441,9 +669,17 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit,
       overLimit: 0,
       noNameMatch: 0, // no exact (case-insensitive) name match among the results at all
       noGenreOnRecord: 0, // exact match(es) exist, but none carry a primaryGenreName
-      ambiguousName: 0, // more than one exact, genre-bearing match, and they disagree on genre
-      unmappableGenre: 0, // matched safely, but the iTunes genre doesn't resolve into the roster vocabulary
+      onlyNonMusicMatches: 0, // genre-bearing exact match(es) exist, but every one is a non-music Store category (see NON_MUSIC_GENRES)
+      ambiguousName: 0, // more than one surviving match, disagree on MAPPED genre, and --discography was off (or couldn't resolve it — see the three reasons below)
+      unmappableGenre: 0, // surviving match(es) exist, but none map into the roster vocabulary
       lookupFailed: 0, // the iTunes request itself failed even after retries
+      // The following three only ever fire when --discography was passed and
+      // engaged for an ambiguousName tie (see tryFillOne and
+      // scripts/discography-match.mjs's resolveByDiscography) — they stay at
+      // 0 on every run without that flag.
+      spotifyArtistNotFound: 0, // no Spotify artist could be pinned for our roster artist (neither by avatar nor by exact name)
+      noSpotifyReleases: 0, // our artist was pinned on Spotify, but has no releases to compare candidates against
+      discographyInconclusive: 0, // pinned, has releases, but no candidate's discography overlap cleared the acceptance rule
     },
     /** iTunes genre (as returned, not normalised) -> how many times it showed up unmapped. */
     unmappedGenres: new Map(),
@@ -475,7 +711,7 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit,
     if (!hasGenres && (limit == null || stats.attempted < limit)) {
       stats.attempted += 1;
       const artist = { ...original };
-      const filledGenre = await tryFillOne(artist, searchArtist, rosterGenreByLower, stats, log);
+      const filledGenre = await tryFillOne(artist, searchArtist, rosterGenreByLower, stats, log, { discography, discographyDeps });
       await delay(delayMs);
       if (filledGenre) { artist.genres = [filledGenre]; stats.filled += 1; }
       artists.push(artist);
@@ -500,8 +736,12 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit,
   return { artists, stats, log };
 }
 
-async function tryFillOne(artist, searchArtist, rosterGenreByLower, stats, log) {
-  const skip = reason => { stats.skipped[reason] += 1; log.skipped.push({ name: artist.name, rostrUrl: artist.rostrUrl, reason }); return null; };
+async function tryFillOne(artist, searchArtist, rosterGenreByLower, stats, log, { discography = false, discographyDeps = null } = {}) {
+  const skip = (reason, extra = {}) => {
+    stats.skipped[reason] += 1;
+    log.skipped.push({ name: artist.name, rostrUrl: artist.rostrUrl, reason, ...extra });
+    return null;
+  };
 
   let response;
   try {
@@ -519,43 +759,129 @@ async function tryFillOne(artist, searchArtist, rosterGenreByLower, stats, log) 
   const genredMatches = exactMatches.filter(item => item.primaryGenreName);
   if (genredMatches.length === 0) return skip('noGenreOnRecord');
 
-  let candidate;
-  let matchType;
-  if (genredMatches.length === 1) {
-    candidate = genredMatches[0];
-    matchType = 'unique';
-  } else {
-    const distinctGenres = [...new Set(genredMatches.map(m => m.primaryGenreName))];
-    if (distinctGenres.length > 1) {
-      stats.skipped.ambiguousName += 1;
+  // Discard non-music Store categories BEFORE testing for agreement — see
+  // NON_MUSIC_GENRES's comment. Doing this first means a "Pop" / "Historical
+  // Romance" pair fills as Pop instead of ever being compared as if
+  // "Historical Romance" were a competing genre.
+  const musicMatches = genredMatches.filter(item => !isNonMusicGenre(item.primaryGenreName));
+  const discardedNonMusic = genredMatches.filter(item => isNonMusicGenre(item.primaryGenreName)).map(item => item.primaryGenreName);
+  if (musicMatches.length === 0) {
+    return skip('onlyNonMusicMatches', { candidateGenres: genredMatches.map(m => m.primaryGenreName) });
+  }
+
+  // Map each survivor into the roster vocabulary and compare on the MAPPED
+  // genre, not the raw tag — two different raw iTunes spellings of the same
+  // idea (e.g. "Hip-Hop/Rap" and a plain "Hip Hop & Rap") should count as
+  // agreement now, where comparing the raw strings directly would have
+  // called them a conflict. This is also what makes "Alternative" paired
+  // with "Worldwide" resolve cleanly: "Worldwide" simply drops out below for
+  // having nothing to map to, rather than ever being treated as a competing
+  // genre.
+  const mappedPairs = musicMatches.map(item => ({ item, mapped: mapItunesGenre(item.primaryGenreName, rosterGenreByLower) }));
+  const mappedCandidates = mappedPairs.filter(p => p.mapped);
+  const discardedUnmappable = mappedPairs.filter(p => !p.mapped).map(p => p.item.primaryGenreName);
+
+  if (mappedCandidates.length === 0) {
+    for (const genre of discardedUnmappable) {
+      stats.unmappedGenres.set(genre, (stats.unmappedGenres.get(genre) ?? 0) + 1);
+    }
+    return skip('unmappableGenre', {
+      candidateGenres: genredMatches.map(m => m.primaryGenreName),
+      discardedNonMusic,
+      discardedUnmappable,
+    });
+  }
+
+  const distinctMapped = [...new Set(mappedCandidates.map(p => p.mapped))];
+  if (distinctMapped.length > 1) {
+    // --discography (2026-08-21) engages ONLY here: this is exactly the tie
+    // a genre vote can't break. See scripts/discography-match.mjs's
+    // resolveByDiscography for the algorithm. When it resolves, this is a
+    // fill, not a skip — matchType 'discography' below. When it can't
+    // (returns unresolved), the artist still ends up skipped, but under
+    // WHICHEVER of the three discography-specific reasons explains why,
+    // not the generic 'ambiguousName' — see PERMANENT_SKIP_REASONS.
+    if (discography) {
+      const result = await resolveByDiscography(artist, mappedCandidates, discographyDeps);
+      if (result.resolved) {
+        log.filled.push({
+          name: artist.name,
+          rostrUrl: artist.rostrUrl,
+          primaryGenreName: result.winner.item.primaryGenreName,
+          mappedGenre: result.winner.mapped,
+          matchType: 'discography',
+          matchCount: 1, // identified, not voted on — see matchType
+          artistId: result.winner.item.artistId,
+          artistLinkUrl: result.winner.item.artistLinkUrl,
+          candidateGenres: genredMatches.map(m => m.primaryGenreName),
+          discardedNonMusic,
+          discardedUnmappable,
+          pinMethod: result.pinMethod,
+          spotifyArtistId: result.spotifyArtistId,
+          ourReleaseCount: result.ourReleaseCount,
+          scoreboard: result.scoreboard, // full per-candidate overlap detail, so the pick is auditable
+        });
+        return result.winner.mapped;
+      }
+      stats.skipped[result.reason] += 1;
       log.skipped.push({
         name: artist.name,
         rostrUrl: artist.rostrUrl,
-        reason: 'ambiguousName',
-        competingGenres: distinctGenres,
+        reason: result.reason,
+        competingGenres: distinctMapped,
         matchCount: exactMatches.length,
+        candidateGenres: genredMatches.map(m => m.primaryGenreName),
+        discardedNonMusic,
+        discardedUnmappable,
+        scoreboard: result.scoreboard,
       });
       return null;
     }
-    candidate = genredMatches[0];
-    matchType = 'unanimous';
+
+    stats.skipped.ambiguousName += 1;
+    log.skipped.push({
+      name: artist.name,
+      rostrUrl: artist.rostrUrl,
+      reason: 'ambiguousName',
+      // NOTE ON HISTORY: competingGenres holds MAPPED roster genres as of
+      // the 2026-08-21 map-then-compare rule (see the block above). Log
+      // entries written before that rule existed hold RAW iTunes tags in
+      // this same field instead — a reader diffing old vs new ambiguousName
+      // entries should expect that shift, not read it as a data error.
+      competingGenres: distinctMapped,
+      matchCount: exactMatches.length,
+      // Same audit-parity fields every other outcome already carries (added
+      // 2026-08-21, alongside --discography, so every skip reason — not
+      // just the fill path — logs the same underlying evidence).
+      candidateGenres: genredMatches.map(m => m.primaryGenreName),
+      discardedNonMusic,
+      discardedUnmappable,
+    });
+    return null;
   }
 
-  const mapped = mapItunesGenre(candidate.primaryGenreName, rosterGenreByLower);
-  if (!mapped) {
-    stats.unmappedGenres.set(candidate.primaryGenreName, (stats.unmappedGenres.get(candidate.primaryGenreName) ?? 0) + 1);
-    return skip('unmappableGenre');
-  }
+  const mapped = distinctMapped[0];
+  // "unique" if only one candidate survived both the non-music and
+  // unmappable-genre filters, "unanimous" if several independent candidates
+  // all mapped to the same roster genre — see the module doc comment.
+  const matchType = mappedCandidates.length === 1 ? 'unique' : 'unanimous';
+  const winner = mappedCandidates[0].item;
 
   log.filled.push({
     name: artist.name,
     rostrUrl: artist.rostrUrl,
-    primaryGenreName: candidate.primaryGenreName,
+    primaryGenreName: winner.primaryGenreName,
     mappedGenre: mapped,
     matchType,
-    matchCount: genredMatches.length,
-    artistId: candidate.artistId,
-    artistLinkUrl: candidate.artistLinkUrl,
+    matchCount: mappedCandidates.length,
+    artistId: winner.artistId,
+    artistLinkUrl: winner.artistLinkUrl,
+    // Full provenance for auditing the more-permissive map-then-compare
+    // rule: every raw genre a genre-bearing exact match carried, and which
+    // of those were discarded before the agreement check and why.
+    candidateGenres: genredMatches.map(m => m.primaryGenreName),
+    discardedNonMusic,
+    discardedUnmappable,
   });
 
   return mapped;
@@ -609,6 +935,117 @@ async function searchArtistLive(name) {
   const url = `https://itunes.apple.com/search?term=${encodeURIComponent(name)}&entity=musicArtist&limit=25`;
   const res = await fetchWithRetry(url);
   return res.json();
+}
+
+/**
+ * Builds the iTunes lookup fetcher scripts/discography-match.mjs's
+ * resolveByDiscography calls for step 4 (batched candidate discographies).
+ * `entity=album&limit=200` matches the search call above in going through
+ * the SAME fetchWithRetry backoff path — "every iTunes call, searches AND
+ * lookups, must go through the existing throttle/backoff path" — and, since
+ * a lookup call isn't followed by the outer per-artist `delay(delayMs)` the
+ * way the one-call-per-artist search path is (an --discography artist can
+ * make several lookup calls, not one), this applies `delay(delayMs)` itself
+ * after every call so --delay's pacing covers lookups too. Closed over
+ * `delayMs` rather than threading it through resolveByDiscography, which
+ * has no reason to know a rate limit exists — that's this module's problem,
+ * not the matching logic's.
+ */
+function makeItunesLookupAlbumsLive(delayMs) {
+  return async function itunesLookupAlbumsLive(ids) {
+    const url = `https://itunes.apple.com/lookup?id=${ids.join(',')}&entity=album&limit=200`;
+    const res = await fetchWithRetry(url);
+    const json = await res.json();
+    await delay(delayMs);
+    return json;
+  };
+}
+
+// --- Production Spotify client (for --discography only; not exercised by
+// the unit tests — those inject fake deps into resolveByDiscography
+// instead). Client-credentials flow, same shape lib/spotify.ts already uses
+// elsewhere in this repo, but with the 401-refresh and 429 Retry-After
+// handling a long batch run actually needs. ---
+
+const SPOTIFY_TOKEN_URL = 'https://accounts.spotify.com/api/token';
+const SPOTIFY_API_BASE = 'https://api.spotify.com/v1';
+// Spotify is not the bottleneck here (iTunes is, see the throttle/backoff
+// above) — this is just polite spacing, not a measured rate limit.
+const SPOTIFY_CALL_SPACING_MS = 150;
+const SPOTIFY_MAX_RATE_LIMIT_RETRIES = 4;
+
+let spotifyTokenCache = null; // { token, expiresAt } — cached for the run, refreshed once on a 401.
+
+/**
+ * Throws with a clear, actionable message if Spotify credentials aren't in
+ * process.env — this script deliberately does NOT load .env.local itself
+ * (see the module doc comment's CLI section), so a missing variable here
+ * means the run command was wrong, not that credentials don't exist.
+ */
+function requireSpotifyCredentials() {
+  const clientId = process.env.SPOTIFY_CLIENT_ID;
+  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      'SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET are not set. --discography needs Spotify credentials in the ' +
+      'environment — this script never loads .env.local itself, so run it as ' +
+      '`node --env-file=.env.local scripts/backfill-genres.mjs --discography ...`.'
+    );
+  }
+  return { clientId, clientSecret };
+}
+
+async function fetchSpotifyToken(forceRefresh) {
+  if (!forceRefresh && spotifyTokenCache && spotifyTokenCache.expiresAt > Date.now()) return spotifyTokenCache.token;
+  const { clientId, clientSecret } = requireSpotifyCredentials();
+  const res = await fetch(SPOTIFY_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
+    },
+    body: 'grant_type=client_credentials',
+  });
+  if (!res.ok) throw new Error(`Spotify token request failed: ${res.status} ${res.statusText}`);
+  const data = await res.json();
+  spotifyTokenCache = { token: data.access_token, expiresAt: Date.now() + (data.expires_in - 60) * 1000 };
+  return spotifyTokenCache.token;
+}
+
+/**
+ * Fetches `${SPOTIFY_API_BASE}${path}`, refreshing the cached token exactly
+ * ONCE on a 401 (not a retry loop — a second 401 after a fresh token means
+ * something other than expiry, so it's thrown) and honouring `Retry-After`
+ * on a 429 rather than guessing a backoff, since Spotify tells us exactly
+ * how long to wait.
+ */
+async function fetchSpotify(path, retriedAuth = false) {
+  const token = await fetchSpotifyToken(false);
+  for (let attempt = 0; ; attempt += 1) {
+    const res = await fetch(`${SPOTIFY_API_BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+    if (res.ok) {
+      await delay(SPOTIFY_CALL_SPACING_MS);
+      return res.json();
+    }
+    if (res.status === 401 && !retriedAuth) {
+      await fetchSpotifyToken(true);
+      return fetchSpotify(path, true);
+    }
+    if (res.status === 429 && attempt < SPOTIFY_MAX_RATE_LIMIT_RETRIES) {
+      const retryAfterSeconds = Number(res.headers.get('Retry-After')) || 1;
+      await delay(retryAfterSeconds * 1000);
+      continue;
+    }
+    throw new Error(`Spotify request failed: ${res.status} ${res.statusText} (${path})`);
+  }
+}
+
+async function spotifySearchArtistLive(name, offset) {
+  return fetchSpotify(`/search?q=${encodeURIComponent(name)}&type=artist&limit=10&offset=${offset}`);
+}
+
+async function spotifyArtistAlbumsLive(spotifyArtistId, offset) {
+  return fetchSpotify(`/artists/${encodeURIComponent(spotifyArtistId)}/albums?limit=10&offset=${offset}&include_groups=album,single`);
 }
 
 // --- Provenance log merge ---
@@ -705,8 +1142,22 @@ async function main() {
   const argv = process.argv.slice(2);
   const write = argv.includes('--write');
   const retrySkipped = argv.includes('--retry-skipped');
+  const discography = argv.includes('--discography');
   const flag = (name, fallback) => { const i = argv.indexOf(name); return i !== -1 ? argv[i + 1] : fallback; };
   const retryReasonsArg = flag('--retry-reasons', null);
+
+  // Checked up front, before any lookups, rather than letting the first
+  // discography-eligible artist discover it mid-walk: a run that's already
+  // spent time/API calls only to fail on the first ambiguousName tie is a
+  // worse failure mode than refusing immediately with a clear fix.
+  if (discography) {
+    try {
+      requireSpotifyCredentials();
+    } catch (err) {
+      console.error(err.message);
+      process.exit(1);
+    }
+  }
 
   // --retry-skipped and --retry-reasons together is a CLI error rather than
   // one silently winning over the other: --retry-skipped already means
@@ -774,8 +1225,18 @@ async function main() {
   if (!write) console.log('DRY RUN — pass --write to save changes. Nothing will be written to disk.');
   if (retrySkipped) console.log('--retry-skipped passed — ignoring the provenance log; every genre-less artist is a candidate again.');
   if (retryReasons) console.log(`--retry-reasons ${[...retryReasons].join(',')} passed — only artists most recently skipped under [${[...retryReasons].join(', ')}] are candidates again; every other previously-skipped artist stays excluded.`);
+  if (discography) console.log('--discography passed — ambiguousName ties will be broken by comparing Spotify/iTunes discographies (see scripts/discography-match.mjs).');
 
-  const { artists, stats, log } = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit, existingLog, retrySkipped, retryReasons });
+  // Built only when --discography is passed: with it absent, `discography`
+  // is false and tryFillOne never reads `discographyDeps`, so no Spotify
+  // token request happens and no Spotify credential check runs either.
+  const discographyDeps = discography ? {
+    spotifySearchArtist: spotifySearchArtistLive,
+    spotifyArtistAlbums: spotifyArtistAlbumsLive,
+    itunesLookupAlbums: makeItunesLookupAlbumsLive(delayMs),
+  } : null;
+
+  const { artists, stats, log } = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit, existingLog, retrySkipped, retryReasons, discography, discographyDeps });
 
   const after = { artists: artists.length, emails: uniqueEmailCount(artists) };
   const artistsLost = before.artists - after.artists;
