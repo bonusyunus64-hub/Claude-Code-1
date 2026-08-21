@@ -182,6 +182,17 @@
 //   skip reasons (spotifyArtistNotFound/noSpotifyReleases/
 //   discographyInconclusive) can appear.
 //
+//   SAFETY, added 2026-08-22 after a real run hung for 5h12m (see
+//   makeSpotifyFetcher's doc comment for the full incident): every Spotify
+//   and iTunes request now carries a 30s timeout, a Spotify 429's
+//   Retry-After is capped at 60s (above that, the run aborts immediately
+//   rather than sleeping — see SpotifyQuotaExhaustedError), 3 consecutive
+//   429s abort the run outright as a sustained-quota-exhaustion signal, and
+//   resolveByDiscography's own Spotify call volume was cut from ~6 to ~2-3
+//   calls per ambiguous artist (see scripts/discography-match.mjs's
+//   "SPOTIFY CALL VOLUME" comment). None of this changes behaviour when
+//   --discography is absent.
+//
 //   --retry-skipped disables the provenance-log skip exclusion described
 //   above, so every genre-less artist is a candidate again regardless of
 //   what an earlier chunk logged for it. Use it deliberately (e.g. after
@@ -967,6 +978,17 @@ async function tryFillOne(artist, searchArtist, rosterGenreByLower, stats, log, 
 // --- Production iTunes client (not exercised by the unit tests — those
 // inject a fake searchArtist instead). ---
 
+// Applied to every outbound fetch in this file (iTunes AND Spotify) via
+// AbortSignal.timeout — added 2026-08-22 alongside the Retry-After ceiling
+// below, for the same underlying reason: a half-open socket that never
+// resolves hangs the walk exactly as indefinitely as an uncapped sleep did,
+// just via a different mechanism (no Retry-After to even cap). 30s is
+// generous for both APIs under normal conditions; its only job is turning
+// "hung forever" into "a retryable error after a bounded wait". A timeout
+// lands in the same catch block as any other transport failure (DNS
+// hiccup, connection reset), so it's retried, not treated as fatal.
+const FETCH_TIMEOUT_MS = 30_000;
+
 const ITUNES_MAX_RETRIES = 4;
 const ITUNES_BASE_BACKOFF_MS = 1000;
 const ITUNES_MAX_BACKOFF_MS = 30_000;
@@ -980,19 +1002,25 @@ function backoffDelayMs(attempt) {
 /**
  * Fetches `url`, retrying with a bounded exponential backoff on 403/429
  * (Apple's rate-limit responses) and on transport-level failures (fetch
- * throwing — DNS hiccup, connection reset, etc.), since both are typically
- * transient over a ~3,010-request run. Any other non-OK HTTP status is
- * treated as non-retryable and thrown immediately. If every retry is
- * exhausted, throws — the caller (searchArtistLive, and above it
- * tryFillOne) is responsible for turning that into a `lookupFailed` skip
- * for just that one artist rather than aborting the whole run.
+ * throwing — DNS hiccup, connection reset, or now a FETCH_TIMEOUT_MS
+ * timeout, all indistinguishable to the caller and all typically transient
+ * over a ~3,010-request run). Any other non-OK HTTP status is treated as
+ * non-retryable and thrown immediately. If every retry is exhausted,
+ * throws — the caller (searchArtistLive, and above it tryFillOne) is
+ * responsible for turning that into a `lookupFailed` skip for just that one
+ * artist rather than aborting the whole run.
+ *
+ * `fetchImpl` defaults to the real global `fetch` and is only ever
+ * overridden by scripts/backfill-genres.test.mjs, which injects a fake to
+ * exercise this retry/timeout logic without any network access — the same
+ * injection pattern makeSpotifyFetcher below uses for the same reason.
  */
-async function fetchWithRetry(url) {
+async function fetchWithRetry(url, { fetchImpl = fetch } = {}) {
   let lastErr;
   for (let attempt = 0; attempt <= ITUNES_MAX_RETRIES; attempt += 1) {
     let res;
     try {
-      res = await fetch(url);
+      res = await fetchImpl(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     } catch (err) {
       lastErr = err;
       if (attempt < ITUNES_MAX_RETRIES) { await delay(backoffDelayMs(attempt)); continue; }
@@ -1039,19 +1067,54 @@ function makeItunesLookupAlbumsLive(delayMs) {
 }
 
 // --- Production Spotify client (for --discography only; not exercised by
-// the unit tests — those inject fake deps into resolveByDiscography
-// instead). Client-credentials flow, same shape lib/spotify.ts already uses
-// elsewhere in this repo, but with the 401-refresh and 429 Retry-After
-// handling a long batch run actually needs. ---
+// the unit tests via the network — see makeSpotifyFetcher's doc comment for
+// how the tests DO exercise its retry/ceiling/abort logic, injected). ---
 
-const SPOTIFY_TOKEN_URL = 'https://accounts.spotify.com/api/token';
-const SPOTIFY_API_BASE = 'https://api.spotify.com/v1';
+export const SPOTIFY_TOKEN_URL = 'https://accounts.spotify.com/api/token';
+export const SPOTIFY_API_BASE = 'https://api.spotify.com/v1';
 // Spotify is not the bottleneck here (iTunes is, see the throttle/backoff
 // above) — this is just polite spacing, not a measured rate limit.
 const SPOTIFY_CALL_SPACING_MS = 150;
 const SPOTIFY_MAX_RATE_LIMIT_RETRIES = 4;
 
-let spotifyTokenCache = null; // { token, expiresAt } — cached for the run, refreshed once on a 401.
+// THE 2026-08-22 INCIDENT THESE TWO CONSTANTS EXIST TO PREVENT: a real
+// --discography --write run hung for 5h12m with zero CPU and zero open
+// sockets — not slow, asleep. Root cause: `await delay(retryAfterSeconds *
+// 1000)` with no ceiling on a Spotify 429's `Retry-After` header, and
+// Spotify hands a client-credentials app that has exhausted its quota a
+// Retry-After measured in HOURS. Nothing was written (this script writes
+// only at the end) so there was no data damage, but a multi-hour silent
+// sleep is never the right behaviour for an unattended batch run — it
+// looks identical to a crash, and unlike a crash, it doesn't let the
+// operator decide anything. Both constants below turn "sleep and hope" into
+// "fail fast and say why."
+//
+// A Retry-After above this is treated as proof the quota is gone, not
+// ordinary backpressure — ordinary Spotify rate-limit backoffs are single-
+// digit seconds; the observed exhausted-quota value was hours. 60s is
+// comfortably above normal backpressure and comfortably below "the run
+// should just abort instead."
+const SPOTIFY_RETRY_AFTER_CEILING_SECONDS = 60;
+// How many Spotify 429s IN A ROW mean the quota is gone rather than one
+// request hitting ordinary backpressure. 3 was picked because it's the
+// smallest number that can't plausibly be a coincidence: a single 429 is
+// normal (a burst of requests briefly exceeding a per-second cap), but
+// three consecutive requests all landing after Spotify has already told us
+// to back off means every remaining artist in the run is going to fail the
+// exact same way — crawling through hundreds of individually-retried
+// skips to find that out is worse than aborting immediately and saying so.
+// Reset to 0 on any successful response (see makeSpotifyFetcher) — a single
+// success between 429s means the wall isn't sustained.
+const SPOTIFY_CONSECUTIVE_429_ABORT_THRESHOLD = 3;
+
+/**
+ * Thrown by makeSpotifyFetcher when the run should stop rather than keep
+ * retrying — a Retry-After above SPOTIFY_RETRY_AFTER_CEILING_SECONDS, or
+ * SPOTIFY_CONSECUTIVE_429_ABORT_THRESHOLD 429s in a row. main() catches
+ * this specifically to print a clean message and exit(1) instead of an
+ * unhandled-rejection stack trace — see main() below.
+ */
+export class SpotifyQuotaExhaustedError extends Error {}
 
 /**
  * Throws with a clear, actionable message if Spotify credentials aren't in
@@ -1072,57 +1135,133 @@ function requireSpotifyCredentials() {
   return { clientId, clientSecret };
 }
 
-async function fetchSpotifyToken(forceRefresh) {
-  if (!forceRefresh && spotifyTokenCache && spotifyTokenCache.expiresAt > Date.now()) return spotifyTokenCache.token;
-  const { clientId, clientSecret } = requireSpotifyCredentials();
-  const res = await fetch(SPOTIFY_TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
-    },
-    body: 'grant_type=client_credentials',
-  });
-  if (!res.ok) throw new Error(`Spotify token request failed: ${res.status} ${res.statusText}`);
-  const data = await res.json();
-  spotifyTokenCache = { token: data.access_token, expiresAt: Date.now() + (data.expires_in - 60) * 1000 };
-  return spotifyTokenCache.token;
-}
-
 /**
- * Fetches `${SPOTIFY_API_BASE}${path}`, refreshing the cached token exactly
- * ONCE on a 401 (not a retry loop — a second 401 after a fresh token means
- * something other than expiry, so it's thrown) and honouring `Retry-After`
- * on a 429 rather than guessing a backoff, since Spotify tells us exactly
- * how long to wait.
+ * Builds a Spotify request client with its own closure-scoped state (cached
+ * token, consecutive-429 counter) rather than the module-level singleton
+ * this used to be — a factory, for two reasons: production wants a fresh
+ * consecutive-429 count every run (no cross-invocation leakage — moot for a
+ * one-shot CLI process, but makes the state's lifetime explicit), and
+ * scripts/backfill-genres.test.mjs wants an independent instance per test
+ * with an injected `fetchImpl`, so the retry/timeout/ceiling/abort logic
+ * below is fully exercised without any network access — the same reason
+ * makeItunesLookupAlbumsLive above is a factory. `fetchImpl` defaults to the
+ * real global `fetch`; `clientId`/`clientSecret` default to reading
+ * process.env (via requireSpotifyCredentials) so production wiring below
+ * doesn't have to pass them, but tests can supply fakes directly instead of
+ * mutating process.env.
+ *
+ * Returns `{ searchArtist(name, offset), artistAlbums(spotifyArtistId,
+ * offset) }` — thin path-builders around one shared `fetchSpotify`, which
+ * is where all the retry logic actually lives:
+ *   - every request carries `AbortSignal.timeout(FETCH_TIMEOUT_MS)`; a
+ *     timeout throws the same as any other transport failure and is
+ *     retried, not fatal (see the try/catch below) — added alongside the
+ *     Retry-After ceiling for the same reason: an indefinite hang is an
+ *     indefinite hang whether it comes from an uncapped sleep or a socket
+ *     that never resolves.
+ *   - a 401 refreshes the cached token exactly ONCE and retries (a second
+ *     401 after a fresh token means something other than expiry, so it's
+ *     thrown).
+ *   - a 429 is logged immediately with its Retry-After value — every one,
+ *     unconditionally, so a chunk's log shows exactly what happened rather
+ *     than leaving it to be inferred from silence afterwards — then:
+ *       1. bumps the consecutive-429 counter; at
+ *          SPOTIFY_CONSECUTIVE_429_ABORT_THRESHOLD in a row, throws
+ *          SpotifyQuotaExhaustedError rather than retrying again.
+ *       2. otherwise, if THIS Retry-After exceeds
+ *          SPOTIFY_RETRY_AFTER_CEILING_SECONDS, throws
+ *          SpotifyQuotaExhaustedError immediately rather than sleeping —
+ *          this is the fix for the actual 2026-08-22 incident.
+ *       3. otherwise sleeps for the (bounded) Retry-After and retries, up
+ *          to SPOTIFY_MAX_RATE_LIMIT_RETRIES times.
+ *   - any other non-OK status is thrown immediately, unretried.
  */
-async function fetchSpotify(path, retriedAuth = false) {
-  const token = await fetchSpotifyToken(false);
-  for (let attempt = 0; ; attempt += 1) {
-    const res = await fetch(`${SPOTIFY_API_BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } });
-    if (res.ok) {
-      await delay(SPOTIFY_CALL_SPACING_MS);
-      return res.json();
-    }
-    if (res.status === 401 && !retriedAuth) {
-      await fetchSpotifyToken(true);
-      return fetchSpotify(path, true);
-    }
-    if (res.status === 429 && attempt < SPOTIFY_MAX_RATE_LIMIT_RETRIES) {
-      const retryAfterSeconds = Number(res.headers.get('Retry-After')) || 1;
-      await delay(retryAfterSeconds * 1000);
-      continue;
-    }
-    throw new Error(`Spotify request failed: ${res.status} ${res.statusText} (${path})`);
+export function makeSpotifyFetcher({ fetchImpl = fetch, clientId, clientSecret } = {}) {
+  let tokenCache = null; // { token, expiresAt }
+  let consecutive429s = 0;
+
+  async function fetchToken(forceRefresh) {
+    if (!forceRefresh && tokenCache && tokenCache.expiresAt > Date.now()) return tokenCache.token;
+    const creds = clientId && clientSecret ? { clientId, clientSecret } : requireSpotifyCredentials();
+    const res = await fetchImpl(SPOTIFY_TOKEN_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Authorization: `Basic ${Buffer.from(`${creds.clientId}:${creds.clientSecret}`).toString('base64')}`,
+      },
+      body: 'grant_type=client_credentials',
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`Spotify token request failed: ${res.status} ${res.statusText}`);
+    const data = await res.json();
+    tokenCache = { token: data.access_token, expiresAt: Date.now() + (data.expires_in - 60) * 1000 };
+    return tokenCache.token;
   }
-}
 
-async function spotifySearchArtistLive(name, offset) {
-  return fetchSpotify(`/search?q=${encodeURIComponent(name)}&type=artist&limit=10&offset=${offset}`);
-}
+  async function fetchSpotify(path, retriedAuth = false) {
+    const token = await fetchToken(false);
+    for (let attempt = 0; ; attempt += 1) {
+      let res;
+      try {
+        res = await fetchImpl(`${SPOTIFY_API_BASE}${path}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        });
+      } catch (err) {
+        // Transport failure or a timeout — both retryable, same bucket
+        // fetchWithRetry uses for iTunes, for the same reason.
+        if (attempt < SPOTIFY_MAX_RATE_LIMIT_RETRIES) { await delay(backoffDelayMs(attempt)); continue; }
+        throw err;
+      }
 
-async function spotifyArtistAlbumsLive(spotifyArtistId, offset) {
-  return fetchSpotify(`/artists/${encodeURIComponent(spotifyArtistId)}/albums?limit=10&offset=${offset}&include_groups=album,single`);
+      if (res.ok) {
+        consecutive429s = 0;
+        await delay(SPOTIFY_CALL_SPACING_MS);
+        return res.json();
+      }
+
+      if (res.status === 401 && !retriedAuth) {
+        await fetchToken(true);
+        return fetchSpotify(path, true);
+      }
+
+      if (res.status === 429) {
+        const retryAfterSeconds = Number(res.headers.get('Retry-After')) || 1;
+        consecutive429s += 1;
+        // Unconditional — logged the moment it arrives, before any decision
+        // about whether to sleep or abort, so it's visible in the log even
+        // if what follows is a throw.
+        console.warn(`Spotify 429 on ${path}: Retry-After ${retryAfterSeconds}s (${consecutive429s} in a row)`);
+
+        if (consecutive429s >= SPOTIFY_CONSECUTIVE_429_ABORT_THRESHOLD) {
+          throw new SpotifyQuotaExhaustedError(
+            `${consecutive429s} consecutive Spotify 429s (most recent Retry-After ${retryAfterSeconds}s). ` +
+            `The Spotify quota looks exhausted, not merely rate-limited — aborting the run rather than ` +
+            `retrying artist after artist into the same wall. Retry later once the quota window resets.`
+          );
+        }
+        if (retryAfterSeconds > SPOTIFY_RETRY_AFTER_CEILING_SECONDS) {
+          throw new SpotifyQuotaExhaustedError(
+            `Spotify returned Retry-After ${retryAfterSeconds}s on ${path} — above the ` +
+            `${SPOTIFY_RETRY_AFTER_CEILING_SECONDS}s ceiling this script will ever sleep for. A wait this long ` +
+            `means the client-credentials quota is exhausted, not ordinary backpressure. Aborting the run; ` +
+            `retry later rather than waiting it out.`
+          );
+        }
+        if (attempt < SPOTIFY_MAX_RATE_LIMIT_RETRIES) {
+          await delay(retryAfterSeconds * 1000);
+          continue;
+        }
+      }
+
+      throw new Error(`Spotify request failed: ${res.status} ${res.statusText} (${path})`);
+    }
+  }
+
+  return {
+    searchArtist: (name, offset) => fetchSpotify(`/search?q=${encodeURIComponent(name)}&type=artist&limit=10&offset=${offset}`),
+    artistAlbums: (spotifyArtistId, offset) => fetchSpotify(`/artists/${encodeURIComponent(spotifyArtistId)}/albums?limit=10&offset=${offset}&include_groups=album,single`),
+  };
 }
 
 // --- Provenance log merge ---
@@ -1341,11 +1480,14 @@ async function main() {
   // Built only when --discography is passed: with it absent, `discography`
   // is false and tryFillOne never reads `discographyDeps`, so no Spotify
   // token request happens and no Spotify credential check runs either.
-  const discographyDeps = discography ? {
-    spotifySearchArtist: spotifySearchArtistLive,
-    spotifyArtistAlbums: spotifyArtistAlbumsLive,
-    itunesLookupAlbums: makeItunesLookupAlbumsLive(delayMs),
-  } : null;
+  const discographyDeps = discography ? (() => {
+    const spotify = makeSpotifyFetcher();
+    return {
+      spotifySearchArtist: spotify.searchArtist,
+      spotifyArtistAlbums: spotify.artistAlbums,
+      itunesLookupAlbums: makeItunesLookupAlbumsLive(delayMs),
+    };
+  })() : null;
 
   // The CLI is the one caller that wants progress output — unlike the unit
   // tests, a real invocation is a human-scale, possibly multi-hour run with
@@ -1356,7 +1498,26 @@ async function main() {
     else if (event.type === 'rate') console.log(formatRateLine(event));
   };
 
-  const { artists, stats, log } = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit, existingLog, retrySkipped, retryReasons, discography, discographyDeps, onProgress });
+  let result;
+  try {
+    result = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit, existingLog, retrySkipped, retryReasons, discography, discographyDeps, onProgress });
+  } catch (err) {
+    // SpotifyQuotaExhaustedError (see makeSpotifyFetcher) is the one error
+    // this run should abort cleanly for rather than crash on: a clean
+    // message + exit(1) is what "fail fast and say why" (see the 2026-08-22
+    // incident this whole thing exists to prevent) actually looks like to
+    // an operator, versus a raw unhandled-rejection stack trace. Nothing was
+    // written yet either way — this script writes only at the very end —
+    // so aborting here loses no work. Anything else keeps today's
+    // behaviour: an unexpected error is a real bug and should surface with
+    // its full stack trace, not be swallowed into a clean one-liner.
+    if (err instanceof SpotifyQuotaExhaustedError) {
+      console.error(`Aborting: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+  const { artists, stats, log } = result;
 
   const after = { artists: artists.length, emails: uniqueEmailCount(artists) };
   const artistsLost = before.artists - after.artists;

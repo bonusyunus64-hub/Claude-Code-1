@@ -18,6 +18,7 @@ import {
   backfillGenres, isExactNameMatch, normalizeItunesGenreTag, mapItunesGenre,
   uniqueEmailCount, ITUNES_GENRE_ALIASES, mergeProvenanceLog, loadExistingProvenanceLog,
   PERMANENT_SKIP_REASONS, validateRetryReasons, NON_MUSIC_GENRES, isNonMusicGenre,
+  makeSpotifyFetcher, SpotifyQuotaExhaustedError,
 } from './backfill-genres.mjs';
 import { resolveByDiscography } from './discography-match.mjs';
 
@@ -824,6 +825,130 @@ describe('backfillGenres — progress reporting (onProgress)', () => {
 
     expect(events.filter(e => e.type === 'rate')).toHaveLength(0);
     expect(events.filter(e => e.type === 'attempt')).toHaveLength(5);
+  });
+});
+
+describe('makeSpotifyFetcher — retry/timeout/ceiling/consecutive-429 abort (2026-08-22)', () => {
+  // Fixes a real incident: a --discography --write run hung for 5h12m
+  // (zero CPU, zero open sockets) because a Spotify 429's Retry-After had
+  // no ceiling and Spotify hands an exhausted-quota client-credentials app
+  // a Retry-After measured in HOURS. These tests exercise the retry logic
+  // directly via an injected `fetchImpl` — no network, and fake timers
+  // stand in for delay()'s real setTimeout so nothing here actually waits.
+  const TOKEN_BODY = { access_token: 'fake-token', expires_in: 3600 };
+
+  function fakeResponse({ ok = true, status = 200, statusText = 'OK', headers = {}, body = {} } = {}) {
+    return { ok, status, statusText, headers: { get: name => headers[name] ?? null }, json: async () => body };
+  }
+
+  function fetcher(fetchImpl) {
+    return makeSpotifyFetcher({ fetchImpl, clientId: 'test-client-id', clientSecret: 'test-client-secret' });
+  }
+
+  let warnSpy;
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warnSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('sleeps and retries when Retry-After is exactly at the 60s ceiling, then succeeds', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(fakeResponse({ body: TOKEN_BODY }))
+      .mockResolvedValueOnce(fakeResponse({ ok: false, status: 429, statusText: 'Too Many Requests', headers: { 'Retry-After': '60' } }))
+      .mockResolvedValueOnce(fakeResponse({ body: { artists: { items: [] } } }));
+    const { searchArtist } = fetcher(fetchImpl);
+
+    const promise = searchArtist('Some Artist', 0);
+    // Needs to clear the 60s Retry-After sleep AND the smaller
+    // SPOTIFY_CALL_SPACING_MS pause chained after the successful retry —
+    // advancing by exactly 60_000 stops short of that second, later-
+    // scheduled timer and leaves the promise pending.
+    await vi.advanceTimersByTimeAsync(65_000);
+    const result = await promise;
+
+    expect(result).toEqual({ artists: { items: [] } });
+    expect(fetchImpl).toHaveBeenCalledTimes(3); // token, the 429, the retry that succeeds
+    expect(warnSpy).toHaveBeenCalledTimes(1); // every 429 logged the moment it arrives
+    expect(warnSpy.mock.calls[0][0]).toContain('Retry-After 60s');
+  });
+
+  it('throws SpotifyQuotaExhaustedError immediately — no sleep — when Retry-After exceeds the 60s ceiling, naming the offending value', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(fakeResponse({ body: TOKEN_BODY }))
+      .mockResolvedValueOnce(fakeResponse({ ok: false, status: 429, statusText: 'Too Many Requests', headers: { 'Retry-After': '7200' } }));
+    const { searchArtist } = fetcher(fetchImpl);
+
+    const err = await searchArtist('Some Artist', 0).catch(e => e);
+
+    expect(err).toBeInstanceOf(SpotifyQuotaExhaustedError);
+    expect(err.message).toContain('7200'); // names the offending value
+    expect(err.message).toMatch(/quota/i);
+    expect(fetchImpl).toHaveBeenCalledTimes(2); // token + the single 429 — thrown, not slept through
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a rejected fetch (e.g. a request timeout) as a transient failure, not a fatal one', async () => {
+    vi.useFakeTimers();
+    const timeoutError = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(fakeResponse({ body: TOKEN_BODY }))
+      .mockRejectedValueOnce(timeoutError)
+      .mockResolvedValueOnce(fakeResponse({ body: { artists: { items: [] } } }));
+    const { searchArtist } = fetcher(fetchImpl);
+
+    const promise = searchArtist('Some Artist', 0);
+    await vi.advanceTimersByTimeAsync(5_000); // covers the bounded exponential backoff wait
+    const result = await promise;
+
+    expect(result).toEqual({ artists: { items: [] } });
+    expect(fetchImpl).toHaveBeenCalledTimes(3); // token, the timed-out attempt, the successful retry
+  });
+
+  it('aborts with SpotifyQuotaExhaustedError after 3 consecutive 429s, even though each individual Retry-After is well under the ceiling', async () => {
+    vi.useFakeTimers();
+    const small429 = fakeResponse({ ok: false, status: 429, statusText: 'Too Many Requests', headers: { 'Retry-After': '1' } });
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(fakeResponse({ body: TOKEN_BODY }))
+      .mockResolvedValueOnce(small429)
+      .mockResolvedValueOnce(small429)
+      .mockResolvedValueOnce(small429);
+    const { searchArtist } = fetcher(fetchImpl);
+
+    // .catch() attached in the same tick as the call, before the fake-timer
+    // advance below lets it actually reject — otherwise Node flags it as an
+    // unhandled rejection first and only retroactively sees it "handled".
+    const errPromise = searchArtist('Some Artist', 0).catch(e => e);
+    await vi.advanceTimersByTimeAsync(10_000); // covers the 2 sleeps before the 3rd (aborting) 429
+    const err = await errPromise;
+
+    expect(err).toBeInstanceOf(SpotifyQuotaExhaustedError);
+    expect(err.message).toMatch(/3 consecutive Spotify 429s/);
+    expect(fetchImpl).toHaveBeenCalledTimes(4); // token + 3 consecutive 429s, no 4th attempt
+    expect(warnSpy).toHaveBeenCalledTimes(3); // every one of the 3 logged individually
+  });
+
+  it('resets the consecutive-429 count on a successful response — an isolated 429 does not abort the run', async () => {
+    vi.useFakeTimers();
+    const small429 = fakeResponse({ ok: false, status: 429, statusText: 'Too Many Requests', headers: { 'Retry-After': '1' } });
+    const ok = fakeResponse({ body: { artists: { items: [] } } });
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(fakeResponse({ body: TOKEN_BODY }))
+      .mockResolvedValueOnce(small429).mockResolvedValueOnce(ok) // 1st call: one 429, then succeeds
+      .mockResolvedValueOnce(small429).mockResolvedValueOnce(ok) // 2nd call: one 429, then succeeds
+      .mockResolvedValueOnce(small429).mockResolvedValueOnce(ok); // 3rd call: one 429, then succeeds — never 3 IN A ROW
+    const { searchArtist } = fetcher(fetchImpl);
+
+    for (let i = 0; i < 3; i += 1) {
+      const promise = searchArtist('Some Artist', 0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await promise;
+      expect(result).toEqual({ artists: { items: [] } });
+    }
+    expect(warnSpy).toHaveBeenCalledTimes(3); // one 429 per call — never aborted
   });
 });
 

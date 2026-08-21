@@ -27,9 +27,8 @@
 // re-verify without cause):
 //   - Spotify's /search and .../albums endpoints now reject `limit` above 10
 //     with HTTP 400 "Invalid limit" (they used to allow 50). This module
-//     pages with limit=10 and offset=0,10,20, stopping early once a page
-//     returns fewer than 10 items — so a artist search or an album listing
-//     costs 1-3 Spotify calls, never more.
+//     pages with limit=10, stopping early once a page returns fewer than 10
+//     items.
 //   - Spotify artist objects no longer carry `genres`/`followers`/
 //     `popularity` for client-credentials apps (see backfill-genres.mjs's
 //     module doc comment for the fuller story) but DO still carry `images`
@@ -43,6 +42,30 @@
 //     200). A batch of 6 prolific artists measured 180 results back — close
 //     enough to the cap that truncation is a real risk for a batch of
 //     unusually prolific artists, hence the truncation guard in step 4.
+//
+// SPOTIFY CALL VOLUME (cut 2026-08-22, after a real run exhausted a
+// client-credentials app's Spotify quota mid-walk and hung — see
+// backfill-genres.mjs's Retry-After ceiling for the other half of that
+// fix). The original version always fetched all 3 search pages and all 3
+// album pages before doing anything with them: ~6 Spotify calls per
+// ambiguous artist, ~5,000 across a full walk. Two changes bring that down
+// to ~2-3 calls/artist:
+//   - PINNING now checks after EVERY page whether it can pin (avatar first,
+//     then name) and stops the moment it can — see pinOnSpotify. Our artist
+//     is in their own first ten exact-name search results the overwhelming
+//     majority of the time, so this is typically ONE call. The tradeoff:
+//     avatar-priority is only guaranteed within pages actually fetched — if
+//     page 1 contains a namesake (no avatar match) and the real avatar match
+//     sits on page 2, this pins on the namesake via the weaker 'name' method
+//     instead of fetching further to find the avatar match. Accepted
+//     deliberately: 'name' pins are already held to a stricter acceptance
+//     bar in step 5 specifically because they're weaker, and this is rare
+//     enough not to be worth 2-3x the Spotify calls for every artist to
+//     guard against.
+//   - RELEASES are now capped at 2 pages (20 titles), not 3 (30). The
+//     acceptance floor is an overlap of 2 (avatar pin) or 5 (name pin), and
+//     the prototype measured real winners overlapping 9-29 titles out of a
+//     possible 30 — 20 titles leaves ample headroom under either floor.
 export function normalizeReleaseTitle(title) {
   let normalized = String(title || '').toLowerCase();
   // Strip parenthesised/bracketed segments as whole units first ("Album
@@ -59,21 +82,56 @@ export function normalizeReleaseTitle(title) {
   return normalized;
 }
 
-// Both Spotify's artist-search and artist-albums endpoints are paged the
-// same way here (limit=10, offset 0/10/20, stop early on a short page) — see
-// the module doc comment's API facts. Shared so the two call sites in
-// resolveByDiscography can't drift.
-async function collectPaginated(fetchPage, extractItems) {
+// Spotify's artist-search and artist-albums endpoints are both paged this
+// same way (limit=10, stop early on a short page) — see the module doc
+// comment's API facts. Shared so the two call sites in resolveByDiscography
+// can't drift. `offsets` defaults to the search ceiling (3 pages, 30
+// results) but pinOnSpotify below doesn't use this helper at all (it needs
+// to check after every page, not just collect); the album step below calls
+// this with a 2-page ceiling instead — see the module doc comment's "SPOTIFY
+// CALL VOLUME" section for why the two ceilings differ.
+async function collectPaginated(fetchPage, extractItems, offsets = [0, 10, 20]) {
   const collected = [];
-  for (const offset of [0, 10, 20]) {
+  for (const offset of offsets) {
     // Deliberately sequential, not Promise.all: each page's need depends on
-    // whether the previous page came back full, and this is at most 3 calls.
+    // whether the previous page came back full.
     const page = await fetchPage(offset);
     const items = extractItems(page) ?? [];
     collected.push(...items);
     if (items.length < 10) break;
   }
   return collected;
+}
+
+/**
+ * Pins our roster artist on Spotify, fetching search pages one at a time and
+ * stopping the moment a page (combined with everything fetched so far) lets
+ * us pin — avatar match first, then a case-insensitive exact name match. See
+ * the module doc comment's "SPOTIFY CALL VOLUME" section for why this checks
+ * per-page instead of collecting all 3 pages up front the way the album step
+ * still does, and for the accepted tradeoff that comes with it.
+ */
+async function pinOnSpotify(artist, deps) {
+  const itemsSoFar = [];
+  for (const offset of [0, 10, 20]) {
+    const page = await deps.spotifySearchArtist(artist.name, offset);
+    const items = page?.artists?.items ?? [];
+    itemsSoFar.push(...items);
+
+    let pinned = null;
+    let pinMethod = null;
+    if (artist.avatarUrl) {
+      pinned = itemsSoFar.find(item => (item.images ?? []).some(img => img.url === artist.avatarUrl)) ?? null;
+      if (pinned) pinMethod = 'avatar';
+    }
+    if (!pinned) {
+      pinned = itemsSoFar.find(item => String(item.name || '').trim().toLowerCase() === String(artist.name || '').trim().toLowerCase()) ?? null;
+      if (pinned) pinMethod = 'name';
+    }
+    if (pinned) return { pinned, pinMethod };
+    if (items.length < 10) break; // short page — no more results to fetch either way
+  }
+  return { pinned: null, pinMethod: null };
 }
 
 // iTunes silently caps `limit` at 200 and a batch of 6 prolific artists has
@@ -171,17 +229,18 @@ function overlapCount(a, b) {
  *
  * Five steps:
  *
- *   1. PIN our artist on Spotify. The roster's avatarUrl came FROM Spotify
- *      originally, so a search result whose images[] contains that exact
- *      URL is proof of identity (`pinMethod: 'avatar'`) — no name
- *      collision is possible against a URL. Failing that, fall back to a
- *      case-insensitive exact name match (`pinMethod: 'name'`) — weaker,
- *      because a Spotify NAMESAKE's discography could coherently overlap
- *      with the wrong iTunes candidate, which is why step 5 holds a 'name'
- *      pin to a higher bar than an 'avatar' pin. Neither found -> return
- *      unresolved, reason 'spotifyArtistNotFound'.
- *   2. COLLECT our artist's Spotify release titles (up to 30). None found
- *      -> unresolved, reason 'noSpotifyReleases'.
+ *   1. PIN our artist on Spotify (see pinOnSpotify). The roster's avatarUrl
+ *      came FROM Spotify originally, so a search result whose images[]
+ *      contains that exact URL is proof of identity (`pinMethod: 'avatar'`)
+ *      — no name collision is possible against a URL. Failing that, fall
+ *      back to a case-insensitive exact name match (`pinMethod: 'name'`) —
+ *      weaker, because a Spotify NAMESAKE's discography could coherently
+ *      overlap with the wrong iTunes candidate, which is why step 5 holds a
+ *      'name' pin to a higher bar than an 'avatar' pin. Neither found ->
+ *      return unresolved, reason 'spotifyArtistNotFound'.
+ *   2. COLLECT our artist's Spotify release titles (up to 20 — see the
+ *      module doc comment's "SPOTIFY CALL VOLUME" section for why 2 pages,
+ *      not 3). None found -> unresolved, reason 'noSpotifyReleases'.
  *   3. NORMALISE every title on both sides the same way (see
  *      normalizeReleaseTitle) and compare as Sets, so "Album (Deluxe
  *      Edition)" on one platform matches "Album" on the other.
@@ -215,29 +274,16 @@ function overlapCount(a, b) {
  */
 export async function resolveByDiscography(artist, candidates, deps) {
   // Step 1: pin our artist on Spotify.
-  const searchItems = await collectPaginated(
-    offset => deps.spotifySearchArtist(artist.name, offset),
-    page => page?.artists?.items
-  );
-
-  let pinned = null;
-  let pinMethod = null;
-  if (artist.avatarUrl) {
-    pinned = searchItems.find(item => (item.images ?? []).some(img => img.url === artist.avatarUrl)) ?? null;
-    if (pinned) pinMethod = 'avatar';
-  }
-  if (!pinned) {
-    pinned = searchItems.find(item => String(item.name || '').trim().toLowerCase() === String(artist.name || '').trim().toLowerCase()) ?? null;
-    if (pinned) pinMethod = 'name';
-  }
+  const { pinned, pinMethod } = await pinOnSpotify(artist, deps);
   if (!pinned) {
     return { resolved: false, reason: 'spotifyArtistNotFound', scoreboard: [] };
   }
 
-  // Step 2: collect our releases.
+  // Step 2: collect our releases — capped at 2 pages (20 titles), not 3.
   const albumItems = await collectPaginated(
     offset => deps.spotifyArtistAlbums(pinned.id, offset),
-    page => page?.items
+    page => page?.items,
+    [0, 10]
   );
   const ourTitles = normalizedTitleSet(albumItems.map(a => a.name)); // step 3: normalise
   if (ourTitles.size === 0) {

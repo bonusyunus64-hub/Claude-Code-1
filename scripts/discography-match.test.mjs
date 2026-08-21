@@ -144,12 +144,19 @@ describe('resolveByDiscography — pinning', () => {
     expect(deps.itunesLookupAlbums).not.toHaveBeenCalled();
   });
 
-  it('stops paginating a search as soon as a page returns fewer than 10 items', async () => {
+  // Call-volume cut, 2026-08-22: a real run's Spotify quota was exhausted
+  // by ~6 calls/ambiguous-artist (3 search pages + 3 album pages, always
+  // fetched up front regardless of whether pinning already succeeded). The
+  // search step now checks after EVERY page whether it can pin and stops
+  // the moment it can, rather than always collecting all 3 pages first.
+
+  it('pins on the first page without fetching a second, even when that page is full (10 items)', async () => {
     const artist = rosterArtist();
     const search = searchPages({
-      0: Array.from({ length: 10 }, (_, i) => spotifySearchItem({ id: `sp-${i}`, name: 'Nova Rivers', avatarUrl: 'https://x/y' })),
-      10: [spotifySearchItem({ id: 'sp-real', name: 'Nova Rivers', avatarUrl: artist.avatarUrl })], // 1 item — stop here
-      20: [spotifySearchItem({ id: 'sp-should-not-be-seen', name: 'Nova Rivers', avatarUrl: 'https://never/reached' })],
+      0: [
+        spotifySearchItem({ id: 'sp-real', name: 'Nova Rivers', avatarUrl: artist.avatarUrl }),
+        ...Array.from({ length: 9 }, (_, i) => spotifySearchItem({ id: `sp-other-${i}`, name: 'Someone Else', avatarUrl: 'https://x/y' })),
+      ],
     });
     const deps = {
       spotifySearchArtist: search,
@@ -157,9 +164,78 @@ describe('resolveByDiscography — pinning', () => {
       itunesLookupAlbums: vi.fn(async () => ({ resultCount: 0, results: [] })),
     };
     const result = await resolveByDiscography(artist, [itunesCandidate({ artistId: 1 })], deps);
-    expect(search).toHaveBeenCalledTimes(2); // offset 0 and 10, never 20
+    expect(search).toHaveBeenCalledTimes(1); // pinned on the first page — a full page never triggers a second fetch
     expect(result.pinMethod).toBe('avatar');
     expect(result.spotifyArtistId).toBe('sp-real');
+  });
+
+  it('fetches a second search page only when the first page does not pin, and pins there', async () => {
+    const artist = rosterArtist();
+    const search = searchPages({
+      0: Array.from({ length: 10 }, (_, i) => spotifySearchItem({ id: `sp-other-${i}`, name: 'Someone Else', avatarUrl: 'https://x/y' })),
+      10: [spotifySearchItem({ id: 'sp-real', name: 'Nova Rivers', avatarUrl: artist.avatarUrl })],
+    });
+    const deps = {
+      spotifySearchArtist: search,
+      spotifyArtistAlbums: albumPages({ 0: NINE_TITLES.map(albumItem) }),
+      itunesLookupAlbums: vi.fn(async () => ({ resultCount: 0, results: [] })),
+    };
+    const result = await resolveByDiscography(artist, [itunesCandidate({ artistId: 1 })], deps);
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(result.pinMethod).toBe('avatar');
+    expect(result.spotifyArtistId).toBe('sp-real');
+  });
+
+  it('still stops paginating once a page comes back short, even if that page did not pin either', async () => {
+    const artist = rosterArtist();
+    const search = searchPages({
+      0: Array.from({ length: 10 }, (_, i) => spotifySearchItem({ id: `sp-other-${i}`, name: 'Someone Else', avatarUrl: 'https://x/y' })),
+      10: [spotifySearchItem({ id: 'sp-other-10', name: 'Someone Else', avatarUrl: 'https://x/y' })], // short (1 item), still no match
+      20: [spotifySearchItem({ id: 'sp-should-not-be-seen', name: 'Nova Rivers', avatarUrl: artist.avatarUrl })],
+    });
+    const deps = { spotifySearchArtist: search, spotifyArtistAlbums: vi.fn(), itunesLookupAlbums: vi.fn() };
+    const result = await resolveByDiscography(artist, [itunesCandidate({ artistId: 1 })], deps);
+    expect(search).toHaveBeenCalledTimes(2); // offset 0 and 10, never 20
+    expect(result.resolved).toBe(false);
+    expect(result.reason).toBe('spotifyArtistNotFound');
+  });
+
+  it('accepts a page-1 NAME pin without ever fetching the page-2 AVATAR match — the documented call-volume tradeoff', async () => {
+    // Page 1 contains only a namesake (no avatar match, but the name
+    // matches) — the real avatar match sits on page 2, which pinning
+    // immediately on page 1 means this never fetches. Deliberate: see
+    // discography-match.mjs's "SPOTIFY CALL VOLUME" doc comment.
+    const artist = rosterArtist();
+    const search = searchPages({
+      0: [spotifySearchItem({ id: 'sp-namesake', name: 'Nova Rivers', avatarUrl: 'https://different/url' })],
+      10: [spotifySearchItem({ id: 'sp-real-avatar', name: 'Nova Rivers', avatarUrl: artist.avatarUrl })],
+    });
+    const deps = {
+      spotifySearchArtist: search,
+      spotifyArtistAlbums: albumPages({ 0: NINE_TITLES.map(albumItem) }),
+      itunesLookupAlbums: vi.fn(async () => ({ resultCount: 0, results: [] })),
+    };
+    const result = await resolveByDiscography(artist, [itunesCandidate({ artistId: 1 })], deps);
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(result.pinMethod).toBe('name');
+    expect(result.spotifyArtistId).toBe('sp-namesake');
+  });
+
+  it('caps album collection at 2 pages (20 titles) even when both pages come back full', async () => {
+    const artist = rosterArtist();
+    const albums = albumPages({
+      0: Array.from({ length: 10 }, (_, i) => albumItem(`Title ${i}`)),
+      10: Array.from({ length: 10 }, (_, i) => albumItem(`Title ${i + 10}`)),
+      20: Array.from({ length: 10 }, (_, i) => albumItem(`Should Not Be Seen ${i}`)),
+    });
+    const deps = {
+      spotifySearchArtist: searchPages({ 0: [spotifySearchItem({ id: 'sp-real', name: 'Nova Rivers', avatarUrl: artist.avatarUrl })] }),
+      spotifyArtistAlbums: albums,
+      itunesLookupAlbums: vi.fn(async () => ({ resultCount: 0, results: [] })),
+    };
+    const result = await resolveByDiscography(artist, [itunesCandidate({ artistId: 1 })], deps);
+    expect(albums).toHaveBeenCalledTimes(2); // offset 0 and 10, never 20
+    expect(result.ourReleaseCount).toBe(20);
   });
 
   it('returns unresolved with reason noSpotifyReleases when our pinned artist has no albums on any page', async () => {
