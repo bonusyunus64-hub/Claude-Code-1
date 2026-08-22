@@ -18,7 +18,7 @@ import {
   backfillGenres, isExactNameMatch, normalizeItunesGenreTag, mapItunesGenre,
   uniqueEmailCount, ITUNES_GENRE_ALIASES, mergeProvenanceLog, loadExistingProvenanceLog,
   PERMANENT_SKIP_REASONS, validateRetryReasons, NON_MUSIC_GENRES, isNonMusicGenre,
-  makeSpotifyFetcher, SpotifyQuotaExhaustedError,
+  makeSpotifyFetcher, SpotifyQuotaExhaustedError, selectSoleRouteArtists,
 } from './backfill-genres.mjs';
 import { resolveByDiscography } from './discography-match.mjs';
 
@@ -270,6 +270,63 @@ describe('isExactNameMatch', () => {
   it('matches names case-insensitively but not fuzzily', () => {
     expect(isExactNameMatch('SZA', 'sza')).toBe(true);
     expect(isExactNameMatch('SZA', 'SZA Official')).toBe(false);
+  });
+});
+
+describe('selectSoleRouteArtists (the --only-unreachable selection)', () => {
+  it('qualifies a genre-less artist whose manager inbox no OTHER artist reaches', () => {
+    const solo = artist({ name: 'Solo Route', rostrUrl: 'https://www.rostr.cc/profile/solo-route', genres: [], managerEmails: ['solo@example.com'] });
+    const { qualifyingUrls, inboxCount } = selectSoleRouteArtists([solo]);
+    expect(qualifyingUrls.has(solo.rostrUrl)).toBe(true);
+    expect(inboxCount).toBe(1);
+  });
+
+  it('does NOT qualify a genre-less artist whose inbox is already reached by a different, genre-tagged artist', () => {
+    const tagged = artist({ name: 'Has A Genre', rostrUrl: 'https://www.rostr.cc/profile/has-a-genre', genres: ['Pop'], managerEmails: ['shared@example.com'] });
+    const genreless = artist({ name: 'No Genre Yet', rostrUrl: 'https://www.rostr.cc/profile/no-genre-yet', genres: [], managerEmails: ['shared@example.com'] });
+    const { qualifyingUrls, inboxCount } = selectSoleRouteArtists([tagged, genreless]);
+    expect(qualifyingUrls.has(genreless.rostrUrl)).toBe(false);
+    expect(inboxCount).toBe(0);
+  });
+
+  it('qualifies an artist with several manager addresses when ANY ONE of them is unreachable', () => {
+    const tagged = artist({ name: 'Has A Genre', rostrUrl: 'https://www.rostr.cc/profile/has-a-genre', genres: ['Pop'], managerEmails: ['reachable@example.com'] });
+    const multi = artist({
+      name: 'Multi Address', rostrUrl: 'https://www.rostr.cc/profile/multi-address', genres: [],
+      managerEmails: ['reachable@example.com', 'unreachable@example.com'],
+    });
+    const { qualifyingUrls, inboxCount } = selectSoleRouteArtists([tagged, multi]);
+    expect(qualifyingUrls.has(multi.rostrUrl)).toBe(true);
+    // Only the one genuinely-unreachable address counts toward inboxCount —
+    // "reachable@example.com" is covered by the genre-tagged artist and does
+    // not unlock anything new.
+    expect(inboxCount).toBe(1);
+  });
+
+  it('normalises addresses with trim().toLowerCase() before comparing, so casing/whitespace differences do not create a false inbox', () => {
+    const tagged = artist({ name: 'Has A Genre', rostrUrl: 'https://www.rostr.cc/profile/has-a-genre', genres: ['Pop'], managerEmails: ['Manager@Label.com'] });
+    const genreless = artist({ name: 'No Genre Yet', rostrUrl: 'https://www.rostr.cc/profile/no-genre-yet', genres: [], managerEmails: [' manager@label.com '] });
+    const { qualifyingUrls, inboxCount } = selectSoleRouteArtists([tagged, genreless]);
+    // Same inbox under different casing/whitespace -> already reachable, so
+    // the genre-less artist does not qualify.
+    expect(qualifyingUrls.has(genreless.rostrUrl)).toBe(false);
+    expect(inboxCount).toBe(0);
+  });
+
+  it('never qualifies an artist that already has a genre, even if its address is otherwise unique', () => {
+    const tagged = artist({ name: 'Has A Genre', rostrUrl: 'https://www.rostr.cc/profile/has-a-genre', genres: ['Pop'], managerEmails: ['unique@example.com'] });
+    const { qualifyingUrls, inboxCount } = selectSoleRouteArtists([tagged]);
+    expect(qualifyingUrls.has(tagged.rostrUrl)).toBe(false);
+    expect(inboxCount).toBe(0);
+  });
+
+  it('counts one inbox once even when several qualifying artists share the same unreachable address', () => {
+    const a = artist({ name: 'Shares A', rostrUrl: 'https://www.rostr.cc/profile/shares-a', genres: [], managerEmails: ['shared-unreached@example.com'] });
+    const b = artist({ name: 'Shares B', rostrUrl: 'https://www.rostr.cc/profile/shares-b', genres: [], managerEmails: ['shared-unreached@example.com'] });
+    const { qualifyingUrls, inboxCount } = selectSoleRouteArtists([a, b]);
+    expect(qualifyingUrls.has(a.rostrUrl)).toBe(true);
+    expect(qualifyingUrls.has(b.rostrUrl)).toBe(true);
+    expect(inboxCount).toBe(1);
   });
 });
 
@@ -1144,6 +1201,101 @@ describe('backfillGenres — resuming from an existing provenance log', () => {
     const withOmittedLog = await backfillGenres({ artists: targets, genres: ROSTER_GENRES }, { searchArtist });
     expect(withOmittedLog.stats.alreadySkipped).toBe(0);
     expect(withOmittedLog.stats.attempted).toBe(2);
+  });
+});
+
+describe('backfillGenres — --only-unreachable (onlyUnreachable)', () => {
+  it('attempts only the sole-route artist, leaving a reachable-elsewhere artist completely untouched and uncounted against --limit', async () => {
+    const tagged = artist({ name: 'Has A Genre', rostrUrl: 'https://www.rostr.cc/profile/has-a-genre', genres: ['Pop'], managerEmails: ['shared@example.com'] });
+    const reachableElsewhere = artist({ name: 'Reachable Elsewhere', rostrUrl: 'https://www.rostr.cc/profile/reachable-elsewhere', genres: [], managerEmails: ['shared@example.com'] });
+    const soleRoute = artist({ name: 'Sole Route', rostrUrl: 'https://www.rostr.cc/profile/sole-route', genres: [], managerEmails: ['sole@example.com'] });
+    const searchArtist = vi.fn(async name => ({ results: [itunesArtist({ name, genre: 'Rock' })] }));
+
+    const { artists, stats } = await backfillGenres(
+      { artists: [tagged, reachableElsewhere, soleRoute], genres: ROSTER_GENRES },
+      { searchArtist, onlyUnreachable: true }
+    );
+
+    // Only the sole-route artist was ever looked up.
+    expect(searchArtist).toHaveBeenCalledTimes(1);
+    expect(searchArtist).toHaveBeenCalledWith('Sole Route');
+    expect(artists.find(a => a.rostrUrl === soleRoute.rostrUrl).genres).toEqual(['Rock']);
+    // The reachable-elsewhere artist comes out byte-identical — not attempted,
+    // not logged, not counted against --limit.
+    expect(artists.find(a => a.rostrUrl === reachableElsewhere.rostrUrl)).toBe(reachableElsewhere);
+
+    expect(stats.eligible).toBe(2); // both genre-less artists
+    expect(stats.attempted).toBe(1);
+    expect(stats.notSoleRoute).toBe(1);
+    expect(stats.soleRouteQualifying).toBe(1);
+    expect(stats.soleRouteInboxes).toBe(1);
+  });
+
+  it('reports soleRouteQualifying/soleRouteInboxes as 0 and notSoleRoute as 0 when the flag is off — today’s behaviour, unchanged', async () => {
+    const reachableElsewhere = artist({ name: 'Reachable Elsewhere', rostrUrl: 'https://www.rostr.cc/profile/reachable-elsewhere', genres: [], managerEmails: ['shared@example.com'] });
+    const searchArtist = vi.fn(async name => ({ results: [itunesArtist({ name, genre: 'Rock' })] }));
+
+    const { stats } = await backfillGenres({ artists: [reachableElsewhere], genres: ROSTER_GENRES }, { searchArtist });
+
+    expect(searchArtist).toHaveBeenCalledTimes(1); // attempted normally — nothing excludes it without the flag
+    expect(stats.notSoleRoute).toBe(0);
+    expect(stats.soleRouteQualifying).toBe(0);
+    expect(stats.soleRouteInboxes).toBe(0);
+  });
+
+  it('composes with --retry-reasons by intersection: an artist must clear BOTH narrowings to be attempted', async () => {
+    // "Was Unmappable" cleared its previous permanent skip (retryReasons
+    // includes unmappableGenre) AND is a sole route -> attempted.
+    const wasUnmappableSoleRoute = artist({
+      name: 'Was Unmappable Sole Route', rostrUrl: 'https://www.rostr.cc/profile/was-unmappable-sole-route',
+      genres: [], managerEmails: ['sole@example.com'],
+    });
+    // "Was Unmappable But Reachable" also clears the retry-reasons narrowing,
+    // but its only address is already reached by a genre-tagged artist ->
+    // --only-unreachable excludes it even though --retry-reasons would have
+    // let it through.
+    const tagged = artist({ name: 'Has A Genre', rostrUrl: 'https://www.rostr.cc/profile/has-a-genre', genres: ['Pop'], managerEmails: ['shared@example.com'] });
+    const wasUnmappableReachable = artist({
+      name: 'Was Unmappable But Reachable', rostrUrl: 'https://www.rostr.cc/profile/was-unmappable-but-reachable',
+      genres: [], managerEmails: ['shared@example.com'],
+    });
+    // "Was Ambiguous" is a sole route, but its permanent skip reason
+    // (ambiguousName) is NOT in retryReasons -> stays excluded by the
+    // provenance-log narrowing regardless of --only-unreachable.
+    const wasAmbiguousSoleRoute = artist({
+      name: 'Was Ambiguous Sole Route', rostrUrl: 'https://www.rostr.cc/profile/was-ambiguous-sole-route',
+      genres: [], managerEmails: ['ambiguous-sole@example.com'],
+    });
+
+    const existingLog = {
+      source: 'itunes',
+      runs: [],
+      filled: [],
+      skipped: [
+        { name: wasUnmappableSoleRoute.name, rostrUrl: wasUnmappableSoleRoute.rostrUrl, reason: 'unmappableGenre' },
+        { name: wasUnmappableReachable.name, rostrUrl: wasUnmappableReachable.rostrUrl, reason: 'unmappableGenre' },
+        { name: wasAmbiguousSoleRoute.name, rostrUrl: wasAmbiguousSoleRoute.rostrUrl, reason: 'ambiguousName', competingGenres: ['Pop', 'Rock'], matchCount: 2 },
+      ],
+    };
+    const searchArtist = vi.fn(async name => ({ results: [itunesArtist({ name, genre: 'Rock' })] }));
+
+    const { stats } = await backfillGenres(
+      { artists: [tagged, wasUnmappableSoleRoute, wasUnmappableReachable, wasAmbiguousSoleRoute], genres: ROSTER_GENRES },
+      { searchArtist, existingLog, retryReasons: new Set(['unmappableGenre']), onlyUnreachable: true }
+    );
+
+    // Only the artist that clears BOTH the retry-reasons re-eligibility AND
+    // the sole-route qualification is attempted.
+    expect(searchArtist).toHaveBeenCalledTimes(1);
+    expect(searchArtist).toHaveBeenCalledWith('Was Unmappable Sole Route');
+    expect(stats.attempted).toBe(1);
+    expect(stats.filled).toBe(1);
+    // wasUnmappableReachable: cleared by --retry-reasons, excluded by --only-unreachable.
+    // wasAmbiguousSoleRoute: sole route, but never cleared by --retry-reasons.
+    // Both come out as "not attempted this run" via their respective
+    // exclusion counters, never sharing searchArtist calls with the winner.
+    expect(stats.alreadySkipped).toBe(1); // wasAmbiguousSoleRoute — provenance exclusion never lifted
+    expect(stats.notSoleRoute).toBe(1); // wasUnmappableReachable — lifted from provenance, still not a sole route
   });
 });
 

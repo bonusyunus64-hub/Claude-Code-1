@@ -166,7 +166,7 @@
 // that re-running the exact same lookup can't change).
 //
 // Usage:
-//   node scripts/backfill-genres.mjs [--roster data/roster.json] [--out data/roster.json] [--log data/genre-backfill-log.json] [--limit N] [--delay 500] [--write] [--discography] [--retry-skipped | --retry-reasons r1,r2,...]
+//   node scripts/backfill-genres.mjs [--roster data/roster.json] [--out data/roster.json] [--log data/genre-backfill-log.json] [--limit N] [--delay 500] [--write] [--discography] [--retry-skipped | --retry-reasons r1,r2,...] [--only-unreachable]
 //
 //   --discography (added 2026-08-21) breaks ambiguousName ties — several
 //   exact-name iTunes matches that disagree on mapped genre — by comparing
@@ -222,6 +222,43 @@
 //   --retry-skipped and --retry-reasons together is a CLI error (see main
 //   below): --retry-skipped already retries every reason, so combining them
 //   is ambiguous rather than one meaningfully overriding the other.
+//
+//   --only-unreachable (added 2026-08-22, the day the Spotify quota became
+//   the actual binding constraint on this walk — see the SAFETY section
+//   above) restricts the candidate set to genre-less artists who are the
+//   SOLE route to at least one manager inbox: at least one of their
+//   managerEmails addresses has no OTHER artist on the roster who both lists
+//   that address and already has a non-empty genres. Filling a genre-less
+//   artist whose manager is already reachable through some other,
+//   genre-tagged artist wins no new inbox through the Demos genre filter
+//   (lib/roster.ts's getArtistsByGenres already surfaces that manager via the
+//   other artist); filling one that IS the sole route does. Measured on the
+//   2026-08-22 snapshot: of 851 genre-less artists, 565 sit behind an inbox
+//   some other genre-tagged artist already reaches, and only 286 are a sole
+//   route, covering 279 inboxes no genre filter can currently reach at all.
+//   When the binding constraint is how many artists a day's quota-limited
+//   chunk can even attempt, this is what lets that quota go to the 286 first
+//   instead of being spent roughly evenly (and mostly pointlessly) across
+//   all 851.
+//
+//   The qualifying set is computed fresh from the roster on EVERY run — see
+//   selectSoleRouteArtists — never cached or hardcoded into a list. That
+//   matters structurally, not just stylistically: filling artist A's genre
+//   today can make an address reachable that a DIFFERENT genre-less artist B
+//   was the sole route to yesterday, so B correctly stops qualifying the
+//   instant A's fill lands. A static list computed once would go stale after
+//   the very first chunk and keep spending quota on artists that no longer
+//   need it.
+//
+//   Composes with the existing narrowing flags rather than bypassing them:
+//   an artist must clear the provenance-log skip exclusion (or its
+//   --retry-skipped/--retry-reasons override) AND --only-unreachable's
+//   qualification to be attempted this run, and --limit still caps how many
+//   of that intersected set actually get attempted. An artist
+//   --only-unreachable excludes is left completely untouched — no lookup, no
+//   --limit consumed, no per-artist log entry — the same shape as an
+//   already-permanently-skipped artist (see stats.notSoleRoute in
+//   backfillGenres, and the "excluded by --only-unreachable" branch there).
 //
 // No API key or signup needed — iTunes Search is a public, keyless endpoint.
 // Apple throttles aggressively against it in practice (roughly 20 calls/min
@@ -634,6 +671,65 @@ export function uniqueEmailCount(artists) {
 }
 
 /**
+ * The selection behind --only-unreachable (see the CLI section above for the
+ * full motivation). An address is "reachable" here if ANY artist in the
+ * roster — regardless of whether this run touches them — lists it under a
+ * non-empty `genres`: that's exactly the set the Demos genre filter
+ * (lib/roster.ts's getArtistsByGenres) can already surface a manager through,
+ * so filling a DIFFERENT genre-less artist who shares that same address wins
+ * nothing new. A genre-less artist QUALIFIES when at least one of its own
+ * managerEmails addresses is NOT in that reachable set — i.e. no genre
+ * filter, today, can reach that manager through any artist at all. A
+ * genre-tagged artist never qualifies (it's already reachable through
+ * itself, and this script would never touch its genres anyway — see the
+ * module doc comment's merge-only rule).
+ *
+ * Multiple genre-less artists can independently qualify on the very same
+ * unreachable address (several artists sharing one manager who reps none of
+ * them under a genre yet) — filling any ONE of them would make that inbox
+ * reachable, but this function doesn't pick a "best" one; it just reports
+ * the full qualifying set and lets the existing roster-order/--limit walk in
+ * backfillGenres decide which of them actually gets attempted this run.
+ *
+ * Addresses are normalised with trim().toLowerCase() before comparison — the
+ * same normalisation uniqueEmailCount above (and lib/roster.ts's genre
+ * index) use, so casing/whitespace differences never make two addresses look
+ * like different inboxes.
+ *
+ * Deliberately recomputed from `artists` on every call rather than cached —
+ * see the module doc comment's --only-unreachable section for why a static
+ * snapshot would silently go stale after the very first fill.
+ *
+ * Returns `{ qualifyingUrls, inboxCount }`: `qualifyingUrls` is the Set of
+ * `rostrUrl` for every qualifying artist (the exact candidate set
+ * --only-unreachable restricts to in backfillGenres below); `inboxCount` is
+ * the number of DISTINCT unreachable addresses those artists collectively
+ * unlock — the number that actually says whether spending quota on this set
+ * is worth it, since several qualifying artists can share one address.
+ */
+export function selectSoleRouteArtists(artists) {
+  const reachable = new Set();
+  for (const a of artists) {
+    if (!Array.isArray(a.genres) || a.genres.length === 0) continue;
+    for (const email of a.managerEmails || []) reachable.add(String(email).trim().toLowerCase());
+  }
+
+  const qualifyingUrls = new Set();
+  const inboxes = new Set();
+  for (const a of artists) {
+    if (Array.isArray(a.genres) && a.genres.length > 0) continue; // genre-tagged artists never qualify
+    const unreachable = (a.managerEmails || [])
+      .map(email => String(email).trim().toLowerCase())
+      .filter(email => !reachable.has(email));
+    if (unreachable.length === 0) continue; // every address this artist has is reachable via some other artist
+    qualifyingUrls.add(a.rostrUrl);
+    unreachable.forEach(email => inboxes.add(email));
+  }
+
+  return { qualifyingUrls, inboxCount: inboxes.size };
+}
+
+/**
  * The reusable, network-free core: takes a roster ({ artists, genres, ... })
  * and a `searchArtist(name)` function (iTunes's real /search response
  * shape: `{ results: [{ artistName, artistId, primaryGenreName,
@@ -667,8 +763,19 @@ export function uniqueEmailCount(artists) {
  * the actual formatting/printing — see formatAttemptLine/formatRateLine in
  * the CLI section for what turns these events into the log lines a
  * multi-hour --write run prints.
+ *
+ * `onlyUnreachable` (--only-unreachable) is a further narrowing on top of the
+ * skip exclusion above, not a replacement for it: see selectSoleRouteArtists
+ * for the exact qualification rule. Computed once here, straight off the
+ * `roster` this call was actually given — never cached across calls — so a
+ * fill earlier in the SAME roster snapshot (impossible within one call, since
+ * fills happen artist-by-artist below and this is computed up front) or in a
+ * PRIOR run (handled correctly because the prior run's fills are already
+ * baked into whatever `roster` this call receives) is always reflected
+ * accurately. When false (the default), `soleRoute` stays null and every
+ * genre-less artist remains a candidate exactly as before this flag existed.
  */
-export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit, existingLog = null, retrySkipped = false, retryReasons = null, discography = false, discographyDeps = null, onProgress = null } = {}) {
+export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit, existingLog = null, retrySkipped = false, retryReasons = null, discography = false, discographyDeps = null, onlyUnreachable = false, onProgress = null } = {}) {
   const rosterGenreByLower = new Map((roster.genres || []).map(g => [g.toLowerCase(), g]));
   // retrySkipped (--retry-skipped) is the broader "retry everything" mode
   // and takes precedence structurally — but main() below actually rejects
@@ -677,17 +784,27 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit,
   // for why an explicit error beats silent precedence here.
   const skipExclusions = retrySkipped ? new Set() : previouslySkippedUrls(existingLog, retryReasons);
 
+  // --only-unreachable: see selectSoleRouteArtists's doc comment for the full
+  // qualification rule and this function's doc comment above for why it's
+  // safe to compute exactly once here rather than per-artist in the loop
+  // below (the qualifying set doesn't change mid-walk — only across separate
+  // runs/calls, and each call gets a fresh roster snapshot to compute from).
+  const soleRoute = onlyUnreachable ? selectSoleRouteArtists(roster.artists) : null;
+
   // Only walked when onProgress is actually supplied — the point is a
   // "[ 47/250]" position that means the same 250 the main loop below will
-  // actually reach (eligible, not already-permanently-skipped, capped by
-  // --limit), not the roster's raw eligible count, which the chunked-run
-  // plan makes a much bigger and less useful number to print against.
+  // actually reach (eligible, not already-permanently-skipped, not excluded
+  // by --only-unreachable, capped by --limit), not the roster's raw eligible
+  // count, which the chunked-run plan makes a much bigger and less useful
+  // number to print against.
   const RATE_REPORT_EVERY = 25;
   let progressTotal = 0;
   if (onProgress) {
     for (const a of roster.artists) {
       const hasGenres = Array.isArray(a.genres) && a.genres.length > 0;
-      if (!hasGenres && !skipExclusions.has(a.rostrUrl)) progressTotal += 1;
+      if (hasGenres || skipExclusions.has(a.rostrUrl)) continue;
+      if (soleRoute && !soleRoute.qualifyingUrls.has(a.rostrUrl)) continue;
+      progressTotal += 1;
     }
     if (limit != null) progressTotal = Math.min(limit, progressTotal);
   }
@@ -707,6 +824,18 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit,
     // overLimit) as this artist's actual status (permanently resolved,
     // not waiting on anything). --retry-skipped forces this to 0.
     alreadySkipped: 0,
+    // --only-unreachable's own reporting — see selectSoleRouteArtists.
+    // qualifying/inboxes describe the WHOLE candidate set --only-unreachable
+    // selected from the roster (unaffected by --limit, same convention as
+    // `eligible` above); notSoleRoute counts how many otherwise-eligible
+    // artists THIS run left completely untouched because they didn't qualify
+    // (0 whenever the flag is off, same convention as the three
+    // discography-only skip reasons below). notSoleRoute is deliberately
+    // NOT part of `stats.skipped`: like alreadySkipped, it describes an
+    // artist this run never even attempted, not the outcome of a lookup.
+    soleRouteQualifying: soleRoute ? soleRoute.qualifyingUrls.size : 0,
+    soleRouteInboxes: soleRoute ? soleRoute.inboxCount : 0,
+    notSoleRoute: 0,
     skipped: {
       overLimit: 0,
       noNameMatch: 0, // no exact (case-insensitive) name match among the results at all
@@ -746,6 +875,21 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit,
       // mergeProvenanceLog leaves an entry alone unless THIS run's log
       // contains a replacement for its rostrUrl.
       stats.alreadySkipped += 1;
+      artists.push(original);
+      continue;
+    }
+
+    const excludedByOnlyUnreachable = !hasGenres && soleRoute && !soleRoute.qualifyingUrls.has(original.rostrUrl);
+    if (excludedByOnlyUnreachable) {
+      // Mirrors alreadyPermanentlySkipped just above in every respect that
+      // matters: no searchArtist call, no --limit consumed, and nothing
+      // logged per-artist — an artist excluded here is reachable through some
+      // OTHER, genre-tagged artist's managerEmails address (see
+      // selectSoleRouteArtists), which selectSoleRouteArtists can already
+      // tell a reader on demand straight from the roster; a per-artist log
+      // entry saying the same thing 565 times over would just be overLimit's
+      // noise problem again under a different name.
+      stats.notSoleRoute += 1;
       artists.push(original);
       continue;
     }
@@ -1393,6 +1537,7 @@ async function main() {
   const write = argv.includes('--write');
   const retrySkipped = argv.includes('--retry-skipped');
   const discography = argv.includes('--discography');
+  const onlyUnreachable = argv.includes('--only-unreachable');
   const flag = (name, fallback) => { const i = argv.indexOf(name); return i !== -1 ? argv[i + 1] : fallback; };
   const retryReasonsArg = flag('--retry-reasons', null);
 
@@ -1420,6 +1565,13 @@ async function main() {
     console.error('--retry-skipped and --retry-reasons are mutually exclusive: --retry-skipped already retries every permanent skip reason, so combining it with --retry-reasons is ambiguous. Pass only one.');
     process.exit(1);
   }
+
+  // --only-unreachable has no equivalent conflict with anything above: it's
+  // an independent narrowing axis (which artists are worth attempting at
+  // all) from --retry-skipped/--retry-reasons (which SKIPPED artists get a
+  // second chance) and --discography (how an ambiguousName tie gets broken).
+  // All three compose by intersection — see backfillGenres — so there is
+  // nothing to reject here.
 
   let retryReasons = null;
   if (retryReasonsArg != null) {
@@ -1476,6 +1628,18 @@ async function main() {
   if (retrySkipped) console.log('--retry-skipped passed — ignoring the provenance log; every genre-less artist is a candidate again.');
   if (retryReasons) console.log(`--retry-reasons ${[...retryReasons].join(',')} passed — only artists most recently skipped under [${[...retryReasons].join(', ')}] are candidates again; every other previously-skipped artist stays excluded.`);
   if (discography) console.log('--discography passed — ambiguousName ties will be broken by comparing Spotify/iTunes discographies (see scripts/discography-match.mjs).');
+  // Computed here (not just inside backfillGenres) so the startup line below
+  // can report the selection immediately, before a single lookup happens —
+  // it's a pure, cheap pass over the roster already in memory, so computing
+  // it twice (again inside backfillGenres, for the actual filtering) costs
+  // nothing worth avoiding. See selectSoleRouteArtists for the rule.
+  const soleRoute = onlyUnreachable ? selectSoleRouteArtists(roster.artists) : null;
+  if (onlyUnreachable) {
+    console.log(
+      `--only-unreachable passed — restricting the candidate set to genre-less artists who are the sole route to at least one manager inbox: ` +
+      `${soleRoute.qualifyingUrls.size} artist(s) qualify, covering ${soleRoute.inboxCount} manager inbox(es) no genre filter can currently reach.`
+    );
+  }
 
   // Built only when --discography is passed: with it absent, `discography`
   // is false and tryFillOne never reads `discographyDeps`, so no Spotify
@@ -1500,7 +1664,7 @@ async function main() {
 
   let result;
   try {
-    result = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit, existingLog, retrySkipped, retryReasons, discography, discographyDeps, onProgress });
+    result = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit, existingLog, retrySkipped, retryReasons, discography, discographyDeps, onlyUnreachable, onProgress });
   } catch (err) {
     // SpotifyQuotaExhaustedError (see makeSpotifyFetcher) is the one error
     // this run should abort cleanly for rather than crash on: a clean
@@ -1528,6 +1692,17 @@ async function main() {
   console.log(`Already skipped in an earlier run, not re-attempted (see PERMANENT_SKIP_REASONS): ${stats.alreadySkipped}${retrySkipped ? ' [should be 0 — --retry-skipped was passed]' : ''}`);
   console.log(`Genres filled: ${stats.filled}`);
   console.log(`Skipped — ${formatSkipped(stats.skipped)}`);
+  if (onlyUnreachable) {
+    // Repeated here, not just at startup, because this is the number that
+    // says whether the run was worth its quota — see the module doc
+    // comment's --only-unreachable section — and a --write run's log output
+    // is exactly what a human reviews afterwards to decide whether to keep
+    // spending quota this way.
+    console.log(
+      `--only-unreachable: ${stats.soleRouteQualifying} artist(s) qualify as a manager's sole route, covering ${stats.soleRouteInboxes} otherwise-unreachable manager inbox(es); ` +
+      `${stats.notSoleRoute} eligible artist(s) left untouched this run because that flag excluded them.`
+    );
+  }
   if (stats.unmappedGenres.size > 0) {
     console.log(`Unmapped iTunes genres (${stats.unmappedGenres.size} distinct — not added to the roster's vocabulary):`);
     [...stats.unmappedGenres.entries()].sort((a, b) => b[1] - a[1]).forEach(([genre, count]) => console.log(`  "${genre}": ${count}`));
