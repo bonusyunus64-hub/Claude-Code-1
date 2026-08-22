@@ -11,6 +11,7 @@ import {
 } from '../utils';
 import { REACHABILITY_MAX_COMPANY_SIZE } from '../constants';
 import { MAX_CAMPAIGN_RECIPIENTS } from '@/lib/sendLimits';
+import { rankArtistsForPitch, groupArtistsByManagerEmail, managersOverNamingCap, ManagerGroup } from '@/lib/artistFit';
 
 export type SortOrder = 'followers-desc' | 'followers-asc' | 'alpha-asc' | 'alpha-desc' | 'random';
 
@@ -303,6 +304,41 @@ export function useDemosFlow(config: DemosFlowConfig) {
     () => findCooldownRecipients(lastContactedMap, contactCooldownDays, [...includedArtists.flatMap(a => a.managerEmails), ...customContacts.map(c => c.managerEmail)]),
     [includedArtists, customContacts, lastContactedMap, contactCooldownDays]
   );
+
+  // Which manager groups would have their multi-artist email truncated to
+  // NAMED_ARTIST_CAP names plus a "+N others" count — drives the warning
+  // banner (SendWarnings) so the user can narrow their genre filters before
+  // sending rather than discover the truncation after. Same rank/group pair
+  // buildDemosPreviewEntries runs (rankArtistsForPitch then
+  // groupArtistsByManagerEmail), over includedArtists only — the Do Not
+  // Contact blacklist isn't applied before this count, the same approximation
+  // cooldownRecipients above already makes, so a manager whose only address is
+  // blacklisted can in principle still show up here.
+  //
+  // Suppressed entirely (returns []) under either condition that means no
+  // multi-artist email is actually going out for this send, matching exactly
+  // what buildDemosPreviewEntries checks before it'll preview one:
+  //  - useFollowUp: handleSend never sends multiArtistTemplate on a follow-up,
+  //    so there's nothing here to warn about truncating.
+  //  - demosMultiArtistTemplate blank: sendDemos falls back to today's
+  //    single-artist-per-address behavior when there's no multi-artist copy,
+  //    so again nothing would be truncated.
+  //
+  // A third exclusion, same as buildDemosPreviewEntries's multiArtistAddresses:
+  // a custom contact's address always outranks a roster group at the same
+  // address (CUSTOM_CONTACT_RANK, via dedupeByRecipient), so that address gets
+  // the custom contact's ordinary single-artist email, never the multi-artist
+  // one, no matter how many matched artists the roster group behind it has.
+  // Filtered out here before managersOverNamingCap so the banner never
+  // describes an email that isn't actually being sent to that address.
+  const overCapManagers = useMemo((): ManagerGroup<Artist>[] => {
+    if (useFollowUp || !demosMultiArtistTemplate.trim()) return [];
+    const customContactAddresses = new Set(customContacts.map(c => c.managerEmail.trim().toLowerCase()));
+    const rankedArtists = rankArtistsForPitch(includedArtists, selectedGenres);
+    const managerGroups = groupArtistsByManagerEmail(rankedArtists)
+      .filter(g => !customContactAddresses.has(g.email.trim().toLowerCase()));
+    return managersOverNamingCap(managerGroups);
+  }, [includedArtists, selectedGenres, useFollowUp, demosMultiArtistTemplate, customContacts]);
 
   async function handleSend() {
     if (!trackTitle || !driveLink) return;
@@ -630,7 +666,7 @@ export function useDemosFlow(config: DemosFlowConfig) {
     recipientSearch, setRecipientSearch, sortOrder, setSortOrder,
     outsideResults, outsideResultsQuery, outsideSearchLoading, handleOutsideSearch,
 
-    demosDuplicateRecipients, cooldownRecipients, demosInvalidEmails, setDemosInvalidEmails,
+    demosDuplicateRecipients, cooldownRecipients, overCapManagers, demosInvalidEmails, setDemosInvalidEmails,
 
     sendResult, sendFailedEmails, setSendFailedEmails, sendError,
     useFollowUp, setUseFollowUp, handleSend, canSend, sending,

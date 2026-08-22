@@ -1,4 +1,5 @@
 import type { Artist, CustomContact, DemosFilterPreset, EmailAccount, SavedTemplate } from '../types';
+import type { ManagerGroup } from '@/lib/artistFit';
 import { MainTemplatePanel } from './demos/MainTemplatePanel';
 import { FollowUpTemplatePanel } from './demos/FollowUpTemplatePanel';
 import { MultiArtistTemplatePanel } from './demos/MultiArtistTemplatePanel';
@@ -138,6 +139,7 @@ export interface DemosSectionProps {
   demosDuplicateRecipients: string[];
   cooldownRecipients: string[];
   contactCooldownDays: number;
+  overCapManagers: ManagerGroup<Artist>[];
   demosInvalidEmails: string[];
   setDemosInvalidEmails: (emails: string[]) => void;
   addFailedToBlacklist: (emails: string[]) => void;
@@ -189,7 +191,7 @@ export function DemosSection(props: DemosSectionProps) {
     recipientSearch, setRecipientSearch, sortOrder, setSortOrder,
     outsideResults, outsideResultsQuery, outsideSearchLoading, handleOutsideSearch, addOutsideArtistToContacts, pitchedEmailMap,
     setPreviewModalType, setPreviewModalIdx,
-    demosDuplicateRecipients, cooldownRecipients, contactCooldownDays, demosInvalidEmails, setDemosInvalidEmails, addFailedToBlacklist,
+    demosDuplicateRecipients, cooldownRecipients, contactCooldownDays, overCapManagers, demosInvalidEmails, setDemosInvalidEmails, addFailedToBlacklist,
     sendResult, sendFailedEmails, setSendFailedEmails, sendError,
     useFollowUp, setUseFollowUp, handleSend, canSend, sending,
     selectedAccount, setActiveSection,
@@ -341,6 +343,7 @@ export function DemosSection(props: DemosSectionProps) {
           demosDuplicateRecipients={demosDuplicateRecipients}
           cooldownRecipients={cooldownRecipients}
           contactCooldownDays={contactCooldownDays}
+          overCapManagers={overCapManagers}
           demosInvalidEmails={demosInvalidEmails}
           setDemosInvalidEmails={setDemosInvalidEmails}
           addFailedToBlacklist={addFailedToBlacklist}

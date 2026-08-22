@@ -10,6 +10,7 @@ import { useDemosFlow, DemosFlowConfig } from './useDemosFlow';
 import { REACHABILITY_MAX_COMPANY_SIZE } from '../constants';
 import { assignSubjectVariant } from '@/lib/recipients';
 import { MAX_CAMPAIGN_RECIPIENTS } from '@/lib/sendLimits';
+import { NAMED_ARTIST_CAP } from '@/lib/artistFit';
 import type { Artist, Campaign, CustomContact } from '../types';
 
 function artist(overrides: Partial<Artist> = {}): Artist {
@@ -217,6 +218,73 @@ describe('useDemosFlow', () => {
       const { result } = renderDemos({ lastContactedMap, contactCooldownDays: 0 });
       await act(async () => { await result.current.handlePreview(); });
       expect(result.current.cooldownRecipients).toEqual([]);
+    });
+  });
+
+  describe('overCapManagers', () => {
+    function managerArtists(email: string, managerName: string, count: number, namePrefix: string): Artist[] {
+      return Array.from({ length: count }, (_, i) =>
+        artist({ name: `${namePrefix}${i}`, managerEmails: [email], managerNames: [managerName] })
+      );
+    }
+
+    it('does not flag a manager repping exactly NAMED_ARTIST_CAP matched artists', async () => {
+      const artists = managerArtists('same@x.com', 'Sam', NAMED_ARTIST_CAP, 'A');
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists }) })));
+      const { result } = renderDemos();
+      await act(async () => { await result.current.handlePreview(); });
+      expect(result.current.overCapManagers).toEqual([]);
+    });
+
+    it('flags a manager repping one more than NAMED_ARTIST_CAP matched artists', async () => {
+      const artists = managerArtists('same@x.com', 'Sam', NAMED_ARTIST_CAP + 1, 'A');
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists }) })));
+      const { result } = renderDemos();
+      await act(async () => { await result.current.handlePreview(); });
+      expect(result.current.overCapManagers).toHaveLength(1);
+      expect(result.current.overCapManagers[0].email).toBe('same@x.com');
+      expect(result.current.overCapManagers[0].artists).toHaveLength(NAMED_ARTIST_CAP + 1);
+    });
+
+    it('suppresses the warning on a follow-up send, since a follow-up never carries multi-artist copy', async () => {
+      const artists = managerArtists('same@x.com', 'Sam', NAMED_ARTIST_CAP + 1, 'A');
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists }) })));
+      const { result } = renderDemos();
+      await act(async () => { await result.current.handlePreview(); });
+      expect(result.current.overCapManagers.length).toBeGreaterThan(0);
+
+      act(() => result.current.setUseFollowUp(true));
+      expect(result.current.overCapManagers).toEqual([]);
+    });
+
+    it('suppresses the warning when the multi-artist template is blank, since sendDemos falls back to single-artist copy', async () => {
+      const artists = managerArtists('same@x.com', 'Sam', NAMED_ARTIST_CAP + 1, 'A');
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists }) })));
+      const { result } = renderDemos({ demosMultiArtistTemplate: '   ' });
+      await act(async () => { await result.current.handlePreview(); });
+      expect(result.current.overCapManagers).toEqual([]);
+    });
+
+    it('sorts biggest group first, preserving managersOverNamingCap\'s own ordering', async () => {
+      // Listed smallest-first in the fetched artists so this also proves the hook
+      // doesn't accidentally rely on (or undo) input order rather than the sort.
+      const smallGroup = managerArtists('small@x.com', 'Small Manager', NAMED_ARTIST_CAP + 1, 'Small');
+      const bigGroup = managerArtists('big@x.com', 'Big Manager', NAMED_ARTIST_CAP + 3, 'Big');
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [...smallGroup, ...bigGroup] }) })));
+      const { result } = renderDemos();
+      await act(async () => { await result.current.handlePreview(); });
+      expect(result.current.overCapManagers.map(g => g.email)).toEqual(['big@x.com', 'small@x.com']);
+    });
+
+    it('excludes an over-cap manager whose address is also a custom contact, since that address gets the custom contact\'s single-artist email instead', async () => {
+      const claimedGroup = managerArtists('claimed@x.com', 'Claimed Manager', NAMED_ARTIST_CAP + 1, 'Claimed');
+      const plainGroup = managerArtists('plain@x.com', 'Plain Manager', NAMED_ARTIST_CAP + 1, 'Plain');
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [...claimedGroup, ...plainGroup] }) })));
+      const customContacts: CustomContact[] = [{ id: '1', artistName: 'Hand-added', managerName: 'Claimed Manager', managerEmail: 'claimed@x.com' }];
+      const { result } = renderDemos({ customContacts });
+      await act(async () => { await result.current.handlePreview(); });
+
+      expect(result.current.overCapManagers.map(g => g.email)).toEqual(['plain@x.com']);
     });
   });
 
