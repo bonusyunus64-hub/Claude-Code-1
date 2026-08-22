@@ -32,3 +32,13 @@ export function defaultBroadcastSubject(nameVar: 'stationName' | 'curatorName'):
 // constants.ts's existing callers (useTemplateDrafts.ts, PromotionSection.tsx)
 // want a static default, not a nameVar-aware function.
 export const DEFAULT_RADIO_SUBJECT = defaultBroadcastSubject('stationName');
+
+/**
+ * Default subject for the multi-artist pitch — sent to a manager who reps 2+
+ * of a campaign's matched artists (see lib/artistFit.ts) rather than picking
+ * one of them to lead with. Uses {{artistNames}} (buildArtistNameVars'
+ * prose-formatted list), not {{artistName}}: there is no single artist this
+ * subject can commit to without reintroducing the exact "which one did we
+ * pick" problem this whole feature exists to fix.
+ */
+export const DEFAULT_MULTI_ARTIST_SUBJECT = `{{trackTitle}} for {{artistNames}}`;

@@ -26,6 +26,25 @@ Just bumping this in case it slipped past — did you get a chance to listen to 
 
 If it's easier, a quick yes, no, or "not right now" is genuinely all I need — I just didn't want it to fall through the cracks in your inbox.`;
 
+// For a manager who reps 2+ of a campaign's matched artists (see lib/artistFit.ts) —
+// leads with the shared-roster observation instead of picking one artist to pitch and
+// silently dropping the others, which is the whole point of this email existing.
+// Uses {{artistSummary}}, not {{artistNames}}: when a manager reps more matched
+// artists than NAMED_ARTIST_CAP, the pitch has to say so ("Nori, Cayo, Rence and 4
+// others"), or it misrepresents what we actually know about that manager's roster —
+// but renderTemplate (lib/emailTemplate.ts) is a dumb substitution with no
+// conditionals, so it can't say "and N others" only when there are some and stay
+// silent otherwise. That branch is resolved once in buildArtistNameVars
+// (lib/artistFit.ts), not left for this template to fake with a raw {{otherCount}}
+// that would read as "...and 0 others" whenever nothing was truncated.
+export const DEFAULT_MULTI_ARTIST_TEMPLATE = `Hi {{managerName}},
+
+I'm {{senderName}}. I noticed you look after {{artistSummary}} — I've got a track I think could suit one of them, "{{trackTitle}}". It's a finished, mixed and mastered record, not a rough sketch.
+
+{{driveLink}}
+
+If it's not the right moment, or not the right sound for any of them, a quick "not for us" is genuinely fine — I'd rather know than have it sit unopened. Otherwise, let me know which one you think it fits best and I'll follow up with them directly.`;
+
 export const DEFAULT_RADIO_TEMPLATE = `Hi,
 
 I'm {{senderName}}, reaching out about a track called "{{trackTitle}}" that I think could suit {{stationName}}'s playlist. It's a finished, radio-ready mix, not a rough demo, and I'd rather send the actual audio than describe it.
@@ -40,7 +59,7 @@ If a producer or music director there has a few minutes, I'd love to know whethe
 // just a re-export, kept so every existing dashboard import of these names
 // (useTemplateDrafts.ts, MainTemplatePanel.tsx, FollowUpTemplatePanel.tsx,
 // PromotionSection.tsx) keeps working unchanged.
-export { DEFAULT_DEMOS_SUBJECT, DEFAULT_FOLLOWUP_SUBJECT, DEFAULT_RADIO_SUBJECT } from '@/lib/emailDefaults';
+export { DEFAULT_DEMOS_SUBJECT, DEFAULT_FOLLOWUP_SUBJECT, DEFAULT_RADIO_SUBJECT, DEFAULT_MULTI_ARTIST_SUBJECT } from '@/lib/emailDefaults';
 
 export const DEFAULT_SIGN_OFF = `Best regards,
 {{senderName}}`;
