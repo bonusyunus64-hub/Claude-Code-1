@@ -5,6 +5,7 @@ import { syncStorage } from '@/lib/remoteSync';
 import {
   DEFAULT_DEMOS_TEMPLATE, DEFAULT_FOLLOWUP_TEMPLATE, DEFAULT_RADIO_TEMPLATE,
   DEFAULT_DEMOS_SUBJECT, DEFAULT_FOLLOWUP_SUBJECT, DEFAULT_RADIO_SUBJECT,
+  DEFAULT_MULTI_ARTIST_TEMPLATE, DEFAULT_MULTI_ARTIST_SUBJECT,
   DEFAULT_SIGN_OFF,
 } from '../constants';
 
@@ -53,6 +54,13 @@ export function useTemplateDrafts(config: TemplateDraftsConfig) {
   const [demosSubjectB, setDemosSubjectB] = useState('');
   const [demosFollowUpTemplate, setDemosFollowUpTemplate] = useState(DEFAULT_FOLLOWUP_TEMPLATE);
   const [demosFollowUpSubject, setDemosFollowUpSubject] = useState(DEFAULT_FOLLOWUP_SUBJECT);
+  // The shared-manager ("2+ matched artists, one manager") pitch — see
+  // lib/artistFit.ts's module comment for the problem this solves. Lives here
+  // for the exact same reason demosFollowUpTemplate/demosFollowUpSubject do:
+  // it participates in this hook's shared dirty-tracking/save-all below, not
+  // useDemosFlow's own state.
+  const [demosMultiArtistTemplate, setDemosMultiArtistTemplate] = useState(DEFAULT_MULTI_ARTIST_TEMPLATE);
+  const [demosMultiArtistSubject, setDemosMultiArtistSubject] = useState(DEFAULT_MULTI_ARTIST_SUBJECT);
 
   // Track Promotion (Radio) — template/subject text stays here since it
   // participates in the shared dirty-tracking/save-all below; everything else
@@ -67,6 +75,8 @@ export function useTemplateDrafts(config: TemplateDraftsConfig) {
   const [lastSavedDemosSubjectB, setLastSavedDemosSubjectB] = useState('');
   const [lastSavedFollowUpTemplate, setLastSavedFollowUpTemplate] = useState(DEFAULT_FOLLOWUP_TEMPLATE);
   const [lastSavedFollowUpSubject, setLastSavedFollowUpSubject] = useState(DEFAULT_FOLLOWUP_SUBJECT);
+  const [lastSavedMultiArtistTemplate, setLastSavedMultiArtistTemplate] = useState(DEFAULT_MULTI_ARTIST_TEMPLATE);
+  const [lastSavedMultiArtistSubject, setLastSavedMultiArtistSubject] = useState(DEFAULT_MULTI_ARTIST_SUBJECT);
   const [lastSavedRadioTemplate, setLastSavedRadioTemplate] = useState(DEFAULT_RADIO_TEMPLATE);
   const [lastSavedRadioSubject, setLastSavedRadioSubject] = useState(DEFAULT_RADIO_SUBJECT);
   const [lastSavedSignOff, setLastSavedSignOff] = useState(DEFAULT_SIGN_OFF);
@@ -84,6 +94,8 @@ export function useTemplateDrafts(config: TemplateDraftsConfig) {
     demosSubjectB !== lastSavedDemosSubjectB ||
     demosFollowUpTemplate !== lastSavedFollowUpTemplate ||
     demosFollowUpSubject !== lastSavedFollowUpSubject ||
+    demosMultiArtistTemplate !== lastSavedMultiArtistTemplate ||
+    demosMultiArtistSubject !== lastSavedMultiArtistSubject ||
     radioTemplate !== lastSavedRadioTemplate ||
     radioSubject !== lastSavedRadioSubject ||
     signOff !== lastSavedSignOff ||
@@ -101,6 +113,8 @@ export function useTemplateDrafts(config: TemplateDraftsConfig) {
     track(syncStorage.setItem('tp_email_subject_b', demosSubjectB));
     track(syncStorage.setItem('tp_followup_template', demosFollowUpTemplate));
     track(syncStorage.setItem('tp_followup_subject', demosFollowUpSubject));
+    track(syncStorage.setItem('tp_multiartist_template', demosMultiArtistTemplate));
+    track(syncStorage.setItem('tp_multiartist_subject', demosMultiArtistSubject));
     track(syncStorage.setItem('tp_radio_template', radioTemplate));
     track(syncStorage.setItem('tp_radio_subject', radioSubject));
     track(syncStorage.setItem('tp_sign_off', signOff));
@@ -114,6 +128,8 @@ export function useTemplateDrafts(config: TemplateDraftsConfig) {
     setLastSavedDemosSubjectB(demosSubjectB);
     setLastSavedFollowUpTemplate(demosFollowUpTemplate);
     setLastSavedFollowUpSubject(demosFollowUpSubject);
+    setLastSavedMultiArtistTemplate(demosMultiArtistTemplate);
+    setLastSavedMultiArtistSubject(demosMultiArtistSubject);
     setLastSavedRadioTemplate(radioTemplate);
     setLastSavedRadioSubject(radioSubject);
     setLastSavedSignOff(signOff);
@@ -126,6 +142,8 @@ export function useTemplateDrafts(config: TemplateDraftsConfig) {
     setDemosSubjectB(lastSavedDemosSubjectB);
     setDemosFollowUpTemplate(lastSavedFollowUpTemplate);
     setDemosFollowUpSubject(lastSavedFollowUpSubject);
+    setDemosMultiArtistTemplate(lastSavedMultiArtistTemplate);
+    setDemosMultiArtistSubject(lastSavedMultiArtistSubject);
     setRadioTemplate(lastSavedRadioTemplate);
     setRadioSubject(lastSavedRadioSubject);
     setSignOff(lastSavedSignOff);
@@ -162,6 +180,12 @@ export function useTemplateDrafts(config: TemplateDraftsConfig) {
     const savedFollowUpSubject = localStorage.getItem('tp_followup_subject');
     if (savedFollowUpSubject !== null) { setDemosFollowUpSubject(savedFollowUpSubject); setLastSavedFollowUpSubject(savedFollowUpSubject); }
 
+    const savedMultiArtistTemplate = localStorage.getItem('tp_multiartist_template');
+    if (savedMultiArtistTemplate !== null) { setDemosMultiArtistTemplate(savedMultiArtistTemplate); setLastSavedMultiArtistTemplate(savedMultiArtistTemplate); }
+
+    const savedMultiArtistSubject = localStorage.getItem('tp_multiartist_subject');
+    if (savedMultiArtistSubject !== null) { setDemosMultiArtistSubject(savedMultiArtistSubject); setLastSavedMultiArtistSubject(savedMultiArtistSubject); }
+
     const savedRadioTemplate = localStorage.getItem('tp_radio_template');
     if (savedRadioTemplate !== null) { setRadioTemplate(savedRadioTemplate); setLastSavedRadioTemplate(savedRadioTemplate); }
 
@@ -173,6 +197,7 @@ export function useTemplateDrafts(config: TemplateDraftsConfig) {
     demosTemplate, setDemosTemplate, demosSubject, setDemosSubject,
     demosSubjectB, setDemosSubjectB,
     demosFollowUpTemplate, setDemosFollowUpTemplate, demosFollowUpSubject, setDemosFollowUpSubject,
+    demosMultiArtistTemplate, setDemosMultiArtistTemplate, demosMultiArtistSubject, setDemosMultiArtistSubject,
     radioTemplate, setRadioTemplate, radioSubject, setRadioSubject,
 
     isDirty, saveAll, discardChanges,

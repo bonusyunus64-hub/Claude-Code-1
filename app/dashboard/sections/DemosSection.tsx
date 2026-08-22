@@ -1,6 +1,7 @@
 import type { Artist, CustomContact, DemosFilterPreset, EmailAccount, SavedTemplate } from '../types';
 import { MainTemplatePanel } from './demos/MainTemplatePanel';
 import { FollowUpTemplatePanel } from './demos/FollowUpTemplatePanel';
+import { MultiArtistTemplatePanel } from './demos/MultiArtistTemplatePanel';
 import { TrackDetailsPanel } from './demos/TrackDetailsPanel';
 import { SavedFiltersPanel } from './demos/SavedFiltersPanel';
 import { GenreSelector } from './demos/GenreSelector';
@@ -42,6 +43,11 @@ export interface DemosSectionProps {
   saveFollowUpTemplateToLibrary: () => void;
   loadFollowUpTemplateFromLibrary: (template: SavedTemplate) => void;
   deleteFollowUpTemplateFromLibrary: (id: string) => void;
+
+  demosMultiArtistSubject: string;
+  setDemosMultiArtistSubject: (value: string) => void;
+  demosMultiArtistTemplate: string;
+  setDemosMultiArtistTemplate: (value: string) => void;
 
   senderName: string;
   setSenderName: (value: string) => void;
@@ -168,6 +174,7 @@ export function DemosSection(props: DemosSectionProps) {
     newDemosTemplateName, setNewDemosTemplateName, saveDemosTemplateToLibrary, loadDemosTemplateFromLibrary, deleteDemosTemplateFromLibrary,
     demosFollowUpSubject, setDemosFollowUpSubject, demosFollowUpTemplate, setDemosFollowUpTemplate, followUpTemplateLibrary,
     newFollowUpTemplateName, setNewFollowUpTemplateName, saveFollowUpTemplateToLibrary, loadFollowUpTemplateFromLibrary, deleteFollowUpTemplateFromLibrary,
+    demosMultiArtistSubject, setDemosMultiArtistSubject, demosMultiArtistTemplate, setDemosMultiArtistTemplate,
     senderName, setSenderName, trackTitle, setTrackTitle, demosPitchCount, driveLink, setDriveLink,
     demosPresets, newDemosPresetName, setNewDemosPresetName, saveDemosPreset, loadDemosPreset, deleteDemosPreset,
     demosMatchMode, setDemosMatchMode, selectedGenres, setSelectedGenres, toggleGenre, genreSearch, setGenreSearch,
@@ -222,6 +229,11 @@ export function DemosSection(props: DemosSectionProps) {
             saveFollowUpTemplateToLibrary={saveFollowUpTemplateToLibrary}
             loadFollowUpTemplateFromLibrary={loadFollowUpTemplateFromLibrary}
             deleteFollowUpTemplateFromLibrary={deleteFollowUpTemplateFromLibrary}
+          />
+
+          <MultiArtistTemplatePanel
+            demosMultiArtistSubject={demosMultiArtistSubject} setDemosMultiArtistSubject={setDemosMultiArtistSubject}
+            demosMultiArtistTemplate={demosMultiArtistTemplate} setDemosMultiArtistTemplate={setDemosMultiArtistTemplate}
           />
         </div>
       )}

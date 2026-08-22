@@ -29,11 +29,17 @@ function useHarness(overrides: Partial<DemosFlowConfig> & { upsertCampaign: (c: 
   const [demosSubjectB, setDemosSubjectB] = useState('');
   const [demosFollowUpTemplate, setDemosFollowUpTemplate] = useState('Following up on {{trackTitle}}');
   const [demosFollowUpSubject, setDemosFollowUpSubject] = useState('Following Up: {{trackTitle}}');
+  // No setter in DemosFlowConfig (see its own doc comment) — a plain constant
+  // is enough here, unlike demosFollowUpTemplate above which needs to round-trip
+  // through loadFollowUpTemplateFromLibrary.
+  const demosMultiArtistTemplate = 'Hi {{managerName}}, sharing {{artistNames}}: {{trackTitle}} {{driveLink}}';
+  const demosMultiArtistSubject = 'New music for {{artistNames}}';
   const config: DemosFlowConfig = {
     trackTitle: 'Track', driveLink: 'https://drive.example.com/x', senderName: 'Sender',
     demosTemplate, demosSubject, setDemosTemplate, setDemosSubject,
     demosSubjectB, setDemosSubjectB,
     demosFollowUpTemplate, demosFollowUpSubject, setDemosFollowUpTemplate, setDemosFollowUpSubject,
+    demosMultiArtistTemplate, demosMultiArtistSubject,
     signOff: '', signOffImage: null, selectedAccountId: 'acct-1', sendDelay: 0, blacklist: [],
     dailySendCap: 0, sendsToday: 0,
     accountCapError: () => null,
@@ -357,6 +363,43 @@ describe('useDemosFlow', () => {
         followUpTemplate: result.current.demosFollowUpTemplate,
         followUpSubject: result.current.demosFollowUpSubject,
       }));
+    });
+  });
+
+  describe('multi-artist send payload', () => {
+    it('sends multiArtistTemplate/multiArtistSubject on a normal (non-follow-up) send', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const { result } = renderDemos();
+      await act(async () => { await result.current.handlePreview(); });
+
+      const sendFetch = vi.fn<(url: string, init?: RequestInit) => Promise<{ ok: boolean; json: () => Promise<unknown> }>>()
+        .mockImplementation(async () => ({
+          ok: true, json: async () => ({ results: [{ to: 'sam@example.com', success: true }], total: 1, nextOffset: null }),
+        }));
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      const body = JSON.parse((sendFetch.mock.calls[0][1] as RequestInit).body as string);
+      expect(body.multiArtistTemplate).toBe('Hi {{managerName}}, sharing {{artistNames}}: {{trackTitle}} {{driveLink}}');
+      expect(body.multiArtistSubject).toBe('New music for {{artistNames}}');
+    });
+
+    it('omits multiArtistTemplate/multiArtistSubject entirely on a follow-up send', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ artists: [artist()] }) })));
+      const { result } = renderDemos();
+      await act(async () => { await result.current.handlePreview(); });
+      act(() => result.current.setUseFollowUp(true));
+
+      const sendFetch = vi.fn<(url: string, init?: RequestInit) => Promise<{ ok: boolean; json: () => Promise<unknown> }>>()
+        .mockImplementation(async () => ({
+          ok: true, json: async () => ({ results: [{ to: 'sam@example.com', success: true }], total: 1, nextOffset: null }),
+        }));
+      vi.stubGlobal('fetch', sendFetch);
+      await act(async () => { await result.current.handleSend(); });
+
+      const body = JSON.parse((sendFetch.mock.calls[0][1] as RequestInit).body as string);
+      expect('multiArtistTemplate' in body).toBe(false);
+      expect('multiArtistSubject' in body).toBe(false);
     });
   });
 

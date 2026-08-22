@@ -6,7 +6,7 @@ const syncStorage = vi.hoisted(() => ({ setItem: vi.fn(() => true), removeItem: 
 vi.mock('@/lib/remoteSync', () => ({ syncStorage }));
 
 import { useTemplateDrafts } from './useTemplateDrafts';
-import { DEFAULT_SIGN_OFF } from '../constants';
+import { DEFAULT_SIGN_OFF, DEFAULT_MULTI_ARTIST_TEMPLATE, DEFAULT_MULTI_ARTIST_SUBJECT } from '../constants';
 
 /**
  * signOff/signOffImage are a controlled value + setter pair owned by the parent
@@ -173,6 +173,67 @@ describe('useTemplateDrafts', () => {
       const { result } = renderDrafts();
       act(() => result.current.hydrateFromStorage());
       expect(result.current.demosTemplate).not.toBe('');
+      expect(result.current.isDirty).toBe(false);
+    });
+  });
+
+  // The shared-manager ("2+ matched artists, one manager") template pair —
+  // added in this phase, following demosFollowUpTemplate/demosFollowUpSubject's
+  // own tests above through every place that pair is exercised: initial
+  // defaults, dirty-tracking, save-all's persisted keys, discard, and hydration.
+  describe('demosMultiArtistTemplate / demosMultiArtistSubject', () => {
+    it('starts at the documented defaults, same as every other template draft', () => {
+      const { result } = renderDrafts();
+      expect(result.current.demosMultiArtistTemplate).toBe(DEFAULT_MULTI_ARTIST_TEMPLATE);
+      expect(result.current.demosMultiArtistSubject).toBe(DEFAULT_MULTI_ARTIST_SUBJECT);
+    });
+
+    it('flips isDirty true when only the multi-artist draft changes', () => {
+      const { result } = renderDrafts();
+      expect(result.current.isDirty).toBe(false);
+      act(() => result.current.setDemosMultiArtistTemplate('Hi {{managerName}}, sharing {{artistSummary}}'));
+      expect(result.current.isDirty).toBe(true);
+    });
+
+    it('saveAll writes both keys to syncStorage and clears isDirty', () => {
+      const { result } = renderDrafts();
+      act(() => {
+        result.current.setDemosMultiArtistTemplate('Multi-artist template');
+        result.current.setDemosMultiArtistSubject('Multi-artist subject');
+      });
+      expect(result.current.isDirty).toBe(true);
+
+      act(() => result.current.saveAll());
+
+      expect(syncStorage.setItem).toHaveBeenCalledWith('tp_multiartist_template', 'Multi-artist template');
+      expect(syncStorage.setItem).toHaveBeenCalledWith('tp_multiartist_subject', 'Multi-artist subject');
+      expect(result.current.isDirty).toBe(false);
+    });
+
+    it('discardChanges restores the last-saved multi-artist draft, dropping an unsaved edit', () => {
+      const { result } = renderDrafts();
+      act(() => result.current.setDemosMultiArtistTemplate('Saved multi-artist template'));
+      act(() => result.current.saveAll());
+
+      act(() => result.current.setDemosMultiArtistTemplate('Unsaved edit, should not survive'));
+      expect(result.current.isDirty).toBe(true);
+
+      act(() => result.current.discardChanges());
+      expect(result.current.demosMultiArtistTemplate).toBe('Saved multi-artist template');
+      expect(result.current.isDirty).toBe(false);
+    });
+
+    it('hydrateFromStorage loads both keys into the draft and its lastSaved mirror', () => {
+      localStorage.setItem('tp_multiartist_template', 'Stored multi-artist template');
+      localStorage.setItem('tp_multiartist_subject', 'Stored multi-artist subject');
+
+      const { result } = renderDrafts();
+      act(() => result.current.hydrateFromStorage());
+
+      expect(result.current.demosMultiArtistTemplate).toBe('Stored multi-artist template');
+      expect(result.current.demosMultiArtistSubject).toBe('Stored multi-artist subject');
+      // The lastSaved mirror was updated too, not just the draft — otherwise the
+      // save bar would show "Unsaved changes" the instant a hydrated device loads.
       expect(result.current.isDirty).toBe(false);
     });
   });

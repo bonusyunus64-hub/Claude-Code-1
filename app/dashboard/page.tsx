@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { hydrateFromRemote, syncStorage } from '@/lib/remoteSync';
-import { subjectTemplateFor } from '@/lib/recipients';
 import type {
   Artist, RadioStation, EmailAccount,
   CustomContact,
@@ -12,7 +11,7 @@ import {
   collectInterestedReplies,
 } from './utils';
 import {
-  buildPreviewEntries, PREVIEW_MODAL_RECIPIENT_CAP, CUSTOM_CONTACT_RANK,
+  buildPreviewEntries, buildDemosPreviewEntries, PREVIEW_MODAL_RECIPIENT_CAP,
   type PreviewCandidate, type PreviewEntry,
 } from './previewEntries';
 import { usePromotionChannel } from './hooks/usePromotionChannel';
@@ -160,6 +159,7 @@ export default function Dashboard() {
     demosSubjectB: templateDrafts.demosSubjectB, setDemosSubjectB: templateDrafts.setDemosSubjectB,
     demosFollowUpTemplate: templateDrafts.demosFollowUpTemplate, demosFollowUpSubject: templateDrafts.demosFollowUpSubject,
     setDemosFollowUpTemplate: templateDrafts.setDemosFollowUpTemplate, setDemosFollowUpSubject: templateDrafts.setDemosFollowUpSubject,
+    demosMultiArtistTemplate: templateDrafts.demosMultiArtistTemplate, demosMultiArtistSubject: templateDrafts.demosMultiArtistSubject,
     signOff: account.signOff, signOffImage: account.signOffImage, selectedAccountId: account.selectedAccountId,
     sendDelay: account.sendDelay, blacklist: account.blacklist, dailySendCap: account.dailySendCap, sendsToday: account.sendsToday,
     accountCapError: account.accountCapError, refreshSendsToday: account.refreshSendsToday, recordFailedEmails: account.recordFailedEmails,
@@ -354,40 +354,22 @@ export default function Dashboard() {
   const { entries: previewModalEntries, total: previewModalTotal, excludedByBlacklist: previewModalExcludedByBlacklist } = useMemo((): { entries: PreviewEntry[]; total: number; excludedByBlacklist: number } => {
     if (!previewModalType) return { entries: [], total: 0, excludedByBlacklist: 0 };
     if (previewModalType === 'demos') {
-      const tpl = demos.useFollowUp ? templateDrafts.demosFollowUpTemplate : templateDrafts.demosTemplate;
-      const subjectA = demos.useFollowUp ? templateDrafts.demosFollowUpSubject : templateDrafts.demosSubject;
-      // Mirrors useDemosFlow's handleSend: A/B testing never applies to a
-      // follow-up send, and only kicks in once the toggle is on with real text
-      // in Subject B — matching exactly what a send would actually do.
-      const subjectB = (!demos.useFollowUp && demos.subjectTestEnabled) ? templateDrafts.demosSubjectB : undefined;
-      const render = (vars: Record<string, string>, to: string) => {
-        const subjectTpl = subjectTemplateFor(to, subjectA, subjectB);
-        const bodyParts = [renderTemplateClient(tpl, vars)];
-        if (account.signOff?.trim()) bodyParts.push(renderTemplateClient(account.signOff, vars));
-        return { subject: renderTemplateClient(subjectTpl, vars), body: bodyParts.join('\n\n') };
-      };
-      const candidates: PreviewCandidate[] = [];
-      // Custom contacts first: they always outrank roster suggestions for the same
-      // address (CUSTOM_CONTACT_RANK), and putting them first also means a hand-added
-      // contact — the whole reason someone added it — isn't the entry that falls off
-      // the end when a large roster match pushes the deduped list past the cap.
-      contacts.customContacts.forEach(cc => {
-        candidates.push({
-          to: cc.managerEmail, subject: '', body: '', rank: CUSTOM_CONTACT_RANK,
-          label: `${cc.artistName}${cc.managerName ? ` (${cc.managerName})` : ''} <${cc.managerEmail}> [Custom]`,
-          vars: { managerName: cc.managerName || 'there', artistName: cc.artistName, trackTitle, driveLink, senderName, managementCompany: '', pronoun: 'they' },
-        });
+      // Moved to previewEntries.ts's buildDemosPreviewEntries so the grouping
+      // logic (rank, then group by manager address, then multi- vs
+      // single-artist copy per group) can be unit-tested against the same
+      // inputs lib/demosSend.ts's sendDemos takes, without rendering this
+      // whole component — see that function's own doc comment.
+      return buildDemosPreviewEntries({
+        includedArtists: demos.includedArtists,
+        selectedGenres: demos.selectedGenres,
+        customContacts: contacts.customContacts,
+        demosTemplate: templateDrafts.demosTemplate, demosSubject: templateDrafts.demosSubject, demosSubjectB: templateDrafts.demosSubjectB,
+        demosFollowUpTemplate: templateDrafts.demosFollowUpTemplate, demosFollowUpSubject: templateDrafts.demosFollowUpSubject,
+        demosMultiArtistTemplate: templateDrafts.demosMultiArtistTemplate, demosMultiArtistSubject: templateDrafts.demosMultiArtistSubject,
+        useFollowUp: demos.useFollowUp, subjectTestEnabled: demos.subjectTestEnabled,
+        signOff: account.signOff, blacklist: account.blacklist,
+        trackTitle, driveLink, senderName,
       });
-      demos.includedArtists.forEach(a => {
-        a.managerEmails.forEach((email, idx) => {
-          candidates.push({
-            to: email, subject: '', body: '', rank: a.spotifyFollowers ?? 0,
-            label: `${a.name}${a.managerNames[idx] ? ` (${a.managerNames[idx]})` : ''} <${email}>`,
-            vars: { managerName: a.managerNames[idx] || 'there', artistName: a.name, trackTitle, driveLink, senderName, managementCompany: a.managementCompany, pronoun: pronounForClient(a.gender, a.type) },
-          });
-        });
-      });
-      return buildPreviewEntries(candidates, PREVIEW_MODAL_RECIPIENT_CAP, render, account.blacklist);
     }
     const render = (vars: Record<string, string>) => {
       const bodyParts = [renderTemplateClient(radio.template, vars)];
@@ -405,7 +387,7 @@ export default function Dashboard() {
       });
     });
     return buildPreviewEntries(candidates, PREVIEW_MODAL_RECIPIENT_CAP, render, account.blacklist);
-  }, [previewModalType, demos.includedArtists, radio.results, templateDrafts.demosTemplate, templateDrafts.demosSubject, templateDrafts.demosSubjectB, demos.subjectTestEnabled, templateDrafts.demosFollowUpTemplate, templateDrafts.demosFollowUpSubject, demos.useFollowUp, radio.template, radio.subject, account.signOff, account.blacklist, trackTitle, driveLink, senderName, contacts.customContacts]);
+  }, [previewModalType, demos.includedArtists, demos.selectedGenres, radio.results, templateDrafts.demosTemplate, templateDrafts.demosSubject, templateDrafts.demosSubjectB, demos.subjectTestEnabled, templateDrafts.demosFollowUpTemplate, templateDrafts.demosFollowUpSubject, templateDrafts.demosMultiArtistTemplate, templateDrafts.demosMultiArtistSubject, demos.useFollowUp, radio.template, radio.subject, account.signOff, account.blacklist, trackTitle, driveLink, senderName, contacts.customContacts]);
 
   // Keyboard/focus handling for the preview modal (see the modal markup below):
   // Escape closes it, and focus moves into the dialog on open and back to
@@ -552,6 +534,8 @@ export default function Dashboard() {
             {activeSection === 'demos' && (
               <DemosSection
                 {...demos}
+                setDemosMultiArtistTemplate={templateDrafts.setDemosMultiArtistTemplate}
+                setDemosMultiArtistSubject={templateDrafts.setDemosMultiArtistSubject}
                 demosTab={demosTab} setDemosTab={setDemosTab}
                 senderName={senderName} setSenderName={setSenderName} trackTitle={trackTitle} setTrackTitle={setTrackTitle} demosPitchCount={demosPitchCount}
                 driveLink={driveLink} setDriveLink={setDriveLink}

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { buildPreviewEntries, type PreviewCandidate } from './previewEntries';
+import { buildPreviewEntries, buildDemosPreviewEntries, type PreviewCandidate, type DemosPreviewInput } from './previewEntries';
+import { rankArtistsForPitch } from '@/lib/artistFit';
+import type { Artist, CustomContact } from './types';
 
 // The email-preview modal has to agree with what the server will actually send:
 // dedupeByRecipient (lib/mailSend.ts) collapses every message to the same address
@@ -150,5 +152,137 @@ describe('buildPreviewEntries', () => {
       expect(total).toBe(1);
       expect(excludedByBlacklist).toBe(0);
     });
+  });
+});
+
+// buildDemosPreviewEntries is the demos preview modal's client-side mirror of
+// lib/demosSend.ts's sendDemos: rank the matched artists, group them by manager
+// address, and give a group of 2+ the shared-manager copy only when there's
+// real copy for it and this isn't a follow-up. These tests exercise that
+// grouping directly, without rendering the Dashboard component or its dozen
+// other hooks.
+describe('buildDemosPreviewEntries', () => {
+  function artist(overrides: Partial<Artist> = {}): Artist {
+    return {
+      name: 'Nova', genres: ['Pop'], spotifyFollowers: 10_000, managementCompany: 'Acme Mgmt',
+      managerNames: ['Sam'], managerEmails: ['sam@example.com'], labels: '',
+      instagramHandle: '', avatarUrl: '', gender: 'FEMALE', type: 'Person',
+      ...overrides,
+    };
+  }
+
+  // Builds an artist sharing one manager address with any others given the same
+  // helper — the shape needed to exercise groupArtistsByManagerEmail's "one
+  // manager, several matched artists" grouping.
+  function sharedArtist(name: string, followers: number, overrides: Partial<Artist> = {}): Artist {
+    return artist({
+      name, spotifyFollowers: followers,
+      managerNames: ['Shared Manager'], managerEmails: ['shared@example.com'],
+      ...overrides,
+    });
+  }
+
+  const baseInput: DemosPreviewInput = {
+    includedArtists: [],
+    selectedGenres: ['Pop'],
+    customContacts: [],
+    demosTemplate: 'Hi {{managerName}}, check out {{artistName}}: {{trackTitle}} {{driveLink}}',
+    demosSubject: '{{trackTitle}} for {{artistName}}',
+    demosSubjectB: '',
+    demosFollowUpTemplate: 'Following up on {{trackTitle}} for {{artistName}}',
+    demosFollowUpSubject: 'Re: {{trackTitle}} for {{artistName}}',
+    demosMultiArtistTemplate: 'Hi {{managerName}}, sharing {{artistNames}} ({{artistSummary}}): {{trackTitle}} {{driveLink}}',
+    demosMultiArtistSubject: '{{trackTitle}} for {{artistNames}}',
+    useFollowUp: false,
+    subjectTestEnabled: false,
+    signOff: '',
+    blacklist: [],
+    trackTitle: 'Track',
+    driveLink: 'https://drive.example.com/x',
+    senderName: 'Sender',
+  };
+
+  it('previews a manager repping a single matched artist exactly as today (single-artist email)', () => {
+    const solo = artist({ name: 'Solo', managerNames: ['Solo Mgr'], managerEmails: ['solo@example.com'] });
+    const { entries, total } = buildDemosPreviewEntries({ ...baseInput, includedArtists: [solo] });
+    expect(total).toBe(1);
+    expect(entries[0].to).toBe('solo@example.com');
+    expect(entries[0].label).toBe('Solo (Solo Mgr) <solo@example.com>');
+    expect(entries[0].subject).toBe('Track for Solo');
+    expect(entries[0].body).toContain('Hi Solo Mgr, check out Solo');
+  });
+
+  it('previews a manager repping 2+ matched artists as a single multi-artist row', () => {
+    const nori = sharedArtist('Nori', 500);
+    const cayo = sharedArtist('Cayo', 2000); // same genre, so followers break the tie: Cayo leads
+    const { entries, total } = buildDemosPreviewEntries({ ...baseInput, includedArtists: [nori, cayo] });
+    expect(total).toBe(1);
+    const [entry] = entries;
+    expect(entry.to).toBe('shared@example.com');
+    expect(entry.label).toBe('Cayo +1 other (Shared Manager) <shared@example.com>');
+    expect(entry.subject).toBe('Track for Cayo and Nori');
+    expect(entry.body).toContain('sharing Cayo and Nori (Cayo and Nori)');
+  });
+
+  it('falls back to the single-artist email when the multi-artist template is blank/whitespace-only', () => {
+    const nori = sharedArtist('Nori', 500);
+    const cayo = sharedArtist('Cayo', 2000);
+    const { entries } = buildDemosPreviewEntries({ ...baseInput, includedArtists: [nori, cayo], demosMultiArtistTemplate: '   \n\t  ' });
+    expect(entries).toHaveLength(1);
+    expect(entries[0].subject).toBe('Track for Cayo');
+    expect(entries[0].body).not.toContain('Nori');
+  });
+
+  it('falls back to the single-artist email on a follow-up send, even with real multi-artist copy configured', () => {
+    const nori = sharedArtist('Nori', 500);
+    const cayo = sharedArtist('Cayo', 2000);
+    const { entries } = buildDemosPreviewEntries({ ...baseInput, includedArtists: [nori, cayo], useFollowUp: true });
+    expect(entries).toHaveLength(1);
+    expect(entries[0].subject).toBe('Re: Track for Cayo');
+    expect(entries[0].body).not.toContain('Nori');
+  });
+
+  it('previews the same lead artist lib/demosSend.ts would pick for the same input (genre fit, not raw followers)', () => {
+    // Rence's genre fit beats Cayo's higher follower count for the selected genre.
+    const cayo = sharedArtist('Cayo', 5000, { genres: ['Rock'] });
+    const rence = sharedArtist('Rence', 1000, { genres: ['Pop'] });
+    const { entries } = buildDemosPreviewEntries({ ...baseInput, includedArtists: [cayo, rence], selectedGenres: ['Pop'] });
+    const [expectedLead] = rankArtistsForPitch([cayo, rence], ['Pop']);
+    expect(entries[0].label).toContain(expectedLead.name);
+    expect(entries[0].subject).toContain(expectedLead.name);
+  });
+
+  it('a hand-added custom contact still outranks a colliding roster manager address', () => {
+    const nori = sharedArtist('Nori', 500, { managerEmails: ['collide@example.com'] });
+    const cc: CustomContact = { id: '1', artistName: 'Custom Artist', managerName: 'Custom Mgr', managerEmail: 'collide@example.com' };
+    const { entries } = buildDemosPreviewEntries({ ...baseInput, includedArtists: [nori], customContacts: [cc] });
+    expect(entries).toHaveLength(1);
+    expect(entries[0].label).toContain('[Custom]');
+    expect(entries[0].body).toContain('Custom Artist');
+  });
+
+  it('a custom contact colliding with a 2+-artist manager group forces that address to single-artist copy, never the multi-artist one', () => {
+    // Two matched artists behind the SAME address a custom contact also
+    // claims — the case the single-artist collision test above can't exercise,
+    // since a group of exactly 1 was never eligible for multi-artist copy to
+    // begin with. The custom contact still has to win (CUSTOM_CONTACT_RANK),
+    // and the surviving row must render as the ordinary single-artist email —
+    // never the multi-artist template/subject, which the custom contact's own
+    // vars (no artistSummary/artistNames) can't fill in.
+    const nori = sharedArtist('Nori', 500, { managerEmails: ['collide@example.com'] });
+    const cayo = sharedArtist('Cayo', 2000, { managerEmails: ['collide@example.com'] });
+    const cc: CustomContact = { id: '1', artistName: 'Custom Artist', managerName: 'Custom Mgr', managerEmail: 'collide@example.com' };
+    const { entries } = buildDemosPreviewEntries({ ...baseInput, includedArtists: [nori, cayo], customContacts: [cc] });
+
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    expect(entry.label).toContain('[Custom]');
+    expect(entry.subject).toBe('Track for Custom Artist');
+    expect(entry.body).toContain('Hi Custom Mgr, check out Custom Artist');
+    // No unrendered {{...}} placeholder may ever leak into a previewed email —
+    // which is exactly what a custom contact's vars (missing artistSummary/
+    // artistNames) rendered through the multi-artist template would produce.
+    expect(entry.subject).not.toMatch(/\{\{/);
+    expect(entry.body).not.toMatch(/\{\{/);
   });
 });

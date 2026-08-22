@@ -40,6 +40,15 @@ export interface DemosFlowConfig {
   demosFollowUpSubject: string;
   setDemosFollowUpTemplate: (value: string) => void;
   setDemosFollowUpSubject: (value: string) => void;
+  /** Shared-manager ("2+ matched artists, one manager") pitch — same
+   *  parent-owned/controlled-prop pattern as demosFollowUpTemplate/subject
+   *  above, for the same reason (participates in useTemplateDrafts' shared
+   *  dirty-tracking/save-all, not this hook's own state). Read here only to
+   *  build the send payload below (see handleSend) — unlike the follow-up
+   *  pair, there's no template library or other logic in this hook that needs
+   *  to write to it, so no setter is threaded in. */
+  demosMultiArtistTemplate: string;
+  demosMultiArtistSubject: string;
   signOff: string;
   signOffImage: string | null;
   selectedAccountId: string;
@@ -86,6 +95,7 @@ export function useDemosFlow(config: DemosFlowConfig) {
     demosTemplate, demosSubject, setDemosTemplate, setDemosSubject,
     demosSubjectB, setDemosSubjectB,
     demosFollowUpTemplate, demosFollowUpSubject, setDemosFollowUpTemplate, setDemosFollowUpSubject,
+    demosMultiArtistTemplate, demosMultiArtistSubject,
     signOff, signOffImage, selectedAccountId, sendDelay, blacklist, dailySendCap, sendsToday,
     accountCapError, refreshSendsToday, recordFailedEmails, pitchedEmailMap, lastContactedMap, contactCooldownDays,
     upsertCampaign, threadIdsFor,
@@ -366,6 +376,15 @@ export function useDemosFlow(config: DemosFlowConfig) {
         emailTemplate: useFollowUp ? demosFollowUpTemplate : demosTemplate,
         subjectTemplate: useFollowUp ? demosFollowUpSubject : demosSubject,
         subjectTemplateB: subjectTestActive ? demosSubjectB : undefined,
+        // Omitted entirely (not just blank) on a follow-up send — a follow-up
+        // threads onto the original single-artist pitch (see threadIds below)
+        // and is meant to stay on today's single-artist copy, never the
+        // shared-manager one. lib/demosSend.ts's "no multiArtistTemplate ->
+        // today's per-artist behavior" fallback (see its own doc comment) means
+        // simply not sending the field here is enough to get that — no
+        // separate server-side "is this a follow-up" flag needed.
+        multiArtistTemplate: useFollowUp ? undefined : demosMultiArtistTemplate,
+        multiArtistSubject: useFollowUp ? undefined : demosMultiArtistSubject,
         senderName, signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram,
         matchMode: demosMatchMode,
         maxCompanySize: reachableOnly ? REACHABILITY_MAX_COMPANY_SIZE : 0,
@@ -590,6 +609,8 @@ export function useDemosFlow(config: DemosFlowConfig) {
     demosFollowUpTemplate, demosFollowUpSubject, setDemosFollowUpTemplate, setDemosFollowUpSubject,
     followUpTemplateLibrary, newFollowUpTemplateName, setNewFollowUpTemplateName,
     saveFollowUpTemplateToLibrary, loadFollowUpTemplateFromLibrary, deleteFollowUpTemplateFromLibrary,
+
+    demosMultiArtistTemplate, demosMultiArtistSubject,
 
     demosPresets, newDemosPresetName, setNewDemosPresetName, saveDemosPreset, loadDemosPreset, deleteDemosPreset,
     /** For page.tsx's initial-load effect to hydrate from localStorage after hydrateFromRemote() resolves. */
