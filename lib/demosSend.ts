@@ -8,8 +8,9 @@ import {
 import { resolveAccount } from '@/lib/accounts';
 import { checkCapAllows, recordSends } from '@/lib/sendQuota';
 import { getBlacklist } from '@/lib/doNotContact';
-import { DEFAULT_DEMOS_SUBJECT } from '@/lib/emailDefaults';
+import { DEFAULT_DEMOS_SUBJECT, DEFAULT_MULTI_ARTIST_SUBJECT } from '@/lib/emailDefaults';
 import { MAX_CAMPAIGN_RECIPIENTS } from '@/lib/sendLimits';
+import { rankArtistsForPitch, groupArtistsByManagerEmail, buildArtistNameVars, ManagerGroup } from '@/lib/artistFit';
 
 export interface DemosSendPayload {
   trackTitle: string;
@@ -25,6 +26,26 @@ export interface DemosSendPayload {
    * recipient is deterministically assigned to one or the other.
    */
   subjectTemplateB?: string;
+  /**
+   * Body copy for the "one manager reps several of this campaign's matched
+   * artists" case (see lib/artistFit.ts's module comment for the problem this
+   * solves). Absent, blank, or whitespace-only is NOT an error — it means the
+   * caller hasn't shipped multi-artist copy yet (an old dashboard build, or a
+   * follow-up send, which never sends this field at all), so every such group
+   * falls back to exactly today's behavior: one email about whichever artist in
+   * the group ranks highest (rankArtistsForPitch). This is load-bearing for a
+   * stale browser tab left open from before this feature shipped — it must not
+   * be able to send multi-artist copy the user has never seen.
+   */
+  multiArtistTemplate?: string;
+  /**
+   * Subject for the multi-artist email above. Blank/absent falls back to
+   * DEFAULT_MULTI_ARTIST_SUBJECT, the same "blank means use the default" contract
+   * subjectTemplate has with DEFAULT_DEMOS_SUBJECT. Unlike subjectTemplate there
+   * is no *TemplateB counterpart here — see buildMultiArtistMessage for why an
+   * A/B split doesn't apply to this email.
+   */
+  multiArtistSubject?: string;
   senderName: string;
   signOff?: string;
   signOffImage?: string;
@@ -66,8 +87,16 @@ export interface DemosSendPayload {
 // so their chosen framing of the pitch is the one that goes out.
 const CUSTOM_CONTACT_RANK = Number.MAX_SAFE_INTEGER;
 
-function buildEmailsForArtist(
+// Builds the one email a manager address gets when either only one matched
+// artist sits behind it, or several do but the caller hasn't supplied
+// multi-artist copy (see DemosSendPayload.multiArtistTemplate) — in both cases
+// `artist` is whichever one rankArtistsForPitch says leads for this address,
+// and `managerName`/`email` come from the ManagerGroup so a name attached to
+// one specific managerEmails[i] slot (not just "the artist's name") is used.
+function buildSingleArtistMessage(
   artist: Artist,
+  managerName: string,
+  email: string,
   trackTitle: string,
   driveLink: string,
   emailTemplate: string,
@@ -75,37 +104,88 @@ function buildEmailsForArtist(
   subjectTemplateB: string | undefined,
   signOff: string,
   senderName: string
-): OutboundMessage[] {
-  return artist.managerEmails.map((email, idx) => {
-    const managerName = artist.managerNames[idx] || 'there';
-    const vars = {
-      managerName,
-      artistName: artist.name,
-      trackTitle,
-      driveLink,
-      senderName,
-      managementCompany: artist.managementCompany,
-      pronoun: pronounFor(artist.gender, artist.type),
-    };
-    const bodyParts = [renderTemplate(emailTemplate, vars)];
-    if (signOff?.trim()) bodyParts.push(renderTemplate(signOff, vars));
-    const body = bodyParts.join('\n\n');
-    const subject = renderTemplate(subjectTemplateFor(email, subjectTemplate, subjectTemplateB), vars);
-    // When one manager covers several matched artists they get a single email, and
-    // the biggest artist is the one worth leading with.
-    return { to: email, subject, body, rank: artist.spotifyFollowers ?? 0 };
-  });
+): OutboundMessage {
+  const vars = {
+    managerName: managerName || 'there',
+    artistName: artist.name,
+    trackTitle,
+    driveLink,
+    senderName,
+    managementCompany: artist.managementCompany,
+    pronoun: pronounFor(artist.gender, artist.type),
+  };
+  const bodyParts = [renderTemplate(emailTemplate, vars)];
+  if (signOff?.trim()) bodyParts.push(renderTemplate(signOff, vars));
+  const body = bodyParts.join('\n\n');
+  const subject = renderTemplate(subjectTemplateFor(email, subjectTemplate, subjectTemplateB), vars);
+  // There's now at most one roster message per address, so this no longer picks
+  // a winner between roster messages the way it used to — but CUSTOM_CONTACT_RANK
+  // still has to beat it below when a hand-added custom contact collides with a
+  // roster manager's address, so the field stays.
+  return { to: email, subject, body, rank: artist.spotifyFollowers ?? 0 };
+}
+
+// Builds the "several matched artists, one manager" email. Only reached for a
+// group of 2+ artists that DID get multi-artist copy (see the fallback branch
+// in sendDemos otherwise) — group.artists is rankArtistsForPitch's output, so
+// group.artists[0] (buildArtistNameVars' leadArtist) is already the best-fit
+// artist for this address, not just the one with the most followers.
+function buildMultiArtistMessage(
+  group: ManagerGroup<Artist>,
+  trackTitle: string,
+  driveLink: string,
+  multiArtistTemplate: string,
+  multiArtistSubject: string,
+  signOff: string,
+  senderName: string
+): OutboundMessage {
+  const nameVars = buildArtistNameVars(group.artists);
+  const leadArtist = nameVars.leadArtist;
+  const vars = {
+    artistNames: nameVars.artistNames,
+    artistSummary: nameVars.artistSummary,
+    artistCount: nameVars.artistCount,
+    otherCount: nameVars.otherCount,
+    allArtistNames: nameVars.allArtistNames,
+    // A stray {{artistName}} left in the user's copy (or in signOff) gets the
+    // lead artist's real name rather than rendering literally as "{{artistName}}"
+    // in a cold email — see renderTemplate's unknown-key fallback.
+    artistName: leadArtist.name,
+    managementCompany: leadArtist.managementCompany,
+    managerName: group.managerName || 'there',
+    // Deliberately NOT pronounFor(leadArtist...): this email is about several
+    // people, and rendering "she" because the top-ranked artist happens to be a
+    // woman would be wrong about everyone else behind this address. 'they' is
+    // the only pronoun that's never wrong for a group.
+    pronoun: 'they',
+    trackTitle,
+    driveLink,
+    senderName,
+  };
+  const bodyParts = [renderTemplate(multiArtistTemplate, vars)];
+  if (signOff?.trim()) bodyParts.push(renderTemplate(signOff, vars));
+  const body = bodyParts.join('\n\n');
+  // No subjectTemplateFor/A-B split here (contrast buildSingleArtistMessage):
+  // splitting an already-smaller set of multi-artist recipients in two would
+  // make any test on this subject unreadable for little statistical value.
+  const subject = renderTemplate(multiArtistSubject, vars);
+  return { to: group.email, subject, body, rank: leadArtist.spotifyFollowers ?? 0 };
 }
 
 export async function sendDemos(payload: DemosSendPayload) {
   const {
-    trackTitle, driveLink, genres, emailTemplate, subjectTemplate, subjectTemplateB, senderName,
+    trackTitle, driveLink, genres, emailTemplate, subjectTemplate, subjectTemplateB,
+    multiArtistTemplate, multiArtistSubject, senderName,
     signOff, signOffImage, minAudience, maxAudience, gender, artistType, minInstagram, maxInstagram, matchMode,
     maxCompanySize, freemailOnly, matchAllGenres, accountId,
     sendDelay, blacklist, excludeEmails, customContacts, threadIds, offset, limit,
   } = payload;
 
   const subjectTpl = subjectTemplate?.trim() || DEFAULT_DEMOS_SUBJECT;
+  // Blank/whitespace-only counts the same as absent — see multiArtistTemplate's
+  // doc comment on why that has to fall all the way back to today's behavior.
+  const multiTpl = multiArtistTemplate?.trim();
+  const multiSubjectTpl = multiArtistSubject?.trim() || DEFAULT_MULTI_ARTIST_SUBJECT;
 
   // A roster query happens when genres are actually selected, or the caller has
   // explicitly confirmed it wants the unfiltered "every genre" query (see
@@ -138,9 +218,27 @@ export async function sendDemos(payload: DemosSendPayload) {
       })
     : [];
 
-  const artistMessages = artists.flatMap(a =>
-    buildEmailsForArtist(a, trackTitle, driveLink, emailTemplate, subjectTpl, subjectTemplateB, signOff ?? '', senderName)
-  );
+  // Rank once over the WHOLE matched list (not per-group) so a group's artists
+  // arrive already in fit order — groupArtistsByManagerEmail's doc comment
+  // states this dependency, and re-sorting inside a group would break the
+  // "first non-blank managerName wins" rule it relies on that ordering for.
+  const rankedArtists = rankArtistsForPitch(artists, genres ?? []);
+  const managerGroups = groupArtistsByManagerEmail(rankedArtists);
+
+  const artistMessages: OutboundMessage[] = managerGroups.map(group => {
+    // A group of 2+ only gets the multi-artist treatment once the caller has
+    // actually supplied copy for it; otherwise (including every group of
+    // exactly 1) this is today's single-artist email about whichever artist in
+    // the group ranks highest for this address.
+    if (group.artists.length > 1 && multiTpl) {
+      return buildMultiArtistMessage(group, trackTitle, driveLink, multiTpl, multiSubjectTpl, signOff ?? '', senderName);
+    }
+    const leadArtist = group.artists[0];
+    return buildSingleArtistMessage(
+      leadArtist, group.managerName, group.email,
+      trackTitle, driveLink, emailTemplate, subjectTpl, subjectTemplateB, signOff ?? '', senderName
+    );
+  });
 
   const customMessages: OutboundMessage[] = (customContacts ?? []).map(cc => {
     const vars = { managerName: cc.managerName || 'there', artistName: cc.artistName, trackTitle, driveLink, senderName, managementCompany: '', pronoun: 'they' };
