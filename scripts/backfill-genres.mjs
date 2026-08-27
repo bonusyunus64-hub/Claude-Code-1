@@ -774,6 +774,22 @@ export function selectSoleRouteArtists(artists) {
  * baked into whatever `roster` this call receives) is always reflected
  * accurately. When false (the default), `soleRoute` stays null and every
  * genre-less artist remains a candidate exactly as before this flag existed.
+ *
+ * Returns `{ artists, stats, log, aborted, abortReason }`. `aborted` is true
+ * only when a SpotifyQuotaExhaustedError (thrown by resolveByDiscography via
+ * makeSpotifyFetcher — see that class's doc comment) interrupted the walk
+ * partway through; `abortReason` is then that error's message, otherwise
+ * null. This function deliberately never lets that error propagate: doing so
+ * used to mean the caller's entire chunk of completed fills died with the
+ * stack (the 2026-08-22/2026-08-25 incidents this exists to stop), because
+ * this script only ever writes at the very end of a run. On an abort, every
+ * artist the loop reached before the quota ran out keeps its verdict; the
+ * artist that triggered the abort and every artist the loop never reached
+ * are pushed through as their untouched original object — never logged as
+ * skipped, never counted as attempted — so they stay fully eligible for the
+ * very next run, and `artists`/`stats`/`log` are otherwise the exact normal
+ * shape a caller (main() below) already knows how to summarise and write.
+ * Any OTHER error keeps propagating out of this function exactly as before.
  */
 export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit, existingLog = null, retrySkipped = false, retryReasons = null, discography = false, discographyDeps = null, onlyUnreachable = false, onProgress = null } = {}) {
   const rosterGenreByLower = new Map((roster.genres || []).map(g => [g.toLowerCase(), g]));
@@ -858,8 +874,27 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit,
 
   const log = { filled: [], skipped: [] };
 
+  // Set the moment a SpotifyQuotaExhaustedError is caught below. Once true,
+  // every remaining roster artist (including the one that triggered the
+  // abort) is pushed through untouched — see the try/catch inside the
+  // --limit branch below for why, and the module's top-level doc comment /
+  // the 2026-08-22 and 2026-08-25 incidents this whole mechanism exists to
+  // stop from recurring.
+  let aborted = false;
+  let abortReason = null;
+
   const artists = [];
   for (const original of roster.artists) {
+    if (aborted) {
+      // The loop already stopped attempting artists — every artist from here
+      // on (this one included) passes through completely untouched, exactly
+      // like the overLimit branch below, and with NO stats/log side effects
+      // at all (not even `eligible`): those stats describe what THIS run's
+      // walk actually evaluated, and the walk stopped here.
+      artists.push(original);
+      continue;
+    }
+
     const hasGenres = Array.isArray(original.genres) && original.genres.length > 0;
     if (!hasGenres) stats.eligible += 1;
 
@@ -897,7 +932,40 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit,
     if (!hasGenres && (limit == null || stats.attempted < limit)) {
       stats.attempted += 1;
       const artist = { ...original };
-      const filledGenre = await tryFillOne(artist, searchArtist, rosterGenreByLower, stats, log, { discography, discographyDeps });
+      let filledGenre;
+      try {
+        filledGenre = await tryFillOne(artist, searchArtist, rosterGenreByLower, stats, log, { discography, discographyDeps });
+      } catch (err) {
+        // Anything other than a quota abort keeps today's behaviour exactly:
+        // propagate with its full stack. main() rethrows it too — an
+        // unexpected error is a real bug, not something to swallow.
+        if (!(err instanceof SpotifyQuotaExhaustedError)) throw err;
+
+        // Quota ran out mid-lookup for THIS artist. resolveByDiscography
+        // (called from tryFillOne, not from inside tryFillOne's own
+        // searchArtist try/catch — see tryFillOne below) threw before
+        // producing any verdict, so nothing was pushed to log.filled or
+        // log.skipped for it, and it must stay that way: a never-attempted
+        // artist logged under a PERMANENT_SKIP_REASONS reason would be
+        // silently excluded from every future run (see
+        // PERMANENT_SKIP_REASONS's doc comment). Roll back the `attempted`
+        // bump just above too — this artist produced no fill and no skip, so
+        // counting it as attempted would make the summary imply a verdict
+        // that doesn't exist (stats.attempted should always equal
+        // stats.filled + the sum of this run's stats.skipped.* reasons).
+        // Push the UNTOUCHED `original` (never the `{ ...original }` copy —
+        // its genres were never actually resolved), stop attempting further
+        // artists, and let the loop keep walking so every remaining roster
+        // artist still lands in `artists` exactly once (see the `aborted`
+        // branch above) — that's what keeps the artistsLost guard in main()
+        // happy and lets the fills already completed above actually get
+        // written instead of dying with the rest of the chunk.
+        stats.attempted -= 1;
+        aborted = true;
+        abortReason = err.message;
+        artists.push(original);
+        continue;
+      }
       await delay(delayMs);
       if (filledGenre) { artist.genres = [filledGenre]; stats.filled += 1; }
       artists.push(artist);
@@ -965,7 +1033,7 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit,
     }
   }
 
-  return { artists, stats, log };
+  return { artists, stats, log, aborted, abortReason };
 }
 
 async function tryFillOne(artist, searchArtist, rosterGenreByLower, stats, log, { discography = false, discographyDeps = null } = {}) {
@@ -1662,26 +1730,16 @@ async function main() {
     else if (event.type === 'rate') console.log(formatRateLine(event));
   };
 
-  let result;
-  try {
-    result = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit, existingLog, retrySkipped, retryReasons, discography, discographyDeps, onlyUnreachable, onProgress });
-  } catch (err) {
-    // SpotifyQuotaExhaustedError (see makeSpotifyFetcher) is the one error
-    // this run should abort cleanly for rather than crash on: a clean
-    // message + exit(1) is what "fail fast and say why" (see the 2026-08-22
-    // incident this whole thing exists to prevent) actually looks like to
-    // an operator, versus a raw unhandled-rejection stack trace. Nothing was
-    // written yet either way — this script writes only at the very end —
-    // so aborting here loses no work. Anything else keeps today's
-    // behaviour: an unexpected error is a real bug and should surface with
-    // its full stack trace, not be swallowed into a clean one-liner.
-    if (err instanceof SpotifyQuotaExhaustedError) {
-      console.error(`Aborting: ${err.message}`);
-      process.exit(1);
-    }
-    throw err;
-  }
-  const { artists, stats, log } = result;
+  // No try/catch around this call: backfillGenres itself now catches
+  // SpotifyQuotaExhaustedError internally and reports it back as
+  // `aborted`/`abortReason` on its normal return value (see that function's
+  // doc comment) precisely so a quota abort no longer has to throw away the
+  // whole chunk's completed fills — see the write-then-exit handling below.
+  // Any OTHER error still propagates out of here uncaught, with its full
+  // stack trace, and nothing gets written — an unexpected error is a real
+  // bug, not something to swallow into a clean one-liner.
+  const result = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit, existingLog, retrySkipped, retryReasons, discography, discographyDeps, onlyUnreachable, onProgress });
+  const { artists, stats, log, aborted, abortReason } = result;
 
   const after = { artists: artists.length, emails: uniqueEmailCount(artists) };
   const artistsLost = before.artists - after.artists;
@@ -1711,6 +1769,32 @@ async function main() {
   }
   console.log(`artists lost: ${artistsLost} / emails lost: ${emailsLost}`);
 
+  if (aborted) {
+    // Deliberately loud and repeated (again at the very end, right before
+    // exit — see below) rather than one line buried in the middle of the
+    // summary: this is the one thing a human skimming the TAIL of a piped
+    // --write log must not be able to miss, because missing it is exactly
+    // how the 2026-08-22/2026-08-25 incidents happened — a truncated run
+    // that looked, at a glance, like it had simply finished.
+    console.log('');
+    console.log('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
+    console.log('!! RUN ABORTED PARTWAY THROUGH — Spotify quota was exhausted before every    !!');
+    console.log('!! candidate in this chunk was attempted. The un-attempted artists remain    !!');
+    console.log('!! eligible — re-run this same command tomorrow to pick up where this chunk  !!');
+    console.log('!! left off.                                                                 !!');
+    // Says which it is rather than always promising a write: a dry run that
+    // gets far enough to burn the quota aborts here too, and telling an
+    // operator their partial chunk was saved when --write wasn't passed is
+    // the same class of mistake (believing a run did something it didn't)
+    // that this banner exists to prevent.
+    console.log(write
+      ? '!! The fills/skips completed above ARE being written below.                   !!'
+      : '!! Dry run — the fills/skips completed above are NOT being written.            !!');
+    console.log(`!! Reason: ${abortReason}`);
+    console.log('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
+    console.log('');
+  }
+
   if (artistsLost !== 0 || emailsLost !== 0) {
     // Structurally this should be unreachable — backfillGenres only ever sets
     // `genres` on a copy of an existing artist record — but asserted anyway,
@@ -1735,6 +1819,12 @@ async function main() {
     const runMeta = {
       generatedAt: new Date().toISOString(),
       source: 'itunes',
+      // Honest partial-run marker (requirement: the log must not look like
+      // any other completed run). `abortReason` is only present when
+      // `aborted` is true, so a reader scanning `runs` doesn't have to treat
+      // `abortReason: null` on every normal run as meaningful.
+      aborted,
+      ...(aborted ? { abortReason } : {}),
       stats: {
         totalArtists: stats.totalArtists,
         eligible: stats.eligible,
@@ -1755,6 +1845,15 @@ async function main() {
 
   if (!write) {
     console.log(`Dry run complete — no roster file written. Re-run with --write to save these changes to ${outPath}.`);
+    // Exit code must stay non-zero on an aborted run even in dry-run mode —
+    // a truncated run is not a successful run, full stop — but only AFTER
+    // the log write above (dry run + --log) has already happened; nothing
+    // else is written here (the roster file never is, on a dry run,
+    // aborted or not).
+    if (aborted) {
+      console.error(`Aborting: ${abortReason}`);
+      process.exit(1);
+    }
     return;
   }
 
@@ -1763,6 +1862,16 @@ async function main() {
   const output = { ...roster, artists, genres: Array.from(genreSet).sort() };
   writeFileSync(outPath, JSON.stringify(output, null, 2));
   console.log(`Wrote ${outPath}`);
+
+  // Both writes (log above, roster here) are done — a partial run's
+  // completed work is saved. Only NOW report the abort and exit non-zero:
+  // this is what turns "died mid-run and lost two days of work" into "ran
+  // out of quota, saved everything it had, and told the operator to re-run
+  // tomorrow."
+  if (aborted) {
+    console.error(`Aborting: ${abortReason}`);
+    process.exit(1);
+  }
 }
 
 const isMainModule = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];

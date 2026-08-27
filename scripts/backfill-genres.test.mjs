@@ -1431,3 +1431,204 @@ describe('loadExistingProvenanceLog', () => {
     expect(() => loadExistingProvenanceLog(logPath)).toThrow(/expected shape/);
   });
 });
+
+// Regression coverage for the 2026-08-22/2026-08-25 incidents: a
+// SpotifyQuotaExhaustedError mid-chunk used to propagate all the way out of
+// backfillGenres and get caught in main(), which printed "Aborting:" and
+// exited WITHOUT writing anything — discarding every fill the run had
+// already completed (19 artists, then 56). backfillGenres now catches that
+// one error itself, stops its own walk, and returns its ordinary
+// { artists, stats, log } shape (plus aborted/abortReason) so main() takes
+// its normal write path instead of a lost chunk. See resolveByDiscography's
+// mock at the top of this file — it's how these tests fire a fake abort at
+// a chosen artist without any real Spotify call.
+describe('backfillGenres — Spotify quota abort mid-run', () => {
+  // Four genre-less artists in roster order, each with a distinct manager
+  // email so uniqueEmailCount actually varies if anything goes wrong:
+  // - Filled First: fills cleanly via a unique iTunes match, no discography
+  //   call at all — this is the fill that must survive the abort.
+  // - Aborts Here: an ambiguousName tie that engages --discography; the
+  //   mocked resolveByDiscography is the one that throws.
+  // - Never Reached A/B: later in roster order, never attempted once the
+  //   abort fires.
+  function makeAbortRoster() {
+    return [
+      artist({ name: 'Filled First', rostrUrl: 'https://www.rostr.cc/profile/filled-first', managerEmails: ['a@example.com'] }),
+      artist({ name: 'Aborts Here', rostrUrl: 'https://www.rostr.cc/profile/aborts-here', managerEmails: ['b@example.com'] }),
+      artist({ name: 'Never Reached A', rostrUrl: 'https://www.rostr.cc/profile/never-reached-a', managerEmails: ['c@example.com'] }),
+      artist({ name: 'Never Reached B', rostrUrl: 'https://www.rostr.cc/profile/never-reached-b', managerEmails: ['d@example.com'] }),
+    ];
+  }
+
+  function makeAbortSearchArtist() {
+    return vi.fn(async name => {
+      if (name === 'Aborts Here') {
+        // A genuine ambiguousName tie — this is what makes tryFillOne call
+        // resolveByDiscography at all.
+        return {
+          results: [
+            itunesArtist({ name, artistId: 1, genre: 'Pop' }),
+            itunesArtist({ name, artistId: 2, genre: 'Rock' }),
+          ],
+        };
+      }
+      // Filled First, and (if ever called) Never Reached A/B — all fill
+      // cleanly on a unique match.
+      return { results: [itunesArtist({ name, artistId: 1, genre: 'Pop' })] };
+    });
+  }
+
+  function makeAbortDiscographyDeps() {
+    return { spotifySearchArtist: vi.fn(), spotifyArtistAlbums: vi.fn(), itunesLookupAlbums: vi.fn() };
+  }
+
+  it('returns the fills completed before the abort instead of discarding the whole chunk', async () => {
+    const [filledFirst, abortsHere, neverReachedA, neverReachedB] = makeAbortRoster();
+    const searchArtist = makeAbortSearchArtist();
+    const discographyDeps = makeAbortDiscographyDeps();
+    resolveByDiscography.mockRejectedValueOnce(new SpotifyQuotaExhaustedError('3 consecutive 429s from Spotify — aborting'));
+
+    const { artists, stats, log, aborted, abortReason } = await backfillGenres(
+      { artists: [filledFirst, abortsHere, neverReachedA, neverReachedB], genres: ROSTER_GENRES },
+      { searchArtist, discography: true, discographyDeps }
+    );
+
+    expect(aborted).toBe(true);
+    expect(abortReason).toMatch(/429/);
+
+    // The fill completed BEFORE the abort survived — this is exactly the
+    // regression that would have saved the 56 lost artists.
+    expect(artists[0].genres).toEqual(['Pop']);
+    expect(stats.filled).toBe(1);
+    expect(log.filled).toHaveLength(1);
+    expect(log.filled[0].rostrUrl).toBe(filledFirst.rostrUrl);
+
+    // The aborting artist and everything after it come back as the exact
+    // SAME (untouched) object references that went in — never a
+    // `{ ...original }` copy, since their genres were never actually
+    // resolved.
+    expect(artists[1]).toBe(abortsHere);
+    expect(artists[2]).toBe(neverReachedA);
+    expect(artists[3]).toBe(neverReachedB);
+    expect(artists[1].genres).toEqual([]);
+
+    // stats.attempted only counts artists that got an actual verdict — the
+    // aborting artist's earlier bump is rolled back, so it must NOT be
+    // counted as attempted alongside zero fills/skips to show for it.
+    expect(stats.attempted).toBe(1);
+    expect(stats.filled + Object.values(stats.skipped).reduce((a, b) => a + b, 0)).toBe(stats.attempted);
+
+    // Never-reached artists produced no searchArtist call at all.
+    expect(searchArtist).toHaveBeenCalledTimes(2); // Filled First, then Aborts Here
+    expect(searchArtist).not.toHaveBeenCalledWith('Never Reached A');
+    expect(searchArtist).not.toHaveBeenCalledWith('Never Reached B');
+  });
+
+  it('does not log the aborting artist or any un-attempted artist as skipped, and all three remain eligible on a later run', async () => {
+    const [filledFirst, abortsHere, neverReachedA, neverReachedB] = makeAbortRoster();
+    const searchArtist = makeAbortSearchArtist();
+    const discographyDeps = makeAbortDiscographyDeps();
+    resolveByDiscography.mockRejectedValueOnce(new SpotifyQuotaExhaustedError('quota exhausted'));
+
+    const firstRun = await backfillGenres(
+      { artists: [filledFirst, abortsHere, neverReachedA, neverReachedB], genres: ROSTER_GENRES },
+      { searchArtist, discography: true, discographyDeps }
+    );
+
+    // Nothing at all was logged for the aborting artist or either
+    // never-reached artist — not under any PERMANENT_SKIP_REASONS reason,
+    // not under any reason.
+    expect(firstRun.log.skipped).toHaveLength(0);
+    expect(firstRun.log.skipped.find(e => e.rostrUrl === abortsHere.rostrUrl)).toBeUndefined();
+    expect(firstRun.log.skipped.find(e => e.rostrUrl === neverReachedA.rostrUrl)).toBeUndefined();
+    expect(firstRun.log.skipped.find(e => e.rostrUrl === neverReachedB.rostrUrl)).toBeUndefined();
+
+    // Style-matched with "backfillGenres — resuming from an existing
+    // provenance log" above: feed this run's log back in as existingLog and
+    // confirm none of the three get excluded from a resumed run — a
+    // permanent-skip exclusion would have silently dropped them forever.
+    const existingLog = {
+      source: 'itunes',
+      runs: [{
+        generatedAt: 'run-1', source: 'itunes',
+        aborted: firstRun.aborted, abortReason: firstRun.abortReason,
+        stats: firstRun.stats, unmappedGenres: {},
+      }],
+      filled: firstRun.log.filled,
+      skipped: firstRun.log.skipped,
+    };
+
+    const resumeSearchArtist = vi.fn(async name => ({ results: [itunesArtist({ name, artistId: 9, genre: 'Pop' })] }));
+    const { stats: resumeStats } = await backfillGenres(
+      // Re-run against fresh genre-less copies — mirrors how main() would
+      // reload the (still-genre-less, for these three) roster.json on the
+      // next chunk.
+      { artists: makeAbortRoster(), genres: ROSTER_GENRES },
+      { searchArtist: resumeSearchArtist, existingLog }
+    );
+
+    expect(resumeStats.alreadySkipped).toBe(0);
+    expect(resumeSearchArtist).toHaveBeenCalledWith('Aborts Here');
+    expect(resumeSearchArtist).toHaveBeenCalledWith('Never Reached A');
+    expect(resumeSearchArtist).toHaveBeenCalledWith('Never Reached B');
+  });
+
+  it('keeps the artist count and unique-email count identical across an aborted run — the artistsLost/emailsLost guard in main() must never trip', async () => {
+    const roster = { artists: makeAbortRoster(), genres: ROSTER_GENRES };
+    const before = { artists: roster.artists.length, emails: uniqueEmailCount(roster.artists) };
+    const searchArtist = makeAbortSearchArtist();
+    const discographyDeps = makeAbortDiscographyDeps();
+    resolveByDiscography.mockRejectedValueOnce(new SpotifyQuotaExhaustedError('quota exhausted'));
+
+    const { artists, aborted } = await backfillGenres(roster, { searchArtist, discography: true, discographyDeps });
+
+    expect(aborted).toBe(true);
+    expect(artists.length).toBe(before.artists);
+    expect(uniqueEmailCount(artists)).toBe(before.emails);
+  });
+
+  it('lets a non-quota error propagate out of backfillGenres uncaught, exactly as before', async () => {
+    const [filledFirst, abortsHere, neverReachedA, neverReachedB] = makeAbortRoster();
+    const searchArtist = makeAbortSearchArtist();
+    const discographyDeps = makeAbortDiscographyDeps();
+    const boom = new Error('discography-match.mjs: unexpected Spotify 500');
+    resolveByDiscography.mockRejectedValueOnce(boom);
+
+    // A rejected promise is what "writes nothing" reduces to here: main()
+    // only reaches its roster/log writeFileSync calls after
+    // `await backfillGenres(...)` resolves (see main()'s call site) — a
+    // thrown, non-SpotifyQuotaExhaustedError here never lets that happen,
+    // exactly like today's behaviour for any other unexpected error.
+    await expect(
+      backfillGenres(
+        { artists: [filledFirst, abortsHere, neverReachedA, neverReachedB], genres: ROSTER_GENRES },
+        { searchArtist, discography: true, discographyDeps }
+      )
+    ).rejects.toBe(boom);
+  });
+
+  it('resolves (never throws) with the ordinary result shape on an abort — the same shape main()\'s existing dry-run gate already handles for every non-aborted call', async () => {
+    const [filledFirst, abortsHere, neverReachedA, neverReachedB] = makeAbortRoster();
+    const searchArtist = makeAbortSearchArtist();
+    const discographyDeps = makeAbortDiscographyDeps();
+    resolveByDiscography.mockRejectedValueOnce(new SpotifyQuotaExhaustedError('quota exhausted'));
+
+    // backfillGenres has no --write / dry-run concept of its own — that flag
+    // lives entirely in main(), which gates the roster writeFileSync behind
+    // `if (!write) { ...; return; }` BEFORE ever reaching it, independent of
+    // `aborted`. There is no second, aborted-only return path here that
+    // could slip past that gate: an aborted call resolves with the exact
+    // same { artists, stats, log, aborted, abortReason } shape as any other
+    // call, so a dry run (--write omitted) still writes nothing, aborted or
+    // not.
+    const result = await backfillGenres(
+      { artists: [filledFirst, abortsHere, neverReachedA, neverReachedB], genres: ROSTER_GENRES },
+      { searchArtist, discography: true, discographyDeps }
+    );
+
+    expect(result.aborted).toBe(true);
+    expect(result).toHaveProperty('artists');
+    expect(result).toHaveProperty('stats');
+    expect(result).toHaveProperty('log');
+  });
+});
