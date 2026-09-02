@@ -9,7 +9,12 @@ const FIXTURE_ARTISTS: Artist[] = [
     managerNames: ['Alex'], managerEmails: ['alex@example.com'], instagramHandle: '', avatarUrl: '',
   },
   {
-    name: 'Rock Band', rostrUrl: '', genres: ['Rock', 'Pop'], type: 'Group', gender: '',
+    // 'Rock ' (trailing space) is a deliberate data slip, mirroring the class
+    // of bug normalizeGenre exists to harden against — this genre must still
+    // be findable by a clean 'Rock' query (see the getArtistsByGenres
+    // whitespace-hardening tests below), and must not create a second bucket
+    // in the genre index or in getTopGenres.
+    name: 'Rock Band', rostrUrl: '', genres: ['Rock ', 'Pop'], type: 'Group', gender: '',
     spotifyFollowers: 100000, instagramFollowers: 50000, youtubeSubscribers: 0,
     managementCompany: 'Big Agency', agencies: '', labels: '', publishers: '',
     managerNames: ['Jamie'], managerEmails: ['jamie@example.com'], instagramHandle: '', avatarUrl: '',
@@ -102,6 +107,20 @@ const FIXTURE_ARTISTS: Artist[] = [
     managementCompany: 'Big Multi Co', agencies: '', labels: '', publishers: '',
     managerNames: ['Robin6'], managerEmails: ['bigsibling2@example.com'], instagramHandle: '', avatarUrl: '',
   },
+  {
+    // Tagged 'Pop ' (trailing space) — a data slip, like 'Rock Band' above —
+    // and, like 'No Manager Artist', has no manager emails at all. That keeps
+    // it invisible to every getArtistsByGenres assertion in this file (they
+    // all filter on managerEmails.length), while still being counted by
+    // getTopGenres (which doesn't filter by manager email) — see the
+    // getTopGenres merge test below. managementCompany is deliberately blank
+    // (like 'No Company Artist') so it can't perturb any buildCompanySizeIndex
+    // / getEmailTiers company-size count above.
+    name: 'Whitespace Genre Slip Artist', rostrUrl: '', genres: ['Pop '], type: 'Solo', gender: '',
+    spotifyFollowers: 0, instagramFollowers: 0, youtubeSubscribers: 0,
+    managementCompany: '', agencies: '', labels: '', publishers: '',
+    managerNames: [], managerEmails: [], instagramHandle: '', avatarUrl: '',
+  },
 ];
 
 vi.mock('fs', () => {
@@ -122,6 +141,9 @@ describe('getArtistsByGenres', () => {
   });
 
   it('matches "any" mode when an artist has at least one selected genre', () => {
+    // Doubles as index-side whitespace coverage: 'Rock Band' is tagged 'Rock '
+    // (trailing space, see the fixture), so a clean 'Rock' query only matches
+    // because buildGenreIndex keys it through normalizeGenre.
     const result = getArtistsByGenres({ genres: ['Rock'] });
     expect(result.map(a => a.name)).toEqual(['Rock Band']);
   });
@@ -186,6 +208,14 @@ describe('getArtistsByGenres', () => {
     expect(getArtistsByGenres({ genres: ['Pop', 'Jazz'], matchMode: 'all' })).toEqual([]);
   });
 
+  it('matches an artist tagged with a clean genre when the query string itself has stray whitespace', () => {
+    // normalizeGenre on the query side (' Pop ' -> 'pop') must match the
+    // clean 'Pop' key the index was built with.
+    expect(getArtistsByGenres({ genres: [' Pop '] }).map(a => a.name)).toEqual(
+      ['Solo Pop Artist', 'Rock Band', 'Freemail Managed Artist', 'No Company Artist']
+    );
+  });
+
   describe('reachability filters (management company size / freemail domain)', () => {
     it('maxCompanySize keeps only artists whose company represents at most N roster artists', () => {
       // "Big Agency" has 3 artists in the fixture (2 with emails); "Small Co"/
@@ -228,10 +258,18 @@ describe('getArtistsByGenres', () => {
 });
 
 describe('getTopGenres', () => {
-  it('orders genres by frequency, ties broken alphabetically', () => {
-    // Pop: 5 artists tagged (getTopGenres doesn't filter by manager email, unlike
-    // getArtistsByGenres — so this includes 'No Manager Artist' too). Rock and
-    // Indie: 1 artist each — tie broken alphabetically.
+  it('orders genres by frequency, ties broken alphabetically, merging whitespace variants', () => {
+    // Pop: 6 artists tagged (getTopGenres doesn't filter by manager email, unlike
+    // getArtistsByGenres — so this includes 'No Manager Artist' and
+    // 'Whitespace Genre Slip Artist' too). Rock and Indie: 1 artist each — tie
+    // broken alphabetically.
+    //
+    // This one assertion also pins the normalizeGenre merge, because two fixture
+    // artists carry trailing-space slips ('Rock Band' -> 'Rock ',
+    // 'Whitespace Genre Slip Artist' -> 'Pop '). Unmerged, those would be their
+    // own count-1 buckets and the result would be FOUR entries in a different
+    // order ('Indie' < 'Pop ' < 'Rock '). Merged, it is three — and the labels
+    // stay display-cased ('Pop', not 'pop' or 'Pop ').
     expect(getTopGenres()).toEqual(['Pop', 'Indie', 'Rock']);
   });
 });

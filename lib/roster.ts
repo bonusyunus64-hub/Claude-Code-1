@@ -51,12 +51,20 @@ interface IndexedRoster extends RosterData {
   resolvedGeneratedAt: string;
 }
 
-/** Same trim+lowercase normalisation used for the genre index, applied to
+/** Same trim+lowercase normalisation as normalizeGenre, applied to
  *  managementCompany so "Red Light Management" and "red light management " (a
  *  trailing-space data slip) count as the same company instead of splitting
  *  into two buckets that each look small enough to pass a "<=N artists" filter. */
 function normalizeCompany(company: string): string {
   return company.trim().toLowerCase();
+}
+
+/** Trim+lowercase normalisation for genre strings, used both when building
+ *  genreIndex (buildGenreIndex) and when querying it (getArtistsByGenres) —
+ *  so a stray leading/trailing space in a roster genre (e.g. "Pop ") doesn't
+ *  index it under a key no normal query can ever match. */
+function normalizeGenre(genre: string): string {
+  return genre.trim().toLowerCase();
 }
 
 /**
@@ -104,7 +112,7 @@ function buildGenreIndex(artists: Artist[]): Map<string, number[]> {
   const index = new Map<string, number[]>();
   artists.forEach((artist, i) => {
     artist.genres.forEach(genre => {
-      const key = genre.toLowerCase();
+      const key = normalizeGenre(genre);
       const indices = index.get(key);
       if (indices) indices.push(i); else index.set(key, [i]);
     });
@@ -235,12 +243,24 @@ export function getRosterGeneratedAt(): string {
 
 export function getTopGenres(limit = 20): string[] {
   const { artists } = getRoster();
-  const counts = new Map<string, number>();
-  artists.forEach(a => a.genres.forEach(g => counts.set(g, (counts.get(g) ?? 0) + 1)));
-  return Array.from(counts.entries())
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  // Keyed by normalizeGenre(g) so "Pop" and "Pop " (a trailing-space data
+  // slip) count into one bucket instead of splitting into two that could
+  // each fall out of the top-N on their own. The display value is the
+  // trimmed raw (not lowercased) form of whichever spelling was seen first —
+  // unambiguous today, since data/roster.json has 636 distinct genre strings
+  // and zero trim+lowercase collisions (measured 2026-09-02) — so the returned
+  // strings stay title-cased like "Pop", not "pop".
+  const counts = new Map<string, { display: string; count: number }>();
+  artists.forEach(a => a.genres.forEach(g => {
+    const key = normalizeGenre(g);
+    const existing = counts.get(key);
+    if (existing) existing.count += 1;
+    else counts.set(key, { display: g.trim(), count: 1 });
+  }));
+  return Array.from(counts.values())
+    .sort((a, b) => b.count - a.count || a.display.localeCompare(b.display))
     .slice(0, limit)
-    .map(([genre]) => genre);
+    .map(({ display }) => display);
 }
 
 /** Candidate artist indices for the selected genres, in ascending (original roster) order. */
@@ -305,7 +325,7 @@ export function getArtistsByGenres(options: ArtistFilterOptions = {}): Artist[] 
   // app/api/preview/route.ts) requires its own explicit opt-in before it will
   // actually pass an empty array through, rather than defaulting to it.
   const indices = genres.length
-    ? candidateIndices(genreIndex, genres.map(g => g.toLowerCase()), matchMode)
+    ? candidateIndices(genreIndex, genres.map(normalizeGenre), matchMode)
     : artists.map((_, i) => i);
 
   const result: Artist[] = [];
