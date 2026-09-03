@@ -193,6 +193,18 @@
 //   "SPOTIFY CALL VOLUME" comment). None of this changes behaviour when
 //   --discography is absent.
 //
+//   SAFETY, extended 2026-09-03 after run 12 lost 19 completed fills to one
+//   unretried Spotify 502 (see fetchSpotify's doc comment and
+//   backfillGenres's doc comment for the two-part fix): a transient
+//   500/502/503/504/408 from Spotify OR iTunes is now retried on the same
+//   bounded backoff as a dropped connection (SPOTIFY_RETRYABLE_STATUSES /
+//   ITUNES_RETRYABLE_STATUSES), and — the actual safety net, for whenever
+//   retries still aren't enough — backfillGenres's walk loop now saves every
+//   fill completed so far and aborts cleanly on ANY unexpected error, not
+//   only a SpotifyQuotaExhaustedError. main() still prints that error's full
+//   stack trace and still exits 1; it just no longer throws away completed
+//   work on the way there.
+//
 //   --retry-skipped disables the provenance-log skip exclusion described
 //   above, so every genre-less artist is a candidate again regardless of
 //   what an earlier chunk logged for it. Use it deliberately (e.g. after
@@ -775,21 +787,41 @@ export function selectSoleRouteArtists(artists) {
  * accurately. When false (the default), `soleRoute` stays null and every
  * genre-less artist remains a candidate exactly as before this flag existed.
  *
- * Returns `{ artists, stats, log, aborted, abortReason }`. `aborted` is true
- * only when a SpotifyQuotaExhaustedError (thrown by resolveByDiscography via
- * makeSpotifyFetcher — see that class's doc comment) interrupted the walk
- * partway through; `abortReason` is then that error's message, otherwise
- * null. This function deliberately never lets that error propagate: doing so
- * used to mean the caller's entire chunk of completed fills died with the
- * stack (the 2026-08-22/2026-08-25 incidents this exists to stop), because
- * this script only ever writes at the very end of a run. On an abort, every
- * artist the loop reached before the quota ran out keeps its verdict; the
- * artist that triggered the abort and every artist the loop never reached
- * are pushed through as their untouched original object — never logged as
- * skipped, never counted as attempted — so they stay fully eligible for the
- * very next run, and `artists`/`stats`/`log` are otherwise the exact normal
- * shape a caller (main() below) already knows how to summarise and write.
- * Any OTHER error keeps propagating out of this function exactly as before.
+ * Returns `{ artists, stats, log, aborted, abortReason, abortKind,
+ * abortError }`. `aborted` is true whenever the walk stopped partway through
+ * instead of reaching the end of the roster — either because
+ * resolveByDiscography (via makeSpotifyFetcher) threw a
+ * SpotifyQuotaExhaustedError, OR because ANY other error escaped a single
+ * artist's tryFillOne call. `abortReason` is then that error's message,
+ * otherwise null. `abortKind` says which flavour it was — `'quota'` or
+ * `'unexpected'` — and `abortError` is the raw Error object, stack and all,
+ * but ONLY for `'unexpected'` (null for `'quota'` and for every normal run);
+ * see the catch block below for why the string and the object are kept
+ * separate. This function deliberately never lets EITHER kind of error
+ * propagate: doing so used to mean the caller's entire chunk of completed
+ * fills died with the stack (the 2026-08-22/2026-08-25 incidents that first
+ * motivated this, and — for the "any other error" half — the 2026-09-03
+ * incident, where a single unretried Spotify 502 on artist 20 discarded 19
+ * already-completed fills), because this script only ever writes at the
+ * very end of a run. Widening this from "quota only" to "any error" is a
+ * deliberate reversal of what used to be this function's one hard
+ * exception (see the catch block below for the full reasoning) — a
+ * transient 502 that survives fetchSpotify's retries is not meaningfully
+ * different from a quota exhaustion as far as "should 19 good fills be
+ * thrown away over it" is concerned, even though the two still deserve
+ * different operator-facing messages, which is exactly what `abortKind`
+ * is for. On an abort (either kind), every artist the loop reached before
+ * it fired keeps its verdict; the artist that triggered the abort and every
+ * artist the loop never reached are pushed through as their untouched
+ * original object — never logged as skipped, never counted as attempted —
+ * so they stay fully eligible for the very next run, and
+ * `artists`/`stats`/`log` are otherwise the exact normal shape a caller
+ * (main() below) already knows how to summarise and write. There is no
+ * longer any error this function lets propagate out of the per-artist walk
+ * — see the catch block below for the one narrow caveat (an error thrown
+ * OUTSIDE that per-artist try, e.g. while computing soleRoute up front,
+ * still propagates exactly as it always did; this only ever covered the
+ * walk itself).
  */
 export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit, existingLog = null, retrySkipped = false, retryReasons = null, discography = false, discographyDeps = null, onlyUnreachable = false, onProgress = null } = {}) {
   const rosterGenreByLower = new Map((roster.genres || []).map(g => [g.toLowerCase(), g]));
@@ -874,14 +906,30 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit,
 
   const log = { filled: [], skipped: [] };
 
-  // Set the moment a SpotifyQuotaExhaustedError is caught below. Once true,
-  // every remaining roster artist (including the one that triggered the
-  // abort) is pushed through untouched — see the try/catch inside the
-  // --limit branch below for why, and the module's top-level doc comment /
-  // the 2026-08-22 and 2026-08-25 incidents this whole mechanism exists to
-  // stop from recurring.
+  // Set the moment the walk hits an error it can't get past for one artist
+  // — a SpotifyQuotaExhaustedError, or (since 2026-09-03) any other
+  // unexpected error. Once true, every remaining roster artist (including
+  // the one that triggered the abort) is pushed through untouched — see the
+  // try/catch inside the --limit branch below for why, and the module's
+  // top-level doc comment / the 2026-08-22, 2026-08-25 and 2026-09-03
+  // incidents this whole mechanism exists to stop from recurring.
   let aborted = false;
   let abortReason = null;
+  // 'quota' | 'unexpected' | null (never attempted an abort). Lets main()
+  // print an operator-facing banner that matches what actually happened —
+  // "come back once the quota window resets" is the wrong instruction for a
+  // bug, and "read the stack trace" is unhelpful noise for an ordinary quota
+  // wall — even though the save-what-we-have mechanics below are identical
+  // either way. See the catch block below.
+  let abortKind = null;
+  // The raw Error object, ONLY for an 'unexpected' abort — never for
+  // 'quota' (SpotifyQuotaExhaustedError's message IS the whole story; see
+  // its doc comment) and never serialised into the JSON provenance log
+  // (abortReason, a plain string, is what that log carries). Exists purely
+  // so main() can print the full stack trace of a real bug instead of
+  // reducing it to abortReason's one-line message — see main()'s abort
+  // banner for why that reduction is exactly what must NOT happen here.
+  let abortError = null;
 
   const artists = [];
   for (const original of roster.artists) {
@@ -936,33 +984,59 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit,
       try {
         filledGenre = await tryFillOne(artist, searchArtist, rosterGenreByLower, stats, log, { discography, discographyDeps });
       } catch (err) {
-        // Anything other than a quota abort keeps today's behaviour exactly:
-        // propagate with its full stack. main() rethrows it too — an
-        // unexpected error is a real bug, not something to swallow.
-        if (!(err instanceof SpotifyQuotaExhaustedError)) throw err;
-
-        // Quota ran out mid-lookup for THIS artist. resolveByDiscography
-        // (called from tryFillOne, not from inside tryFillOne's own
-        // searchArtist try/catch — see tryFillOne below) threw before
-        // producing any verdict, so nothing was pushed to log.filled or
-        // log.skipped for it, and it must stay that way: a never-attempted
-        // artist logged under a PERMANENT_SKIP_REASONS reason would be
-        // silently excluded from every future run (see
-        // PERMANENT_SKIP_REASONS's doc comment). Roll back the `attempted`
-        // bump just above too — this artist produced no fill and no skip, so
-        // counting it as attempted would make the summary imply a verdict
-        // that doesn't exist (stats.attempted should always equal
-        // stats.filled + the sum of this run's stats.skipped.* reasons).
-        // Push the UNTOUCHED `original` (never the `{ ...original }` copy —
-        // its genres were never actually resolved), stop attempting further
-        // artists, and let the loop keep walking so every remaining roster
-        // artist still lands in `artists` exactly once (see the `aborted`
-        // branch above) — that's what keeps the artistsLost guard in main()
-        // happy and lets the fills already completed above actually get
-        // written instead of dying with the rest of the chunk.
+        // EVERY error mid-lookup for THIS artist takes this branch now, not
+        // just a quota abort. Until 2026-09-03 that was a hard line: a
+        // SpotifyQuotaExhaustedError meant "save what we have," anything
+        // else meant "rethrow with its stack, this is a bug, don't paper
+        // over it." That line turned out to be drawn in the wrong place —
+        // it survived a real run losing 19 completed fills to one unretried
+        // Spotify 502 on artist 20, an outcome no more acceptable than the
+        // quota-exhaustion case this mechanism already existed to prevent.
+        // fetchSpotify now retries 502/503/504/500/408 itself (see
+        // SPOTIFY_RETRYABLE_STATUSES above), which fixes the common case,
+        // but retries are bounded and can still be exhausted, and there are
+        // other ways a bug or a transient failure can surface here besides
+        // an HTTP status — so this catch is the actual backstop, and it now
+        // treats "I can't get a verdict for this one artist" as reason
+        // enough to stop and save, no matter what threw. `abortKind`
+        // records which flavour happened — 'quota' vs 'unexpected' — purely
+        // so main() can tell an operator the right next step (wait for the
+        // quota window vs. go read a stack trace, because something is
+        // actually broken); the save-what-we-have mechanics below are
+        // identical either way.
+        //
+        // resolveByDiscography / fetchSpotify / fetchWithRetry (called from
+        // tryFillOne, not from inside tryFillOne's own searchArtist
+        // try/catch — see tryFillOne below) threw before producing any
+        // verdict, so nothing was pushed to log.filled or log.skipped for
+        // it, and it must stay that way: a never-attempted artist logged
+        // under a PERMANENT_SKIP_REASONS reason would be silently excluded
+        // from every future run (see PERMANENT_SKIP_REASONS's doc comment).
+        // Roll back the `attempted` bump just above too — this artist
+        // produced no fill and no skip, so counting it as attempted would
+        // make the summary imply a verdict that doesn't exist
+        // (stats.attempted should always equal stats.filled + the sum of
+        // this run's stats.skipped.* reasons). Push the UNTOUCHED `original`
+        // (never the `{ ...original }` copy — its genres were never
+        // actually resolved), stop attempting further artists, and let the
+        // loop keep walking so every remaining roster artist still lands in
+        // `artists` exactly once (see the `aborted` branch above) — that's
+        // what keeps the artistsLost guard in main() happy and lets the
+        // fills already completed above actually get written instead of
+        // dying with the rest of the chunk.
+        const isQuotaAbort = err instanceof SpotifyQuotaExhaustedError;
         stats.attempted -= 1;
         aborted = true;
+        abortKind = isQuotaAbort ? 'quota' : 'unexpected';
         abortReason = err.message;
+        // The full Error — stack and all — ONLY for the unexpected case.
+        // abortReason has to stay a plain string because it also has to
+        // survive into the JSON provenance log, which can't hold a stack
+        // trace usefully; abortError is the side channel that lets main()
+        // print the whole thing instead of reducing a real bug down to one
+        // line, which is exactly the failure mode this file's comments have
+        // always warned against (see main()'s abort banner).
+        if (!isQuotaAbort) abortError = err;
         artists.push(original);
         continue;
       }
@@ -1033,7 +1107,7 @@ export async function backfillGenres(roster, { searchArtist, delayMs = 0, limit,
     }
   }
 
-  return { artists, stats, log, aborted, abortReason };
+  return { artists, stats, log, aborted, abortReason, abortKind, abortError };
 }
 
 async function tryFillOne(artist, searchArtist, rosterGenreByLower, stats, log, { discography = false, discographyDeps = null } = {}) {
@@ -1211,16 +1285,28 @@ function backoffDelayMs(attempt) {
   return Math.min(exponential + jitter, ITUNES_MAX_BACKOFF_MS);
 }
 
+// Apple's own rate-limit signals (403/429) plus the generic transient-
+// upstream statuses (500/502/503/504/408) — added 2026-09-03 alongside the
+// identical addition to SPOTIFY_RETRYABLE_STATUSES above, once a real 502
+// against Spotify made it clear fetchWithRetry had exactly the same
+// unretried-5xx gap: a non-OK status other than 403/429 fell straight
+// through to the throw at the bottom of the loop below with no retry at
+// all, indistinguishable in kind from a dropped socket except that it
+// arrived as a status code instead of a rejected promise.
+const ITUNES_RETRYABLE_STATUSES = new Set([403, 429, 500, 502, 503, 504, 408]);
+
 /**
- * Fetches `url`, retrying with a bounded exponential backoff on 403/429
- * (Apple's rate-limit responses) and on transport-level failures (fetch
- * throwing — DNS hiccup, connection reset, or now a FETCH_TIMEOUT_MS
- * timeout, all indistinguishable to the caller and all typically transient
- * over a ~3,010-request run). Any other non-OK HTTP status is treated as
- * non-retryable and thrown immediately. If every retry is exhausted,
- * throws — the caller (searchArtistLive, and above it tryFillOne) is
- * responsible for turning that into a `lookupFailed` skip for just that one
- * artist rather than aborting the whole run.
+ * Fetches `url`, retrying with a bounded exponential backoff on
+ * ITUNES_RETRYABLE_STATUSES (403/429 — Apple's rate-limit responses — plus
+ * 500/502/503/504/408, transient upstream trouble in the same vein) and on
+ * transport-level failures (fetch throwing — DNS hiccup, connection reset,
+ * or now a FETCH_TIMEOUT_MS timeout, all indistinguishable to the caller and
+ * all typically transient over a ~3,010-request run). Any other non-OK HTTP
+ * status (400/404/etc — a deterministic problem with the request itself) is
+ * treated as non-retryable and thrown immediately. If every retry is
+ * exhausted, throws — the caller (searchArtistLive, and above it
+ * tryFillOne) is responsible for turning that into a `lookupFailed` skip for
+ * just that one artist rather than aborting the whole run.
  *
  * `fetchImpl` defaults to the real global `fetch` and is only ever
  * overridden by scripts/backfill-genres.test.mjs, which injects a fake to
@@ -1239,7 +1325,7 @@ async function fetchWithRetry(url, { fetchImpl = fetch } = {}) {
       throw lastErr;
     }
     if (res.ok) return res;
-    if ((res.status === 429 || res.status === 403) && attempt < ITUNES_MAX_RETRIES) {
+    if (ITUNES_RETRYABLE_STATUSES.has(res.status) && attempt < ITUNES_MAX_RETRIES) {
       await delay(backoffDelayMs(attempt));
       continue;
     }
@@ -1288,6 +1374,20 @@ export const SPOTIFY_API_BASE = 'https://api.spotify.com/v1';
 // above) — this is just polite spacing, not a measured rate limit.
 const SPOTIFY_CALL_SPACING_MS = 150;
 const SPOTIFY_MAX_RATE_LIMIT_RETRIES = 4;
+
+// Statuses that mean "transient upstream trouble, try again" rather than
+// "this request is wrong" — added 2026-09-03 after run 12 died on a single
+// unretried 502 and lost 19 completed fills (see the incident note on
+// SpotifyQuotaExhaustedError's neighbourhood and fetchSpotify's doc comment
+// below). 500/502/503/504 are Spotify's own edge/backend having a bad
+// moment, not a verdict about the request; 408 is a request-timeout, which
+// is functionally the same "the server didn't get back to us in time" as
+// the transport-level timeout branch above already retries. Deliberately
+// does NOT include any other 4xx: a 400/403/404 is deterministic (bad
+// query, bad token, no such endpoint) and retrying it on a timer just burns
+// SPOTIFY_MAX_RATE_LIMIT_RETRIES attempts' worth of quota chasing a result
+// that will never change.
+const SPOTIFY_RETRYABLE_STATUSES = new Set([500, 502, 503, 504, 408]);
 
 // THE 2026-08-22 INCIDENT THESE TWO CONSTANTS EXIST TO PREVENT: a real
 // --discography --write run hung for 5h12m with zero CPU and zero open
@@ -1386,7 +1486,17 @@ function requireSpotifyCredentials() {
  *          this is the fix for the actual 2026-08-22 incident.
  *       3. otherwise sleeps for the (bounded) Retry-After and retries, up
  *          to SPOTIFY_MAX_RATE_LIMIT_RETRIES times.
- *   - any other non-OK status is thrown immediately, unretried.
+ *   - a 500/502/503/504/408 (see SPOTIFY_RETRYABLE_STATUSES) is logged and
+ *     retried on the same bounded backoff as a transport failure, up to
+ *     SPOTIFY_MAX_RATE_LIMIT_RETRIES times — added 2026-09-03 after a single
+ *     unretried 502 on artist 20 of a run killed 19 already-completed fills
+ *     (see backfillGenres's doc comment for the other half of that fix, the
+ *     safety net that now also saves the fills even when retries here don't
+ *     suffice). Once exhausted, throws with the status still in the
+ *     message, same as any other unretried failure.
+ *   - any other non-OK status (400/401-after-refresh/403/404/etc — a
+ *     deterministic client-side or auth problem, not transient backpressure)
+ *     is thrown immediately, unretried.
  */
 export function makeSpotifyFetcher({ fetchImpl = fetch, clientId, clientSecret } = {}) {
   let tokenCache = null; // { token, expiresAt }
@@ -1464,6 +1574,19 @@ export function makeSpotifyFetcher({ fetchImpl = fetch, clientId, clientSecret }
           await delay(retryAfterSeconds * 1000);
           continue;
         }
+      }
+
+      if (SPOTIFY_RETRYABLE_STATUSES.has(res.status)) {
+        // Same bounded backoff the transport-failure catch block above uses
+        // — a 502 is "the server dropped this one," which is the same kind
+        // of transient failure as a dropped socket, just reported via an
+        // HTTP status instead of fetch() throwing. Logged unconditionally,
+        // the moment it's decided, same spirit as the 429 warn above: a
+        // human reading the run log afterwards must be able to see that a
+        // 502 happened and was absorbed, not have it be invisible because it
+        // eventually succeeded.
+        console.warn(`Spotify ${res.status} ${res.statusText} on ${path} (attempt ${attempt + 1}/${SPOTIFY_MAX_RATE_LIMIT_RETRIES + 1})`);
+        if (attempt < SPOTIFY_MAX_RATE_LIMIT_RETRIES) { await delay(backoffDelayMs(attempt)); continue; }
       }
 
       throw new Error(`Spotify request failed: ${res.status} ${res.statusText} (${path})`);
@@ -1730,16 +1853,26 @@ async function main() {
     else if (event.type === 'rate') console.log(formatRateLine(event));
   };
 
-  // No try/catch around this call: backfillGenres itself now catches
-  // SpotifyQuotaExhaustedError internally and reports it back as
-  // `aborted`/`abortReason` on its normal return value (see that function's
-  // doc comment) precisely so a quota abort no longer has to throw away the
-  // whole chunk's completed fills — see the write-then-exit handling below.
-  // Any OTHER error still propagates out of here uncaught, with its full
-  // stack trace, and nothing gets written — an unexpected error is a real
-  // bug, not something to swallow into a clean one-liner.
+  // Still no try/catch around this call, but the reason changed on
+  // 2026-09-03: backfillGenres now catches EVERY error inside its per-artist
+  // walk loop, not only SpotifyQuotaExhaustedError, and reports it back as
+  // `aborted`/`abortReason`/`abortKind`/`abortError` on its normal return
+  // value (see that function's doc comment) — precisely so neither a quota
+  // abort NOR an unexpected error like the run-12 502 gets to throw away a
+  // chunk's completed fills. To be clear that this is NOT the "swallow an
+  // unexpected error into a clean one-liner" shortcut the old comment here
+  // warned against: an unexpected abort still prints the full error with
+  // its stack (below, right before the loud banner), still records
+  // `aborted: true` with the real error's message in the provenance log,
+  // and still exits 1 — every safeguard that comment was protecting stays
+  // intact. All that changed is that the process no longer has to discard
+  // already-completed fills on its way to reporting the bug loudly — see
+  // the write-then-exit handling below for how it saves them first. (An
+  // error thrown OUTSIDE the walk loop — e.g. while loading the roster,
+  // above this call — was never in scope for any of this and still
+  // propagates uncaught exactly as before.)
   const result = await backfillGenres(roster, { searchArtist: searchArtistLive, delayMs, limit, existingLog, retrySkipped, retryReasons, discography, discographyDeps, onlyUnreachable, onProgress });
-  const { artists, stats, log, aborted, abortReason } = result;
+  const { artists, stats, log, aborted, abortReason, abortKind, abortError } = result;
 
   const after = { artists: artists.length, emails: uniqueEmailCount(artists) };
   const artistsLost = before.artists - after.artists;
@@ -1770,23 +1903,48 @@ async function main() {
   console.log(`artists lost: ${artistsLost} / emails lost: ${emailsLost}`);
 
   if (aborted) {
+    if (abortKind === 'unexpected' && abortError) {
+      // The full error, stack and all, printed BEFORE the loud banner below
+      // — never reduced to abortReason's one-line message. That reduction
+      // is precisely what this file's original comment on this call site
+      // warned against ("an unexpected error is a real bug, not something
+      // to swallow into a clean one-liner"): a one-liner tells a human
+      // something broke, not what to go fix. abortReason still carries the
+      // message alone into the provenance log below (a stack trace isn't
+      // useful there), but here — stdout, read by a person — the whole
+      // thing gets printed.
+      console.error('Unexpected error interrupted the walk — full stack trace:');
+      console.error(abortError.stack || String(abortError));
+    }
     // Deliberately loud and repeated (again at the very end, right before
     // exit — see below) rather than one line buried in the middle of the
     // summary: this is the one thing a human skimming the TAIL of a piped
     // --write log must not be able to miss, because missing it is exactly
-    // how the 2026-08-22/2026-08-25 incidents happened — a truncated run
-    // that looked, at a glance, like it had simply finished.
+    // how the 2026-08-22/2026-08-25/2026-09-03 incidents happened — a
+    // truncated run that looked, at a glance, like it had simply finished.
     console.log('');
     console.log('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
-    console.log('!! RUN ABORTED PARTWAY THROUGH — Spotify quota was exhausted before every    !!');
-    console.log('!! candidate in this chunk was attempted. The un-attempted artists remain    !!');
-    console.log('!! eligible — re-run this same command tomorrow to pick up where this chunk  !!');
-    console.log('!! left off.                                                                 !!');
+    if (abortKind === 'quota') {
+      console.log('!! RUN ABORTED PARTWAY THROUGH — Spotify quota was exhausted before every    !!');
+      console.log('!! candidate in this chunk was attempted. The un-attempted artists remain    !!');
+      console.log('!! eligible — re-run this same command tomorrow to pick up where this chunk  !!');
+      console.log('!! left off.                                                                 !!');
+    } else {
+      // Deliberately different wording from the quota case above: "come
+      // back tomorrow" is the wrong instruction for a bug, and this must
+      // not read as just another quota wait — see abortKind's doc comment
+      // on backfillGenres for why the two are distinguished at all.
+      console.log('!! RUN ABORTED PARTWAY THROUGH — an unexpected error interrupted the walk.   !!');
+      console.log('!! This is NOT a quota wait: something actually broke. Read the full stack   !!');
+      console.log('!! trace printed above before re-running. The un-attempted artists remain    !!');
+      console.log('!! eligible either way.                                                      !!');
+    }
     // Says which it is rather than always promising a write: a dry run that
-    // gets far enough to burn the quota aborts here too, and telling an
-    // operator their partial chunk was saved when --write wasn't passed is
-    // the same class of mistake (believing a run did something it didn't)
-    // that this banner exists to prevent.
+    // gets far enough to burn the quota — or hit an unexpected error —
+    // aborts here too, and telling an operator their partial chunk was
+    // saved when --write wasn't passed is the same class of mistake
+    // (believing a run did something it didn't) that this banner exists to
+    // prevent.
     console.log(write
       ? '!! The fills/skips completed above ARE being written below.                   !!'
       : '!! Dry run — the fills/skips completed above are NOT being written.            !!');
@@ -1865,9 +2023,12 @@ async function main() {
 
   // Both writes (log above, roster here) are done — a partial run's
   // completed work is saved. Only NOW report the abort and exit non-zero:
-  // this is what turns "died mid-run and lost two days of work" into "ran
-  // out of quota, saved everything it had, and told the operator to re-run
-  // tomorrow."
+  // this is what turns "died mid-run and lost two days of work" into either
+  // "ran out of quota, saved everything it had, and told the operator to
+  // re-run tomorrow" (abortKind 'quota') or "hit a real bug, saved
+  // everything it had anyway, printed the full stack, and told the operator
+  // to go read it" (abortKind 'unexpected') — see the loud banner above for
+  // where that distinction is actually surfaced.
   if (aborted) {
     console.error(`Aborting: ${abortReason}`);
     process.exit(1);

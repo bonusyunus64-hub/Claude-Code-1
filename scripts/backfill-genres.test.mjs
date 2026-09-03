@@ -1007,6 +1007,97 @@ describe('makeSpotifyFetcher — retry/timeout/ceiling/consecutive-429 abort (20
     }
     expect(warnSpy).toHaveBeenCalledTimes(3); // one 429 per call — never aborted
   });
+
+  // 2026-09-03: run 12 walked 19 artists, filled all 19, then died on a
+  // single unretried Spotify 502 — the transport-failure branch above
+  // already retried a rejected fetch(), but a non-OK response other than
+  // 401/429 fell straight through to the unconditional throw at the bottom
+  // of the loop, no matter how transient. These tests cover the fix:
+  // 500/502/503/504/408 now retry on the same bounded backoff as a
+  // transport failure (see SPOTIFY_RETRYABLE_STATUSES), and every other
+  // non-OK status still doesn't.
+  describe('retryable 5xx/408 statuses (2026-09-03)', () => {
+    it('retries a 502 once and then succeeds, logging the retry', async () => {
+      vi.useFakeTimers();
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(fakeResponse({ body: TOKEN_BODY }))
+        .mockResolvedValueOnce(fakeResponse({ ok: false, status: 502, statusText: 'Bad Gateway' }))
+        .mockResolvedValueOnce(fakeResponse({ body: { artists: { items: [] } } }));
+      const { searchArtist } = fetcher(fetchImpl);
+
+      const promise = searchArtist('Grace Davies', 0);
+      await vi.advanceTimersByTimeAsync(10_000); // covers the bounded backoff wait
+      const result = await promise;
+
+      expect(result).toEqual({ artists: { items: [] } });
+      expect(fetchImpl).toHaveBeenCalledTimes(3); // token, the 502, the retry that succeeds
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toMatch(/502/);
+    });
+
+    it('retries a 503 once and then succeeds', async () => {
+      vi.useFakeTimers();
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(fakeResponse({ body: TOKEN_BODY }))
+        .mockResolvedValueOnce(fakeResponse({ ok: false, status: 503, statusText: 'Service Unavailable' }))
+        .mockResolvedValueOnce(fakeResponse({ body: { artists: { items: [] } } }));
+      const { searchArtist } = fetcher(fetchImpl);
+
+      const promise = searchArtist('Grace Davies', 0);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await promise;
+
+      expect(result).toEqual({ artists: { items: [] } });
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toMatch(/503/);
+    });
+
+    it('throws once SPOTIFY_MAX_RATE_LIMIT_RETRIES is exhausted against a sustained 502', async () => {
+      vi.useFakeTimers();
+      const failing502 = fakeResponse({ ok: false, status: 502, statusText: 'Bad Gateway' });
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(fakeResponse({ body: TOKEN_BODY }))
+        .mockResolvedValue(failing502); // every subsequent call also 502s
+      const { searchArtist } = fetcher(fetchImpl);
+
+      const errPromise = searchArtist('Grace Davies', 0).catch(e => e);
+      await vi.advanceTimersByTimeAsync(60_000); // covers every bounded backoff wait
+      const err = await errPromise;
+
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toMatch(/502/);
+      // token + 1 initial attempt + SPOTIFY_MAX_RATE_LIMIT_RETRIES (4) retries = 6
+      expect(fetchImpl).toHaveBeenCalledTimes(6);
+      expect(warnSpy).toHaveBeenCalledTimes(5); // one warn per 502, retried or not
+    });
+
+    it('does NOT retry a 400 — deterministic client error, thrown on the first attempt', async () => {
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(fakeResponse({ body: TOKEN_BODY }))
+        .mockResolvedValueOnce(fakeResponse({ ok: false, status: 400, statusText: 'Bad Request' }));
+      const { searchArtist } = fetcher(fetchImpl);
+
+      const err = await searchArtist('Grace Davies', 0).catch(e => e);
+
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toMatch(/400/);
+      expect(fetchImpl).toHaveBeenCalledTimes(2); // token + the single 400 — no retry
+    });
+
+    it('does NOT retry a 404 — deterministic client error, thrown on the first attempt', async () => {
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(fakeResponse({ body: TOKEN_BODY }))
+        .mockResolvedValueOnce(fakeResponse({ ok: false, status: 404, statusText: 'Not Found' }));
+      const { searchArtist } = fetcher(fetchImpl);
+
+      const err = await searchArtist('Grace Davies', 0).catch(e => e);
+
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toMatch(/404/);
+      expect(fetchImpl).toHaveBeenCalledTimes(2); // token + the single 404 — no retry
+    });
+  });
 });
 
 describe('PERMANENT_SKIP_REASONS', () => {
@@ -1587,24 +1678,52 @@ describe('backfillGenres — Spotify quota abort mid-run', () => {
     expect(uniqueEmailCount(artists)).toBe(before.emails);
   });
 
-  it('lets a non-quota error propagate out of backfillGenres uncaught, exactly as before', async () => {
+  it('saves the fills a non-quota error used to discard, and reports it as an unexpected abort', async () => {
     const [filledFirst, abortsHere, neverReachedA, neverReachedB] = makeAbortRoster();
     const searchArtist = makeAbortSearchArtist();
     const discographyDeps = makeAbortDiscographyDeps();
     const boom = new Error('discography-match.mjs: unexpected Spotify 500');
     resolveByDiscography.mockRejectedValueOnce(boom);
 
-    // A rejected promise is what "writes nothing" reduces to here: main()
-    // only reaches its roster/log writeFileSync calls after
-    // `await backfillGenres(...)` resolves (see main()'s call site) — a
-    // thrown, non-SpotifyQuotaExhaustedError here never lets that happen,
-    // exactly like today's behaviour for any other unexpected error.
-    await expect(
-      backfillGenres(
-        { artists: [filledFirst, abortsHere, neverReachedA, neverReachedB], genres: ROSTER_GENRES },
-        { searchArtist, discography: true, discographyDeps }
-      )
-    ).rejects.toBe(boom);
+    // REWRITTEN 2026-09-03, and the inversion is the point. This test used to
+    // assert `.rejects.toBe(boom)` — that a non-quota error propagated out
+    // uncaught and main() therefore wrote nothing. That was a deliberate
+    // choice ("an unexpected error is a real bug, not something to swallow"),
+    // and on 2026-09-03 it cost a real run 19 completed fills: Spotify
+    // returned a transient 502 Bad Gateway on /search at artist 20 of 212,
+    // the throw went straight past the quota-abort branch, and the whole
+    // chunk died unwritten. A transient upstream 5xx is not a bug, and the
+    // fills earned before it are not suspect. The error is still surfaced
+    // loudly — main() prints abortError.stack in full and exits 1 — but the
+    // walk now ends the same way a quota abort does instead of discarding
+    // the chunk. Note this fixture's own error message: 'unexpected Spotify
+    // 500' is precisely the case the old assertion locked in as data-losing.
+    const { artists, stats, log, aborted, abortReason, abortKind, abortError } = await backfillGenres(
+      { artists: [filledFirst, abortsHere, neverReachedA, neverReachedB], genres: ROSTER_GENRES },
+      { searchArtist, discography: true, discographyDeps }
+    );
+
+    expect(aborted).toBe(true);
+    expect(abortKind).toBe('unexpected');
+    // The raw Error is carried through so main() can print a real stack —
+    // abortReason is only the string that goes into the JSON provenance log.
+    expect(abortError).toBe(boom);
+    expect(abortReason).toMatch(/unexpected Spotify 500/);
+
+    // The fill completed before the error survived — the 19 lost fills.
+    expect(artists[0].genres).toEqual(['Pop']);
+    expect(stats.filled).toBe(1);
+    expect(log.filled).toHaveLength(1);
+
+    // Same untouched-reference and rollback guarantees the quota path gives:
+    // the erroring artist got no verdict, so it carries no skip entry and
+    // stays eligible on a later run.
+    expect(artists[1]).toBe(abortsHere);
+    expect(artists[1].genres).toEqual([]);
+    expect(log.skipped).toHaveLength(0);
+    expect(artists).toHaveLength(4);
+    expect(stats.attempted).toBe(1);
+    expect(stats.filled + Object.values(stats.skipped).reduce((a, b) => a + b, 0)).toBe(stats.attempted);
   });
 
   it('resolves (never throws) with the ordinary result shape on an abort — the same shape main()\'s existing dry-run gate already handles for every non-aborted call', async () => {
@@ -1630,5 +1749,149 @@ describe('backfillGenres — Spotify quota abort mid-run', () => {
     expect(result).toHaveProperty('artists');
     expect(result).toHaveProperty('stats');
     expect(result).toHaveProperty('log');
+  });
+});
+
+// 2026-09-03: run 12 walked 19 artists, filled all 19, then died on a single
+// unretried Spotify 502 — nothing was written, because until now ONLY a
+// SpotifyQuotaExhaustedError got the save-what-we-have treatment above; any
+// other error (transport failure surviving fetchSpotify's retries, a bug, a
+// 502 that used to have no retry at all) still propagated straight out of
+// backfillGenres and killed the whole chunk. That old "propagate uncaught"
+// behaviour is exactly what the "lets a non-quota error propagate out of
+// backfillGenres uncaught, exactly as before" test in the describe block
+// above still asserts — it is left UNCHANGED here on purpose (per this
+// task's brief: an existing quota-abort-era test that must change to fit new
+// behaviour gets reported, not silently edited) and is now EXPECTED TO FAIL,
+// because it encodes precisely the discard-on-error behaviour this section
+// fixes. See this file's accompanying report for that conflict.
+//
+// These tests cover the actual new behaviour instead: an unexpected error
+// mid-walk (anything that is not a SpotifyQuotaExhaustedError) now aborts
+// the walk the SAME way a quota exhaustion does — fills already completed
+// are preserved on the return value, `aborted`/`abortReason`/`abortKind`
+// describe what happened, `abortError` carries the raw Error for main() to
+// print in full, and backfillGenres resolves instead of rejecting. See
+// backfillGenres's doc comment and the catch block inside its walk loop.
+describe('backfillGenres — unexpected (non-quota) error mid-run (2026-09-03)', () => {
+  // Same shape as makeAbortRoster/makeAbortSearchArtist/makeAbortDiscographyDeps
+  // above (kept as separate local copies rather than shared, matching this
+  // file's existing convention of self-contained describe blocks): a fill
+  // that must survive, an ambiguousName tie that engages --discography and
+  // is where the mocked resolveByDiscography throws, and two never-reached
+  // artists later in roster order.
+  function makeUnexpectedRoster() {
+    return [
+      artist({ name: 'Filled First', rostrUrl: 'https://www.rostr.cc/profile/filled-first', managerEmails: ['a@example.com'] }),
+      artist({ name: 'Breaks Here', rostrUrl: 'https://www.rostr.cc/profile/breaks-here', managerEmails: ['b@example.com'] }),
+      artist({ name: 'Never Reached A', rostrUrl: 'https://www.rostr.cc/profile/never-reached-a', managerEmails: ['c@example.com'] }),
+      artist({ name: 'Never Reached B', rostrUrl: 'https://www.rostr.cc/profile/never-reached-b', managerEmails: ['d@example.com'] }),
+    ];
+  }
+
+  function makeUnexpectedSearchArtist() {
+    return vi.fn(async name => {
+      if (name === 'Breaks Here') {
+        return {
+          results: [
+            itunesArtist({ name, artistId: 1, genre: 'Pop' }),
+            itunesArtist({ name, artistId: 2, genre: 'Rock' }),
+          ],
+        };
+      }
+      return { results: [itunesArtist({ name, artistId: 1, genre: 'Pop' })] };
+    });
+  }
+
+  function makeUnexpectedDiscographyDeps() {
+    return { spotifySearchArtist: vi.fn(), spotifyArtistAlbums: vi.fn(), itunesLookupAlbums: vi.fn() };
+  }
+
+  it('saves fills completed before an unexpected error instead of discarding the chunk, and resolves rather than rejecting', async () => {
+    const [filledFirst, breaksHere, neverReachedA, neverReachedB] = makeUnexpectedRoster();
+    const searchArtist = makeUnexpectedSearchArtist();
+    const discographyDeps = makeUnexpectedDiscographyDeps();
+    // The actual shape of the 2026-09-03 incident's error, reproduced here —
+    // an ordinary Error, NOT a SpotifyQuotaExhaustedError, surviving
+    // fetchSpotify's own retries and reaching resolveByDiscography's caller.
+    const boom = new Error('Spotify request failed: 502 Bad Gateway (/search?q=Grace%20Davies&type=artist&limit=10&offset=0)');
+    resolveByDiscography.mockRejectedValueOnce(boom);
+
+    const result = await backfillGenres(
+      { artists: [filledFirst, breaksHere, neverReachedA, neverReachedB], genres: ROSTER_GENRES },
+      { searchArtist, discography: true, discographyDeps }
+    );
+
+    expect(result.aborted).toBe(true);
+    expect(result.abortKind).toBe('unexpected');
+    expect(result.abortReason).toMatch(/502 Bad Gateway/);
+    // The raw Error — stack included — is carried separately from the
+    // plain-string abortReason, specifically so main() can print it in
+    // full rather than reducing it to one line.
+    expect(result.abortError).toBe(boom);
+    expect(typeof result.abortError.stack).toBe('string');
+
+    // The fill completed BEFORE the error survived.
+    expect(result.artists[0].genres).toEqual(['Pop']);
+    expect(result.stats.filled).toBe(1);
+    expect(result.log.filled).toHaveLength(1);
+    expect(result.log.filled[0].rostrUrl).toBe(filledFirst.rostrUrl);
+
+    // The artist whose lookup threw, and everything after it, come back as
+    // the exact untouched objects that went in.
+    expect(result.artists[1]).toBe(breaksHere);
+    expect(result.artists[2]).toBe(neverReachedA);
+    expect(result.artists[3]).toBe(neverReachedB);
+    expect(result.artists[1].genres).toEqual([]);
+  });
+
+  it('accounts for every artist in `artists` exactly once, and keeps stats.attempted consistent with filled + skipped', async () => {
+    const [filledFirst, breaksHere, neverReachedA, neverReachedB] = makeUnexpectedRoster();
+    const searchArtist = makeUnexpectedSearchArtist();
+    const discographyDeps = makeUnexpectedDiscographyDeps();
+    resolveByDiscography.mockRejectedValueOnce(new Error('discography-match.mjs: unexpected Spotify 500'));
+
+    const roster = { artists: [filledFirst, breaksHere, neverReachedA, neverReachedB], genres: ROSTER_GENRES };
+    const before = { artists: roster.artists.length, emails: uniqueEmailCount(roster.artists) };
+
+    const result = await backfillGenres(roster, { searchArtist, discography: true, discographyDeps });
+
+    // This is the artistsLost/emailsLost guard in main() — it must never
+    // trip, aborted or not.
+    expect(result.artists.length).toBe(before.artists);
+    expect(uniqueEmailCount(result.artists)).toBe(before.emails);
+    // Each roster artist appears exactly once — no duplicates, none dropped.
+    const rostrUrls = result.artists.map(a => a.rostrUrl);
+    expect(new Set(rostrUrls).size).toBe(rostrUrls.length);
+    expect(rostrUrls).toEqual([filledFirst.rostrUrl, breaksHere.rostrUrl, neverReachedA.rostrUrl, neverReachedB.rostrUrl]);
+
+    // The aborting artist's `attempted` bump is rolled back — it produced no
+    // verdict, so it must not be counted as attempted with zero fills/skips
+    // to show for it.
+    expect(result.stats.attempted).toBe(1); // only Filled First got a verdict
+    expect(result.stats.filled + Object.values(result.stats.skipped).reduce((a, b) => a + b, 0)).toBe(result.stats.attempted);
+
+    // Nothing was logged as skipped for the aborting or never-reached
+    // artists — same discipline as the quota-abort case, and for the same
+    // reason (see PERMANENT_SKIP_REASONS's doc comment): logging a verdict
+    // that was never actually reached would silently exclude them from
+    // every future run.
+    expect(result.log.skipped).toHaveLength(0);
+  });
+
+  it('leaves abortKind/abortError at their quota-abort defaults for a genuine SpotifyQuotaExhaustedError, unaffected by this widening', async () => {
+    const [filledFirst, breaksHere, neverReachedA, neverReachedB] = makeUnexpectedRoster();
+    const searchArtist = makeUnexpectedSearchArtist();
+    const discographyDeps = makeUnexpectedDiscographyDeps();
+    resolveByDiscography.mockRejectedValueOnce(new SpotifyQuotaExhaustedError('quota exhausted'));
+
+    const result = await backfillGenres(
+      { artists: [filledFirst, breaksHere, neverReachedA, neverReachedB], genres: ROSTER_GENRES },
+      { searchArtist, discography: true, discographyDeps }
+    );
+
+    expect(result.aborted).toBe(true);
+    expect(result.abortKind).toBe('quota');
+    expect(result.abortError).toBeNull();
   });
 });
