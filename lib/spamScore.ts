@@ -22,13 +22,17 @@
  *  - renderTemplate() (lib/emailTemplate.ts) falls back to the literal
  *    "{{key}}" text whenever a variable name isn't in the vars object it's
  *    given — a silent failure, not a thrown error (see its one-line
- *    implementation: `vars[key] ?? \`{{${key}}}\``). KNOWN_TEMPLATE_VARS below
- *    is every variable name this app's send paths ever actually populate
- *    (grep lib/demosSend.ts, lib/broadcastSend.ts, lib/autoFollowUp.ts for
+ *    implementation: `vars[key] ?? \`{{${key}}}\``). DEFAULT_TEMPLATE_VARS and
+ *    MULTI_ARTIST_TEMPLATE_VARS below are every variable name this app's send
+ *    paths ever actually populate (grep lib/demosSend.ts — including
+ *    buildMultiArtistMessage, lib/broadcastSend.ts, lib/autoFollowUp.ts for
  *    their renderTemplate() calls) — anything else in a template is either a
  *    typo that will never resolve for *any* recipient, or stray {{...}} text
  *    that shouldn't be there, and nothing else in this codebase catches it
- *    before it mails out verbatim.
+ *    before it mails out verbatim. Which of the two sets applies depends on
+ *    which send path a given template goes through, which is why
+ *    computeSpamScore() takes the set as a parameter instead of hardcoding
+ *    one — see the comment above DEFAULT_TEMPLATE_VARS below.
  *  - There is deliberately no "missing plaintext alternative" check. HTML-only
  *    mail is a real spam signal, but it doesn't apply here: lib/mailSend.ts's
  *    sendMessages() sets `mailOptions.text = msg.body` unconditionally, before
@@ -74,10 +78,50 @@ export interface SpamScoreResult {
  * recipient's data being blank (e.g. an artist with no managementCompany on
  * file) — that failure mode only exists after rendering, per recipient, which
  * needs a check wired into the rendered preview rather than this function.
+ *
+ * DEFAULT_TEMPLATE_VARS is that set. It is deliberately NOT the only set this
+ * file exports, and computeSpamScore() takes it as a parameter rather than
+ * hardcoding it, because it stopped being true — for one send path — the
+ * moment the shared-manager, multi-artist pitch shipped. buildMultiArtistMessage
+ * (lib/demosSend.ts) populates five more names on top of this set:
+ * artistSummary, artistNames, artistCount, otherCount, allArtistNames — see
+ * MULTI_ARTIST_TEMPLATE_VARS below. Folding those five into this set instead
+ * of keeping it separate would break the exact guarantee this comment opens
+ * with: a plain single-artist template (lib/demosSend.ts's
+ * buildEmailsForArtist / custom-contacts branch, lib/broadcastSend.ts,
+ * lib/autoFollowUp.ts) never populates artistSummary or the other four, so
+ * {{artistSummary}} typed into the main pitch or follow-up template would
+ * mail out as the literal, unresolved braces — silently, since nothing else
+ * in this codebase catches it — while this checker stayed quiet about it.
+ * That's a worse failure than the one this whole file exists to catch: a
+ * false negative on the loudest, highest-severity check here, traded for
+ * fixing a false positive on one panel. Per-panel sets are what let each
+ * template be checked against only the variables *its own* send path
+ * actually fills in, so "known variable" keeps meaning "this specific
+ * template will resolve it," not "some send path somewhere resolves it."
  */
-const KNOWN_TEMPLATE_VARS = new Set([
+export const DEFAULT_TEMPLATE_VARS = new Set([
   'managerName', 'artistName', 'trackTitle', 'driveLink', 'senderName',
   'managementCompany', 'pronoun', 'stationName', 'curatorName',
+]);
+
+/**
+ * The set for the Shared-Manager (multi-artist) template panel only. Built
+ * from DEFAULT_TEMPLATE_VARS plus the five names buildMultiArtistMessage
+ * (lib/demosSend.ts) adds to its renderTemplate() vars object: artistNames,
+ * artistSummary, artistCount, otherCount, allArtistNames. The single-artist
+ * names carry over unchanged because buildMultiArtistMessage really does
+ * still populate artistName (the lead artist), managementCompany (the lead
+ * artist's), managerName (the group's), and pronoun (hardcoded 'they', never
+ * resolved per-artist — see the file header comment there) — confirmed by
+ * reading that function, not assumed. stationName/curatorName carry over too
+ * even though this send path never fills them, since DEFAULT_TEMPLATE_VARS is
+ * additive here, not narrowed; they're simply never used in a template this
+ * panel edits, so their presence in the set is inert.
+ */
+export const MULTI_ARTIST_TEMPLATE_VARS = new Set([
+  ...DEFAULT_TEMPLATE_VARS,
+  'artistSummary', 'artistNames', 'artistCount', 'otherCount', 'allArtistNames',
 ]);
 
 /**
@@ -109,7 +153,10 @@ const SPAM_PHRASES = [
  */
 const LINK_PATTERN = /\{\{\s*driveLink\s*\}\}|https?:\/\/\S+|www\.\S+/gi;
 
-export function computeSpamScore(text: string): SpamScoreResult {
+export function computeSpamScore(
+  text: string,
+  knownVars: ReadonlySet<string> = DEFAULT_TEMPLATE_VARS
+): SpamScoreResult {
   const issues: SpamScoreIssue[] = [];
 
   // --- Unrendered / unknown template variables --------------------------
@@ -119,12 +166,12 @@ export function computeSpamScore(text: string): SpamScoreResult {
   // isn't a mistake.
   const varMatches = [...text.matchAll(/\{\{\s*(\w+)\s*\}\}/g)];
   const unknownVarNames = [...new Set(
-    varMatches.filter(m => !KNOWN_TEMPLATE_VARS.has(m[1])).map(m => m[1])
+    varMatches.filter(m => !knownVars.has(m[1])).map(m => m[1])
   )];
   if (unknownVarNames.length > 0) {
     issues.push({
       severity: 'high',
-      message: `Unrecognized template variable${unknownVarNames.length !== 1 ? 's' : ''} ${unknownVarNames.map(n => `{{${n}}}`).join(', ')} — this app only ever fills in ${[...KNOWN_TEMPLATE_VARS].map(v => `{{${v}}}`).join(', ')}. Anything else is never replaced and mails out to the recipient as this exact literal text.`,
+      message: `Unrecognized template variable${unknownVarNames.length !== 1 ? 's' : ''} ${unknownVarNames.map(n => `{{${n}}}`).join(', ')} — this app only ever fills in ${[...knownVars].map(v => `{{${v}}}`).join(', ')}. Anything else is never replaced and mails out to the recipient as this exact literal text.`,
     });
   }
 

@@ -3,10 +3,14 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { computeSpamScore } from '@/lib/spamScore';
 
-export function SpamScoreBadge({ template }: { template: string }) {
+export function SpamScoreBadge({ template, knownVars }: { template: string; knownVars?: ReadonlySet<string> }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const result = useMemo(() => computeSpamScore(template), [template]);
+  // Passing `knownVars` straight through when it's undefined still behaves
+  // exactly as before: computeSpamScore's own default parameter (in
+  // lib/spamScore.ts) supplies DEFAULT_TEMPLATE_VARS in that case, same as if
+  // this component had never taken the prop.
+  const result = useMemo(() => computeSpamScore(template, knownVars), [template, knownVars]);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {

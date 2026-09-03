@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { computeSpamScore } from './spamScore';
+import { computeSpamScore, DEFAULT_TEMPLATE_VARS, MULTI_ARTIST_TEMPLATE_VARS } from './spamScore';
+import { DEFAULT_MULTI_ARTIST_TEMPLATE } from '@/app/dashboard/constants';
 
 // A realistically-sized pitch body, the same shape as
 // app/dashboard/constants.ts's DEFAULT_DEMOS_TEMPLATE: a greeting, some real
@@ -133,6 +134,58 @@ describe('computeSpamScore', () => {
       const result = computeSpamScore(body);
       const issue = result.issues.find(i => i.message.includes('Unrecognized template variable'));
       expect(issue?.message.match(/\{\{weirdVar\}\}/g)).toHaveLength(1);
+    });
+  });
+
+  // Regression coverage for the false positive the multi-artist (shared-manager)
+  // panel used to show: buildMultiArtistMessage (lib/demosSend.ts) genuinely
+  // populates artistSummary, artistNames, artistCount, otherCount and
+  // allArtistNames in its renderTemplate() vars object, on top of the
+  // single-artist names it also still fills (artistName, managementCompany,
+  // managerName, pronoun). The multi-artist template panel must not flag any
+  // of those as unrecognized, but the main/follow-up/broadcast templates —
+  // whose send paths never populate the five multi-artist names — still must,
+  // or a typo'd {{artistSummary}} in the main pitch would silently mail out
+  // as literal braces to every recipient (see the comment above
+  // DEFAULT_TEMPLATE_VARS in lib/spamScore.ts for why this is two sets and
+  // not one merged set).
+  describe('multi-artist template vars (knownVars parameter)', () => {
+    const MULTI_ARTIST_ONLY_VARS = ['artistSummary', 'artistNames', 'artistCount', 'otherCount', 'allArtistNames'];
+
+    it.each(MULTI_ARTIST_ONLY_VARS)('does not flag {{%s}} under MULTI_ARTIST_TEMPLATE_VARS', (varName) => {
+      const body = `${CLEAN_PITCH} {{${varName}}}`;
+      const result = computeSpamScore(body, MULTI_ARTIST_TEMPLATE_VARS);
+      expect(result.issues.some(i => i.message.includes('Unrecognized template variable'))).toBe(false);
+    });
+
+    it.each(MULTI_ARTIST_ONLY_VARS)('still flags {{%s}} as a high-severity unrecognized variable under the default set (regression guard: this is the whole reason the set is per-panel, not global)', (varName) => {
+      const body = `${CLEAN_PITCH} {{${varName}}}`;
+      // No second argument — proves omitting knownVars keeps today's behaviour.
+      const result = computeSpamScore(body);
+      const issue = result.issues.find(i => i.message.includes('Unrecognized template variable'));
+      expect(issue).toBeDefined();
+      expect(issue?.message).toContain(`{{${varName}}}`);
+      expect(issue?.severity).toBe('high');
+      expect(result.risk).toBe('high');
+    });
+
+    it('does not flag the single-artist vars buildMultiArtistMessage also fills under MULTI_ARTIST_TEMPLATE_VARS', () => {
+      const body = 'Hi {{managerName}}, this is {{senderName}} re {{artistName}} ({{managementCompany}}) — {{pronoun}} track {{trackTitle}}: {{driveLink}}';
+      const result = computeSpamScore(body, MULTI_ARTIST_TEMPLATE_VARS);
+      expect(result.issues.some(i => i.message.includes('Unrecognized template variable'))).toBe(false);
+    });
+
+    it('MULTI_ARTIST_TEMPLATE_VARS is the default set plus exactly the five multi-artist names', () => {
+      const extra = [...MULTI_ARTIST_TEMPLATE_VARS].filter(v => !DEFAULT_TEMPLATE_VARS.has(v));
+      expect(new Set(extra)).toEqual(new Set(MULTI_ARTIST_ONLY_VARS));
+      for (const v of DEFAULT_TEMPLATE_VARS) {
+        expect(MULTI_ARTIST_TEMPLATE_VARS.has(v)).toBe(true);
+      }
+    });
+
+    it('DEFAULT_MULTI_ARTIST_TEMPLATE (app/dashboard/constants.ts) is clean of unknown-variable issues under MULTI_ARTIST_TEMPLATE_VARS', () => {
+      const result = computeSpamScore(DEFAULT_MULTI_ARTIST_TEMPLATE, MULTI_ARTIST_TEMPLATE_VARS);
+      expect(result.issues.some(i => i.message.includes('Unrecognized template variable'))).toBe(false);
     });
   });
 

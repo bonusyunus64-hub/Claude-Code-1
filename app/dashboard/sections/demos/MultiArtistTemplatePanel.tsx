@@ -1,6 +1,7 @@
 import { DEFAULT_MULTI_ARTIST_TEMPLATE, DEFAULT_MULTI_ARTIST_SUBJECT } from '../../constants';
 import { CopyChip } from '../../components/CopyChip';
 import { SpamScoreBadge } from '../../components/SpamScoreBadge';
+import { MULTI_ARTIST_TEMPLATE_VARS } from '@/lib/spamScore';
 
 export interface MultiArtistTemplatePanelProps {
   demosMultiArtistSubject: string;
@@ -32,12 +33,13 @@ export function MultiArtistTemplatePanel(props: MultiArtistTemplatePanelProps) {
           phrase for this: it reads as &ldquo;Nori, Cayo and Rence&rdquo; when there are three or fewer, and
           &ldquo;Nori, Cayo, Rence and 4 others&rdquo; once there are more than that. {'{{artistNames}}'} is the
           plainer version of the same list &mdash; just the names, capped the same way, but without that
-          &ldquo;and N others&rdquo; count added on, in case you&rsquo;d rather phrase the overflow yourself. Click a
-          variable to copy it:
+          &ldquo;and N others&rdquo; count added on, in case you&rsquo;d rather phrase the overflow yourself.
+          {' '}{'{{allArtistNames}}'} is the same list again but never capped &mdash; every artist that manager
+          reps, in case you&rsquo;d rather list them all than truncate. Click a variable to copy it:
         </p>
       </div>
       <div className="flex flex-wrap gap-1.5">
-        {['{{managerName}}', '{{artistSummary}}', '{{artistNames}}', '{{artistCount}}', '{{otherCount}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}'].map(v => (
+        {['{{managerName}}', '{{artistSummary}}', '{{artistNames}}', '{{allArtistNames}}', '{{artistCount}}', '{{otherCount}}', '{{trackTitle}}', '{{driveLink}}', '{{senderName}}'].map(v => (
           <CopyChip key={v} value={v} />
         ))}
       </div>
@@ -52,7 +54,7 @@ export function MultiArtistTemplatePanel(props: MultiArtistTemplatePanelProps) {
         <button onClick={() => { setDemosMultiArtistTemplate(DEFAULT_MULTI_ARTIST_TEMPLATE); setDemosMultiArtistSubject(DEFAULT_MULTI_ARTIST_SUBJECT); }} className="text-xs text-zinc-500 hover:text-zinc-300 transition">
           Reset to default
         </button>
-        <SpamScoreBadge template={demosMultiArtistTemplate} />
+        <SpamScoreBadge template={demosMultiArtistTemplate} knownVars={MULTI_ARTIST_TEMPLATE_VARS} />
       </div>
     </section>
   );
