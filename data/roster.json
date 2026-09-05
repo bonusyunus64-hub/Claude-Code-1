@@ -66996,7 +66996,9 @@
     {
       "name": "Jillian Rossi",
       "rostrUrl": "https://www.rostr.cc/profile/jillianrossi",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 356863,
@@ -68211,7 +68213,9 @@
     {
       "name": "Normandie",
       "rostrUrl": "https://www.rostr.cc/profile/normandie",
-      "genres": [],
+      "genres": [
+        "Alternative"
+      ],
       "type": "Group",
       "gender": "",
       "spotifyFollowers": 347737,
@@ -68910,7 +68914,9 @@
     {
       "name": "Healy",
       "rostrUrl": "https://www.rostr.cc/profile/healy",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 343305,
@@ -68984,7 +68990,9 @@
     {
       "name": "MAY-A",
       "rostrUrl": "https://www.rostr.cc/profile/maya",
-      "genres": [],
+      "genres": [
+        "Alternative"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 342942,
@@ -69038,7 +69046,9 @@
     {
       "name": "Chrissy",
       "rostrUrl": "https://www.rostr.cc/profile/chrissy",
-      "genres": [],
+      "genres": [
+        "Alternative"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 342539,
@@ -69986,7 +69996,9 @@
     {
       "name": "Matt Cooper",
       "rostrUrl": "https://www.rostr.cc/profile/mattcooper",
-      "genres": [],
+      "genres": [
+        "Country"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 337197,
@@ -70546,7 +70558,9 @@
     {
       "name": "Myles Morgan",
       "rostrUrl": "https://www.rostr.cc/profile/mylesmorgan",
-      "genres": [],
+      "genres": [
+        "Country"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 334029,
@@ -71132,7 +71146,9 @@
     {
       "name": "RMR",
       "rostrUrl": "https://www.rostr.cc/profile/rmr",
-      "genres": [],
+      "genres": [
+        "Hip Hop & Rap"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 331574,
@@ -71343,7 +71359,9 @@
     {
       "name": "Gatlin",
       "rostrUrl": "https://www.rostr.cc/profile/gatlin",
-      "genres": [],
+      "genres": [
+        "Singer Songwriter"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 330092,
@@ -71463,7 +71481,9 @@
     {
       "name": "Doov",
       "rostrUrl": "https://www.rostr.cc/profile/doov",
-      "genres": [],
+      "genres": [
+        "Hip Hop & Rap"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 328064,
@@ -71580,7 +71600,9 @@
     {
       "name": "Aqualung",
       "rostrUrl": "https://www.rostr.cc/profile/aqualung",
-      "genres": [],
+      "genres": [
+        "Alternative"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 327062,
@@ -71959,7 +71981,9 @@
     {
       "name": "Outlier",
       "rostrUrl": "https://www.rostr.cc/profile/outlier0",
-      "genres": [],
+      "genres": [
+        "Rock"
+      ],
       "type": "Group",
       "gender": "",
       "spotifyFollowers": 325694,
@@ -72149,7 +72173,9 @@
     {
       "name": "lace",
       "rostrUrl": "https://www.rostr.cc/profile/lace",
-      "genres": [],
+      "genres": [
+        "Indie Pop"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 324754,
@@ -73102,7 +73128,9 @@
     {
       "name": "Marzi",
       "rostrUrl": "https://www.rostr.cc/profile/marzi",
-      "genres": [],
+      "genres": [
+        "Dance / Edm"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 537179,
@@ -73745,7 +73773,9 @@
     {
       "name": "Emilio Piano",
       "rostrUrl": "https://www.rostr.cc/profile/emiliopiano",
-      "genres": [],
+      "genres": [
+        "Soundtrack"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 528359,
@@ -73973,7 +74003,9 @@
     {
       "name": "Claudia Valentina",
       "rostrUrl": "https://www.rostr.cc/profile/claudiavalentina",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 525376,
@@ -76502,7 +76534,9 @@
     {
       "name": "JONAH",
       "rostrUrl": "https://www.rostr.cc/profile/jonah",
-      "genres": [],
+      "genres": [
+        "Alternative"
+      ],
       "type": "Group",
       "gender": "",
       "spotifyFollowers": 502798,
@@ -77151,7 +77185,9 @@
     {
       "name": "Eli",
       "rostrUrl": "https://www.rostr.cc/profile/eli0",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 495996,
@@ -78313,7 +78349,9 @@
     {
       "name": "LVL1",
       "rostrUrl": "https://www.rostr.cc/profile/lvl1",
-      "genres": [],
+      "genres": [
+        "Dance / Edm"
+      ],
       "type": "Person",
       "gender": "OTHER",
       "spotifyFollowers": 483819,
@@ -78569,7 +78607,9 @@
     {
       "name": "Johnny Marr",
       "rostrUrl": "https://www.rostr.cc/profile/johnnymarr",
-      "genres": [],
+      "genres": [
+        "Alternative"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 481129,
@@ -78675,7 +78715,9 @@
     {
       "name": "Beauty School Dropout",
       "rostrUrl": "https://www.rostr.cc/profile/beautyschooldropout",
-      "genres": [],
+      "genres": [
+        "Rock"
+      ],
       "type": "Group",
       "gender": "",
       "spotifyFollowers": 480823,
@@ -79009,7 +79051,9 @@
     {
       "name": "Jann",
       "rostrUrl": "https://www.rostr.cc/profile/jann0",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 476301,
@@ -80696,7 +80740,9 @@
     {
       "name": "KAMILLE",
       "rostrUrl": "https://www.rostr.cc/profile/kamille",
-      "genres": [],
+      "genres": [
+        "R&B/Soul"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 461005,
@@ -85301,7 +85347,9 @@
     {
       "name": "SOFY",
       "rostrUrl": "https://www.rostr.cc/profile/sofy",
-      "genres": [],
+      "genres": [
+        "Indie Pop"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 421468,
@@ -88186,7 +88234,9 @@
     {
       "name": "One True God",
       "rostrUrl": "https://www.rostr.cc/profile/onetruegod",
-      "genres": [],
+      "genres": [
+        "House"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 394711,
@@ -88625,7 +88675,9 @@
     {
       "name": "Betcha",
       "rostrUrl": "https://www.rostr.cc/profile/betcha",
-      "genres": [],
+      "genres": [
+        "Alternative"
+      ],
       "type": "Group",
       "gender": "",
       "spotifyFollowers": 393609,
@@ -89255,7 +89307,9 @@
     {
       "name": "Boy Meets Girl",
       "rostrUrl": "https://www.rostr.cc/profile/boymeetsgirl",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Group",
       "gender": "",
       "spotifyFollowers": 682342,
@@ -89975,7 +90029,9 @@
     {
       "name": "Isaac Levi",
       "rostrUrl": "https://www.rostr.cc/profile/isaaclevi",
-      "genres": [],
+      "genres": [
+        "Singer Songwriter"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 670657,
@@ -90179,7 +90235,9 @@
     {
       "name": "FUR",
       "rostrUrl": "https://www.rostr.cc/profile/fur",
-      "genres": [],
+      "genres": [
+        "Indie Rock"
+      ],
       "type": "Group",
       "gender": "",
       "spotifyFollowers": 667179,
@@ -90815,7 +90873,9 @@
     {
       "name": "Cassidy",
       "rostrUrl": "https://www.rostr.cc/profile/cassidy",
-      "genres": [],
+      "genres": [
+        "Hip Hop & Rap"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 658296,
@@ -91123,7 +91183,9 @@
     {
       "name": "BYNX",
       "rostrUrl": "https://www.rostr.cc/profile/bynx",
-      "genres": [],
+      "genres": [
+        "House"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 652473,
@@ -92075,7 +92137,9 @@
     {
       "name": "Kyle Clark",
       "rostrUrl": "https://www.rostr.cc/profile/kyleclark",
-      "genres": [],
+      "genres": [
+        "Country"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 638833,
@@ -92905,7 +92969,9 @@
     {
       "name": "Scizzie",
       "rostrUrl": "https://www.rostr.cc/profile/scizzie",
-      "genres": [],
+      "genres": [
+        "Hip Hop"
+      ],
       "type": "Non-artist",
       "gender": "MALE",
       "spotifyFollowers": 628564,
@@ -92983,7 +93049,9 @@
     {
       "name": "ALINA",
       "rostrUrl": "https://www.rostr.cc/profile/alina",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 627238,
@@ -94073,7 +94141,9 @@
     {
       "name": "Sophie Powers",
       "rostrUrl": "https://www.rostr.cc/profile/sophiepowers",
-      "genres": [],
+      "genres": [
+        "Alternative"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 609435,
@@ -94464,7 +94534,9 @@
     {
       "name": "Henry Green",
       "rostrUrl": "https://www.rostr.cc/profile/henrygreen",
-      "genres": [],
+      "genres": [
+        "Electronic"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 604054,
@@ -95174,7 +95246,9 @@
     {
       "name": "DLG.",
       "rostrUrl": "https://www.rostr.cc/profile/dlg",
-      "genres": [],
+      "genres": [
+        "R&B/Soul"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 597716,
@@ -95950,7 +96024,9 @@
     {
       "name": "eaJ",
       "rostrUrl": "https://www.rostr.cc/profile/eaj",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 589151,
@@ -97318,7 +97394,9 @@
     {
       "name": "DREAMERS",
       "rostrUrl": "https://www.rostr.cc/profile/dreamers",
-      "genres": [],
+      "genres": [
+        "Alternative"
+      ],
       "type": "Group",
       "gender": "",
       "spotifyFollowers": 572799,
@@ -97541,7 +97619,9 @@
     {
       "name": "Kyson",
       "rostrUrl": "https://www.rostr.cc/profile/kyson",
-      "genres": [],
+      "genres": [
+        "Alternative"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 568989,
@@ -98013,7 +98093,9 @@
     {
       "name": "Dee Watkins",
       "rostrUrl": "https://www.rostr.cc/profile/deewatkins",
-      "genres": [],
+      "genres": [
+        "Hip Hop & Rap"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 564029,
@@ -98486,7 +98568,9 @@
     {
       "name": "Erica Banks",
       "rostrUrl": "https://www.rostr.cc/profile/ericabanks",
-      "genres": [],
+      "genres": [
+        "Hip Hop & Rap"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 554788,
@@ -98536,7 +98620,9 @@
     {
       "name": "MASN",
       "rostrUrl": "https://www.rostr.cc/profile/masn",
-      "genres": [],
+      "genres": [
+        "Hip Hop & Rap"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 554050,
@@ -99340,7 +99426,9 @@
     {
       "name": "Dante Klein",
       "rostrUrl": "https://www.rostr.cc/profile/danteklein",
-      "genres": [],
+      "genres": [
+        "Dance / Edm"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 543149,
@@ -101350,7 +101438,9 @@
     {
       "name": "Knox",
       "rostrUrl": "https://www.rostr.cc/profile/knox",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 935238,
@@ -101783,7 +101873,9 @@
     {
       "name": "Tourist",
       "rostrUrl": "https://www.rostr.cc/profile/tourist",
-      "genres": [],
+      "genres": [
+        "Electronic"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 930372,
@@ -102216,7 +102308,9 @@
     {
       "name": "MEEK",
       "rostrUrl": "https://www.rostr.cc/profile/meek",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 918745,
@@ -102296,7 +102390,9 @@
     {
       "name": "Kelvin Jones",
       "rostrUrl": "https://www.rostr.cc/profile/kelvinjones",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 917502,
@@ -102586,7 +102682,9 @@
     {
       "name": "Wrabel",
       "rostrUrl": "https://www.rostr.cc/profile/wrabel",
-      "genres": [],
+      "genres": [
+        "Pop"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 910121,
@@ -103237,7 +103335,9 @@
     {
       "name": "Elbow",
       "rostrUrl": "https://www.rostr.cc/profile/elbow",
-      "genres": [],
+      "genres": [
+        "Alternative"
+      ],
       "type": "Group",
       "gender": "",
       "spotifyFollowers": 900934,
@@ -103789,7 +103889,9 @@
     {
       "name": "Skott",
       "rostrUrl": "https://www.rostr.cc/profile/skott",
-      "genres": [],
+      "genres": [
+        "Alternative"
+      ],
       "type": "Person",
       "gender": "FEMALE",
       "spotifyFollowers": 886205,
@@ -104575,7 +104677,9 @@
     {
       "name": "Gareth",
       "rostrUrl": "https://www.rostr.cc/profile/gareth",
-      "genres": [],
+      "genres": [
+        "Country"
+      ],
       "type": "Person",
       "gender": "MALE",
       "spotifyFollowers": 871001,
